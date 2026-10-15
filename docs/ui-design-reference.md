@@ -126,7 +126,7 @@ Amber has two related but distinct jobs: it identifies the human review domain a
 - One-pixel `#232832` borders create most grouping. Light mode uses gray 200/300 equivalents.
 - Cards generally use `rounded-lg` or `rounded-xl`; overlays use `rounded-2xl` and a stronger shadow.
 - Dark surfaces avoid routine shadows. Toasts replace a dark shadow with a border/ring; overlays retain shadow where depth is interaction-critical.
-- Active pipeline-stage navigation is a translucent cyan-blue fill plus an inset 3 px cyan-blue rail, not a large filled button. Utility-pane nodes such as Audit and Agents use a neutral gray active fill without the cyan inset.
+- Active pipeline-stage navigation is a translucent cyan-blue fill plus an inset 3 px cyan-blue rail, not a large filled button. Utility-pane nodes use the shell's cyan active treatment too; active navigation must remain distinguishable in both skins.
 - Hover usually changes the surface only slightly: gray 50 in light mode or white at about 5% in dark mode.
 - Warning/error fills are low-chroma light tints (`amber-50`, `red-50`) and deep dark tints (`amber-950`, `red-950`), bounded by a matching border when the whole block is an alert.
 
@@ -285,7 +285,7 @@ These are observed production differences. They are inventory items, not authori
 9. **Icon treatment has exceptions.** Most navigation uses outline SVG, while lane identity and some alerts use text glyphs/symbols.
 10. **Control geometry varies.** Production has 28, 32, and 36 px controls, mixed `rounded-md`/`rounded-lg`, and both filled and outlined primaries according to context.
 11. **Dark panel layering can collapse.** Inputs and cards sometimes use `phaze-panel` on a `phaze-panel` parent, relying on borders rather than fill contrast.
-12. **Motion reduction is not systematic.** Pulse and transition utilities are present, but there is no shared `prefers-reduced-motion` treatment in `app.css`.
+12. **Motion reduction has a shared baseline.** `assets/src/app.css` includes a `prefers-reduced-motion: reduce` rule that suppresses animation/transition durations and smooth scrolling; component changes still need keyboard and motion review.
 13. **Status vocabularies overlap rather than share one component.** Stage pills, agent pills, lane states, cloud cards, and review lifecycle words use related but separately implemented grammars.
 14. **Responsive behavior is concentrated in the shell.** The rail becomes an off-canvas drawer at `max-lg`, while several workspace constructs depend on horizontal scrolling or fixed/max widths rather than a unified narrow-screen pattern.
 15. **Dark mode is more deliberately tuned.** Light mode is supported throughout, but the palette hierarchy and product character are strongest in dark mode.

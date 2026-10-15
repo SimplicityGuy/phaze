@@ -53,58 +53,17 @@ those tables.
 entry gets its own constructor-authed kr8s client (selected by its `[backends.kube].context`), its
 own LocalQueue, and its own `buckets` staging set:
 
-```mermaid
-flowchart LR
-  %% transport-agnostic mesh (Tailscale OR WireGuard)
-  subgraph control["host-prod / control plane"]
-    controlsvc["api(:8000) · Postgres · Redis"]
-    drain["stage_cloud_window (*/5 cron)<br/>tiered rank-first drain"]
-    selbk["select_backend (rank-first + spillover)"]
-    s3_staging["s3_staging (pick_bucket per file)"]
-    reconcile["reconcile_cloud_jobs (every-minute cron)<br/>per-backend, backend_id-scoped"]
-    kc_a["kr8s client A (context: kueue-a)"]
-    kc_b["kr8s client B (context: kueue-b)"]
-    callback["PUT /api/internal/agent/analysis/{file_id}<br/>(the ONLY result channel)"]
-  end
-  subgraph clusterA["Kueue backend A (rank 10, cap N_A)"]
-    lqA["LocalQueue phaze-lq"]
-    podA["one-shot pod (presign GET → analyze → PUT → exit)"]
-    bktA["buckets: A staging set"]
-  end
-  subgraph clusterB["Kueue backend B (rank 20, cap N_B)"]
-    lqB["LocalQueue phaze-lq"]
-    podB["one-shot pod (presign GET → analyze → PUT → exit)"]
-    bktB["buckets: B staging set"]
-  end
-  drain --> selbk
-  selbk -->|"rank-first pick"| kc_a
-  selbk -->|"spill on full/offline"| kc_b
-  kc_a -->|"kube POST suspended Job"| lqA
-  kc_b -->|"kube POST suspended Job"| lqB
-  s3_staging -->|"presign PUT/GET"| bktA
-  s3_staging -->|"presign PUT/GET"| bktB
-  lqA -->|"Kueue admits"| podA
-  lqB -->|"Kueue admits"| podB
-  podA -->|"PUT result (the ONLY result channel)"| callback
-  podB -->|"PUT result (the ONLY result channel)"| callback
-```
+![Architecture at a glance](diagrams/k8s-burst-1.png)
+
+[Open the interactive-size HTML](diagrams/k8s-burst-1.html) · [Download SVG](diagrams/k8s-burst-1.svg)
 
 **Rank-tiered spillover** — per candidate file, `select_backend` prefers the lowest-`rank`
 available Kueue lane with a free `cap` slot, spilling to the next rank when a lane is FULL or
 OFFLINE, and finally to slow local (staleness-gated):
 
-```mermaid
-flowchart TD
-  f["file with cloud_job status='awaiting'<br/>(oldest first)"] --> r1{"rank 10 Kueue<br/>available & slot free?"}
-  r1 -->|yes| d1["dispatch → stage to A's bucket + submit Job"]
-  r1 -->|"FULL or OFFLINE"| r2{"rank 20 Kueue<br/>available & slot free?"}
-  r2 -->|yes| d2["dispatch → stage to B's bucket + submit Job"]
-  r2 -->|"FULL or OFFLINE"| loc{"spill to local?"}
-  loc -->|"all cloud OFFLINE → immediately"| dl["route LOCAL (rank 99)"]
-  loc -->|"cloud online-but-FULL → after cloud_spill_to_local_after_seconds"| dl
-  loc -->|"cloud budget spent (attempts exhausted)"| dl
-  loc -->|"otherwise"| hold["hold at cloud_job status='awaiting' (next tick)"]
-```
+![Architecture at a glance](diagrams/k8s-burst-2.png)
+
+[Open the interactive-size HTML](diagrams/k8s-burst-2.html) · [Download SVG](diagrams/k8s-burst-2.svg)
 
 _A registry with no non-local backend (`cloud_enabled` False) ⇒ long files route LOCAL, no kube
 submit, no S3 staging. (all-local)_
@@ -294,7 +253,7 @@ dropped/expired watch never loses or duplicates a result" true.
   **HELD** with the reason. Every 15 minutes the drain grants the backend **one** probe slot; the
   breaker **closes** the first time the presign endpoint mints a URL for a pod on that backend. No
   running pod is killed. Operator decision 2026-09-27 (`AskUserQuestion`): *"phaze-j0ixx: when cloud
-  pods fail because the control plane is unreachable (the 09-26 outage and the vox DNS loss), files
+  pods fail because the control plane is unreachable (the 09-26 outage and the host-prod DNS loss), files
   currently use up their 3 attempts. How should phaze respond instead?"* — answer as given: *"Both:
   exit code + breaker (Recommended)"*; durable record: the bead `phaze-j0ixx` comment. The thresholds
   and the probe are the implementer's choice, reasoned in `services/backend_breaker.py`.
@@ -317,7 +276,7 @@ dropped/expired watch never loses or duplicates a result" true.
   (`DELETE FROM cloud_job WHERE file_id = … AND status = 'awaiting'`) at **both** analyze-terminal
   seams. So a file that spent its whole cloud budget, spilled to local, and then failed *locally* lost
   its entire history: the next re-analysis started a fresh chain at `attempts = 0` and could spend the
-  whole budget again. That is what the forensics actually show — `713a368e`'s eight pods are **two
+  whole budget again. That is what the forensics actually show — `<set-01>`'s eight pods are **two
   chains of four** (07-24…07-25, then 07-29 after a four-day gap), not one runaway chain, while the
   other three affected files show exactly one chain each. The reaper is **unchanged** (retaining
   budget-spent rows re-creates the growing dead set `ix_cloud_job_awaiting` scans — the `phaze-9sqa`
@@ -388,8 +347,7 @@ kubectl create namespace phaze
 
 ### 1 — CPU-only ResourceFlavor
 
-essentia analysis is **CPU-bound** — wall-clock is dominated by audio decode + native DSP, not
-TensorFlow inference — so the cluster nodes and Kueue requests target `cpu`/`memory` only (no
+The deployed analysis path uses CPU TensorFlow inference as well as decode and native DSP. Its measured throughput is CPU-bound; this deployment requests `cpu`/`memory` only (no
 GPU/Coral; see [PROJECT.md Key Decisions](../.planning/PROJECT.md)). A "CPU-only" flavor is
 simply a flavor with **no accelerator constraint**. An empty-spec flavor matches any node;
 uncomment `nodeLabels` only to pin the burst to a specific CPU node pool.
@@ -938,6 +896,9 @@ rules:
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["create", "get", "delete"]        # submit_job / get_job / delete_job
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]                           # reconcile_cloud_jobs inspects pod observations
 - apiGroups: ["kueue.x-k8s.io"]
   resources: ["workloads"]
   verbs: ["get", "watch", "list"]           # get_workload_for (.list); get/watch = conservative spec
@@ -969,7 +930,7 @@ roleRef:
 
 The one-shot pod authenticates its `/api/internal/agent/*` callback with a compute-agent bearer
 token — the **same** mechanism as the v5.0 fileserver/compute agents. Mint it on the control
-plane with `phaze agents add --kind compute` (this creates an `Agent` row so the callback
+plane with `phaze agents add --id burst-agent --kind compute` (this creates an `Agent` row so the callback
 authenticates), then paste the token into the Secret. The pod consumes it as **`PHAZE_AGENT_TOKEN`**,
 injected by `envFrom.secretRef` from this Secret — `envFrom` projects each Secret key under its own
 name, so the key below must be spelled exactly that.
@@ -987,7 +948,7 @@ name, so the key below must be spelled exactly that.
 ```bash
 # On the control plane: mint the compute-agent token, then paste it into secret.yaml below.
 # `uv run` is required  — see docs/deployment.md Step 3 for why.
-docker compose exec api uv run phaze agents add --kind compute
+docker compose exec api uv run phaze agents add --id burst-agent --kind compute
 kubectl apply -f secret.yaml
 ```
 
@@ -1131,7 +1092,7 @@ spec:
   accessModes: ["ReadWriteOnce"]   # RWO is enough for the one-time populate below
   resources:
     requests:
-      storage: 2Gi
+      storage: 5Gi  # 3,264,667,851 manifest bytes (3.040458868 GiB), plus provisioning margin
 ---
 # One-time populate Job: mount the SAME claim read-WRITE and run the downloader into /models.
 # Delete this Job once it completes; the analyze pods mount the claim read-only thereafter.
@@ -1156,6 +1117,11 @@ spec:
           persistentVolumeClaim:
             claimName: phaze-essentia-models
 ```
+
+The manifest contains 68 model/config files totalling **3,264,667,851 bytes**
+(**3.040458868 GiB**); the 5Gi example leaves provisioning margin. Read-only pod mounts do not
+change the storage class access-mode rules: a ReadWriteOnce claim does not promise cross-node
+ReadOnlyMany access. Choose a storage class and access mode compatible with the intended node placement.
 
 Then set the backend to reference the claim (a plain object name, **not** a secret):
 
@@ -1282,14 +1248,14 @@ with the per-host SSH steps for the worker host and the control-plane host — i
    ResourceFlavor → ClusterQueue → LocalQueue (runbook §1–§3), against that cluster's context.
 2. **Cluster (operator), per cluster:** `kubectl apply` the namespaced RBAC — ServiceAccount +
    Role + RoleBinding (runbook §4).
-3. **Control plane, per cluster:** mint the compute-agent token (`phaze agents add --kind
+3. **Control plane, per cluster:** mint the compute-agent token (`phaze agents add --id burst-agent --kind
    compute`); paste it into the Secret and `kubectl apply` it (runbook §5). Then `kubectl apply`
    the agent-env ConfigMap and the internal-CA Secret (runbook §6–§7).
 4. **Control plane (the control-plane host):** add a `[[backends]] kind="kueue"` entry (with its
    `[backends.kube]` block + `buckets` list) and the referenced `[[buckets]]` entries to
    `backends.toml` (see the [Backend registry](configuration.md#backend-registry-backendstoml)),
-   then **restart** the controller worker + api — the registry is a startup-read; the running
-   process will not pick up the change until it restarts. `cloud_enabled` becomes True as soon as a
+   then verify the controller/API live reload acknowledgement. Invalid edits retain the last good
+   registry; backend removal follows the in-flight policy in the configuration guide. `cloud_enabled` becomes True as soon as a
    non-local backend is present.
 5. **Smoke test:** run the checklist below.
 

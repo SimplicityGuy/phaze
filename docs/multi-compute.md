@@ -23,17 +23,9 @@ Each long file drains **rank-first**: the lowest-`rank` compute lane with a free
 to the next rank when the preferred lane is at `cap` or offline, and only falls to local under the
 staleness gate (or immediately when every cloud lane is offline).
 
-```mermaid
-flowchart TD
-  cand["long file (cloud_job status='awaiting')<br/>duration ≥ PHAZE_CLOUD_ROUTE_THRESHOLD_SEC"] --> sel["select_backend policy<br/>(rank-first, cap-aware, per candidate)"]
+![Architecture at a glance — the rank-tiered drain](diagrams/multi-compute-1.png)
 
-  sel -->|"1st choice — cheapest"| a1["compute · a1-arm64<br/>RANK 10 · cap 2<br/>free OCI A1 (arm64)"]
-  sel -.->|"spill when a1-arm64 is at cap or offline"| x86["compute · x86-spill<br/>RANK 20 · cap 4<br/>paid/trial x86 box"]
-  sel -.->|"staleness-gated (all cloud FULL, waited)<br/>OR immediate (all cloud OFFLINE)"| local["local<br/>RANK 99 · cap 1<br/>file-server safety net"]
-
-  a1 -->|"rsync-over-SSH push → a1's scratch_dir"| a1host["A1 host<br/>PHAZE_AGENT_QUEUE=phaze-agent-a1-arm64"]
-  x86 -->|"rsync-over-SSH push → x86's scratch_dir"| x86host["x86 host<br/>PHAZE_AGENT_QUEUE=phaze-agent-x86-spill"]
-```
+[Open the interactive-size HTML](diagrams/multi-compute-1.html) · [Download SVG](diagrams/multi-compute-1.svg)
 
 _Two `compute` lanes at **distinct ranks** give you cost-tiering for free: the drain always tries
 `rank 10` (free arm64) first and only reaches `rank 20` (paid x86) when the arm64 lane is full or
@@ -84,8 +76,8 @@ cap = 1
 
 > **Distinct `agent_ref` per lane is load-bearing.** Two compute backends sharing an `agent_ref`
 > **fail fast at boot** — each lane must bind to its own registered `Agent.id`. The registry is
-> **startup-read**: edit the TOML, then restart the control-plane worker + api for it to take
-> effect. An absent `backends.toml` synthesizes an implicit single `local` backend (all-local).
+> **live-reloaded after validation**: edit the TOML and verify the control-plane acknowledgement.
+> Invalid edits retain the last good registry; removals follow the in-flight policy in [configuration.md](configuration.md#backend-registry-backendstoml). An absent `backends.toml` synthesizes an implicit single `local` backend (all-local).
 
 ## Cost-tier rationale
 

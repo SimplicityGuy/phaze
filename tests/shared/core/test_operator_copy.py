@@ -39,6 +39,8 @@ CURRENT_DOCS = (
     "docs/cloud-burst.md",
     "docs/deployment.md",
     "docs/configuration.md",
+    "docs/configuration-inventory.md",
+    "docs/global-tracklist-providers.md",
     "docs/analysis-evaluation-upcloud-runbook.md",
     "docs/agent-queue-lanes.md",
     "docs/arm64-agent-image.md",

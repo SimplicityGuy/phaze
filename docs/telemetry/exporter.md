@@ -262,12 +262,12 @@ curl -s http://localhost:8889/metrics | grep '^phaze_'
 
 **One collector behaviour worth knowing before you size a scrape interval.** The collector's
 Prometheus exporter drops a series it has not seen an update for within its
-`metric_expiration` (**default 5 minutes**), so an analyze Job's final counters disappear
-from the scrape endpoint five minutes after the pod exits. Observed directly while building
-this: 203 phaze series at the endpoint, then zero, with the collector healthy and the
-Prometheus target still `up`. At a 15 s scrape interval Prometheus still catches roughly
-twenty scrapes of the final value, so the default is fine — but a long scrape interval and
-this default together lose whole jobs silently.
+`metric_expiration` (**10 minutes in the committed collector configuration; the upstream default is 5 minutes**), so an analyze Job's final counters disappear
+from the scrape endpoint after ten minutes without another update under the committed policy.
+The original five-minute measurement observed 203 phaze series at the endpoint, then zero, with
+the collector healthy and Prometheus still `up`; its roughly twenty scrapes at a 15 s interval
+are dated evidence of that former policy. A scrape interval must remain comfortably below the
+configured expiration so short-lived jobs are observed.
 
 If nothing appears, check in this order: the endpoint variable is set **in the process that
 does the work** (the worker and the analysis child, not only the api); the collector's log
@@ -292,7 +292,7 @@ Both are artifacts you may adopt; neither is deployed from this repo.
   also resolves the `$job` variable's own query directly against an idle instance (service
   metrics present, no analysis metrics) and fails if the option set is empty or `allValue` is
   missing — run it after `--warm-service-metrics`, before any analysis has completed.
-- **Alert rules** — `alerts/phaze-alerts.yml`, three of them, with four candidates
+- **Alert rules** — `alerts/phaze-alerts.yml`, four of them, with four candidates
   documented for *not* being shipped. `docs/telemetry/alerting.md` has the reasoning and the
   `promtool` commands.
 

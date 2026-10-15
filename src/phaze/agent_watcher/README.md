@@ -14,24 +14,9 @@ The Dockerfile's same image runs both the SAQ agent worker (`uv run saq phaze.ta
 
 ## Event pipeline
 
-```mermaid
-flowchart LR
-    fs[("scan_roots<br/>(filesystem)")]
-    obs["watchdog Observer<br/>/ PollingObserver"]
-    handler["WatcherEventHandler<br/>(observer.py)"]
-    deb["Debouncer.touch<br/>(debouncer.py)"]
-    sweep["_sweep_loop<br/>(__main__.py)"]
-    poster["Poster.post_one<br/>(poster.py)"]
-    api["POST /api/internal/agent/files<br/>(application server)"]
+![Event pipeline](../../../docs/diagrams/watcher-events.png)
 
-    fs -- "fs events" --> obs
-    obs -- "on_created / on_modified" --> handler
-    handler -- "touch(path)" --> deb
-    sweep -- "poll every<br/>sweep_interval_seconds" --> deb
-    deb -- "mtime settled<br/>(settle_period)" --> sweep
-    sweep -- "settled path" --> poster
-    poster -- "HTTP POST" --> api
-```
+[Open the interactive-size HTML](../../../docs/diagrams/watcher-events.html) · [Download SVG](../../../docs/diagrams/watcher-events.svg)
 
 ## Fresh Install Quickstart
 
@@ -82,11 +67,11 @@ The watcher requires a registered agent in the `agents` table. On a brand-new do
 ## Optional tunable env vars
 
 - `PHAZE_WATCHER_SETTLE_SECONDS=10` -- seconds of mtime stability before posting (D-01)
-- `PHAZE_WATCHER_MAX_PENDING_SECONDS=3600` -- stuck-file cap; entries older than this are evicted without posting (D-02)
+- `PHAZE_WATCHER_MAX_PENDING_SECONDS=3600` -- captured pending-age window; the first crossing starts one grace window, and the second crossing evicts without posting
 - `PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS=2` -- sweep task cadence
 - `PHAZE_WATCHER_POLLING_MODE=false` -- when `true`, use watchdog's `PollingObserver` instead of the native inotify `Observer`. Required for macOS docker bind mounts (rancher-desktop / Docker Desktop) where inotify events do not propagate through 9p/virtiofs. Adds modest CPU overhead (polls each `watcher_sweep_interval_seconds`) but works on any filesystem.
 - `PHAZE_SCAN_CHUNK_SIZE=500` -- used by `scan_directory` task (not the watcher itself, but shared AgentSettings field)
-- `PHAZE_LOG_LEVEL=INFO` -- root log level (`DEBUG`|`INFO`|`WARNING`|`ERROR`); set `DEBUG` to see each settled-file post in detail
+- `PHAZE_LOG_LEVEL=INFO` -- root log level (`DEBUG`|`INFO`|`WARNING`|`ERROR`|`CRITICAL`); set `DEBUG` to see each settled-file post in detail
 - `PHAZE_LOG_JSON` -- `true`=JSON, `false`=console, unset=auto (JSON when stdout is not a TTY)
 
 ## Logging

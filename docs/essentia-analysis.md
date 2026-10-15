@@ -59,8 +59,7 @@ ______________________________________________________________________
 
 ## 🗺️ Where essentia is used
 
-The entire essentia **compute** surface is one module: `src/phaze/services/analysis.py`.
-Everything else that mentions essentia is plumbing:
+`src/phaze/services/analysis.py` coordinates the public analysis interface. `analysis_decoder.py` owns streaming decode and teardown, `analysis_windows.py` owns window geometry/reductions, `analysis_models.py` owns selected model lifetimes, and `analysis_derive.py` owns derived outputs. The public facade preserves established imports. Other boundaries include:
 
 | File | Role (no DSP) |
 | ---- | ------------- |
@@ -68,7 +67,7 @@ Everything else that mentions essentia is plumbing:
 | `src/phaze/tasks/_shared/model_bootstrap.py` | Worker-boot validator: every manifest file present at its pinned size, or exit naming the directory and the missing files. Never downloads |
 | `src/phaze/services/kube_staging.py` | Mounts the read-only models PVC at `/models` for Kueue Jobs |
 | `src/phaze/schemas/agent_tasks.py`, `tasks/functions.py`, `job_runner.py` | Carry `models_path`; defer the heavy import to call time |
-| `src/phaze/analysis_child.py`, `src/phaze/services/analysis_exec.py` | analysis subprocess subprocess boundary: `analyze_file()` now runs in a real child process (`python -m phaze.analysis_child`), spawned by the shared parent driver, so essentia's C++ never holds the parent asyncio event loop's GIL |
+| `src/phaze/analysis_child.py`, `src/phaze/services/analysis_exec.py` | analysis subprocess boundary: `analyze_file()` now runs in a real child process (`python -m phaze.analysis_child`), spawned by the shared parent driver, so essentia's C++ never holds the parent asyncio event loop's GIL |
 
 `analyze_file()` in `analysis.py` runs **two passes per file**, analyzing one short window
 at a time (so no essentia algorithm ever sees more than one window — the architecture that
@@ -112,8 +111,8 @@ released and `malloc_trim`ed before coarse starts).
 Two costs are paid for that, both deliberate and both documented in the chunked-analysis decision record
 above `_FINE_CHUNK_WINDOWS`:
 
-- each of the 34 TF graphs is constructed once per COARSE CHUNK rather than once per file
-  (the model-major inference model-major invariant — never more than one graph resident — is unchanged);
+- each selected TF graph is constructed once per COARSE CHUNK rather than once per file (12 by default; 34 in rollback mode)
+  (the model-major inference invariant — never more than one graph resident — is unchanged);
 - each chunk needs its own decode pass, because `MonoLoader` cannot seek. Non-final chunks
   interpose a `Trimmer` directly on the loader so the decode stops at the chunk boundary. That
   gate **is** taken on the deployed essentia — measured, zero fallbacks, full window sets — and is
@@ -123,10 +122,10 @@ above `_FINE_CHUNK_WINDOWS`:
   full run it instead *falls* as chunk index rises, and the ungated final chunk, which decodes the
   whole file, is consistently the **cheapest** chunk of all (the exhaustive analysis measurement §4b, §4d).
 
-> **⚠️ Measured on real hardware, and the table above does NOT describe the process.**
+> **Dated pre-fix memory evidence — 2026-08-12.**
 > the exhaustive analysis measurement (2026-08-12, [report](spikes/phaze-b2qs9-exhaustive-analysis-measurement.md)) ran
-> the shipped code on vox against real corpus audio from 1:00 to 12:04. The per-chunk PCM figures
-> are correct as *live working set*. **Whole-process peak RSS is not bounded by them and grows
+> the shipped code on host-store against real corpus audio from 1:00 to 12:04. The per-chunk PCM figures
+> are correct as *live working set*. **The then-measured whole-process peak RSS grew
 > linearly with duration** — `peak_after_fine_tier ≈ 0.7634 + 0.3108 × n_fine_chunks` GiB
 > (R² 0.99959), i.e. **+0.31 GiB for every 30 minutes of audio**, measured end-to-end at
 > **2.1107 / 2.9287 / 4.1854 / 5.5211 GiB** for 1:00 / 2:00 / 4:00 / 5:38 files. The last two are
@@ -134,8 +133,9 @@ above `_FINE_CHUNK_WINDOWS`:
 > is an `OOMKilled` pod, not a slow one. The synthetic test
 > (`tests/analyze/services/pipeline/test_analysis_long_file.py`) proves the shape of a **mocked**
 > essentia and does not hold on the real one. Coverage itself is unaffected and was verified
-> exhaustive and complete on every measured file. Fixing this is a follow-up, not something this
-> page's numbers should be quietly adjusted around.
+> exhaustive and complete on every measured file. These exact pre-fix measurements are retained as history.
+
+Current streaming teardown explicitly disconnects in the decoder `finally`, releases the decoder frame before collection, and trims freed memory where supported. This closes the measured duration-linear retention path. PCM remains chunk-bounded, model graphs remain model-major, and liveness remains progress-based. See `analysis_decoder.py` and the real streaming-decode consumer tests; the old RSS numbers above are not a measurement of the repaired implementation.
 
 ### Liveness is progress-based, never wall-clock
 
@@ -212,7 +212,7 @@ Corollaries already settled in prior investigation:
 > **⚠️ Half of this section is now falsified — measured, twice, on the Linux burst node.**
 > The claim that TF inference is "a negligible slice" was never measured; it is wrong, and it
 > was wrong even when written. Measured `analyze_file()` on a 60-minute file at production caps
-> (vox, deployed image, synthetic audio):
+> (host-store, deployed image, synthetic audio):
 >
 > | | before streaming decode | after streaming decode |
 > | --- | ---: | ---: |

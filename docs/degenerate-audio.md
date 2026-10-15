@@ -79,8 +79,7 @@ not a full `analyze_file` reproduction or a representative measurement of musica
 
 ## Current sentinel paths
 
-`derive_style` returns `"unknown"` when its predictions are empty. `derive_mood` starts
-with `best_mood = ""` and returns that empty string when no populated mood set is present.
+`derive_style` and `derive_mood` return `None` for empty predictions. The stored unknown/empty values counted in the dated observation above remain historical evidence, not the current empty-result contract.
 `aggregate_bpm` excludes confidence-zero windows, while window payloads omit confidence.
 
 Chunked analysis, progress-based stall liveness, streaming teardown, and payload bounds remain

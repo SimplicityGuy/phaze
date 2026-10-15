@@ -1,0 +1,2833 @@
+{
+  "guide_records": 90,
+  "numeric_preservation": [
+    {
+      "added_numeric_tokens": {
+        "08": 1,
+        "12": 2,
+        "2026": 1
+      },
+      "path": "docs/essentia-analysis.md",
+      "removed_numeric_tokens": {}
+    },
+    {
+      "added_numeric_tokens": {},
+      "path": "docs/degenerate-audio.md",
+      "removed_numeric_tokens": {}
+    },
+    {
+      "added_numeric_tokens": {},
+      "path": "docs/stranded-analysis-recovery.md",
+      "removed_numeric_tokens": {}
+    },
+    {
+      "added_numeric_tokens": {
+        "12": 1
+      },
+      "path": "docs/telemetry/traces.md",
+      "removed_numeric_tokens": {}
+    },
+    {
+      "added_numeric_tokens": {},
+      "path": "docs/telemetry/alerting.md",
+      "removed_numeric_tokens": {}
+    },
+    {
+      "added_numeric_tokens": {
+        "10": 1
+      },
+      "path": "docs/telemetry/exporter.md",
+      "removed_numeric_tokens": {}
+    }
+  ],
+  "phase": "implementation review; final sidebar integration pending",
+  "preflight_source_revision": "ac7b3b6cabc334d7097d7352cd6d2a9d3c67b3dd",
+  "records": [
+    {
+      "command_preservation": [],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/analysis.py:533",
+        "src/phaze/services/analysis.py:547",
+        "src/phaze/services/analysis.py:563",
+        "src/phaze/services/analysis_decoder.py",
+        "src/phaze/services/analysis_windows.py",
+        "src/phaze/services/analysis_derive.py",
+        "src/phaze/services/analysis_exec.py:run_analysis_subprocess",
+        "src/phaze/models/analysis.py:140",
+        "alembic/versions/066_drop_analysis_window_camelot.py",
+        "tests/analyze/services/pipeline/test_analysis_streaming_decode.py",
+        "tests/analyze/services/pipeline/test_analysis_long_file.py",
+        "tests/analyze/services/backends/test_analysis_model_major.py"
+      ],
+      "findings": [
+        {
+          "claim": "Entire essentia compute surface is one module; everything else only plumbing",
+          "replacement": "analysis.py coordinates; analysis_decoder.py owns streaming decode; analysis_windows.py owns geometry/reductions; analysis_derive.py owns output derivation. Preserve analysis.py public re-exports."
+        },
+        {
+          "claim": "Current coverage memory section calls process RSS duration-linear and fix a follow-up",
+          "replacement": "Retain exact dated pre-fix measured values as historical evidence; describe current explicit disconnect in decoder finally plus GC outside decoder frame and malloc trim. D-09 closes duration-linear buffer retention; chunk and model lifetimes bound working memory."
+        },
+        {
+          "claim": "34 graph constructions per chunk without default qualification",
+          "replacement": "Active model selection controls sweep count; current default 12 vs all rollback 34. Preserve old 34-model timings and make measurement mode explicit, not recomputed."
+        },
+        {
+          "claim": "AnalysisWindow.camelot is added and derived as persisted projection",
+          "replacement": "066 drops persisted camelot; read-time property computes from musical_key. energy/mood_scores remain persisted, SetProfile modal Camelot separately stored."
+        },
+        {
+          "claim": "review branch / candidate prose describes default already present in baseline",
+          "replacement": "Separate shipped current design from September candidate measurements. Keep all measured quantities exact; settings activation wording must be finalized after config dependency."
+        },
+        {
+          "claim": "Current recommendations repeat TF negligible after their own correction",
+          "replacement": "Keep original dated recommendation as archived analysis with clear superseded status; provide current implementation summary above it without rewriting the old experiment."
+        },
+        {
+          "claim": "Exhaustive windows, chunk sizes, subprocess isolation and stall-only liveness",
+          "replacement": "No semantic correction; retain. Distinguish any-output watchdog activity from per-window UI progress."
+        }
+      ],
+      "path": "docs/essentia-analysis.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Full guide read, historical-vs-current boundary reviewed",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "BEGIN READ ONLY;",
+        "COMMIT;"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/analysis_derive.py:56",
+        "src/phaze/services/analysis_derive.py:85",
+        "src/phaze/services/analysis.py",
+        "src/phaze/services/analysis_windows.py:aggregate_bpm",
+        "tests/analyze/services/pipeline/test_analysis_degenerate.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current sentinel paths says derive_style returns unknown and derive_mood empty string",
+          "replacement": "Those are pre-fix paths. Current analysis_derive returns None for empty predictions/no mood. Rename section to pre-fix sentinel paths or replace current description while preserving experiment."
+        },
+        {
+          "claim": "Completed NULL-valued windows retained; zero rhythm confidence/key strength absent; negligible PCM cutoff 1e-5",
+          "replacement": "No semantic correction; retain and cite implementation/test. Do not rewrite historic 643789/55/112/76 counts as current populations."
+        },
+        {
+          "claim": "Focused test pass counts describe historical execution",
+          "replacement": "Keep exact counts and date; do not present as tests re-run during documentation migration."
+        }
+      ],
+      "path": "docs/degenerate-audio.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections; dated experiment vs current behavior",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run phaze backfill recover-stranded-analyses",
+        "--enqueue"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/stranded_analysis_recovery.py:_STRANDED_KEYS_SQL",
+        "src/phaze/tasks/reenqueue.py:88",
+        "src/phaze/services/pipeline/orphans.py",
+        "src/phaze/enums/stage.py",
+        "src/phaze/cli",
+        "tests/analyze/recovery_cloud"
+      ],
+      "findings": [
+        {
+          "claim": "Derived file state remains discovered",
+          "replacement": "Current vocabulary has derived per-stage status, no file state enum. Incomplete analysis with no in-flight ledger resolution must be described through current resolver, not discovered as a stored file state."
+        },
+        {
+          "claim": "Current rail span both removed in October and confirmed deployed at paragraph end",
+          "replacement": "Keep September deployment observation as dated; current Summary Needs Attention/workspace recovery replaces rail badge. Do not imply removed span exists in current deployment."
+        },
+        {
+          "claim": "It still returns 661",
+          "replacement": "Label 661 as 2026-09-21 snapshot. No current production claim made during docs review; count-only CLI must be re-run by operator before scheduling."
+        },
+        {
+          "claim": "Targeted command defaults read-only and uses exact keys",
+          "replacement": "No semantic correction. Selector requires incomplete/unfailed, completed fine tier, ledger key, no cloud/live job/executed proposal; recovery accepts only_keys and preserves owner affinity."
+        }
+      ],
+      "path": "docs/stranded-analysis-recovery.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "now()",
+        "docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain",
+        "docker compose -f docker-compose.agent.yml --profile drain rm -sf worker-drain"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/enqueue_router.py:95",
+        "src/phaze/tasks/agent_worker.py:345",
+        "src/phaze/tasks/agent_worker.py:606",
+        "src/phaze/tasks/_shared/live_worker.py",
+        "src/phaze/services/analysis_sizing.py",
+        "docker-compose.agent.yml",
+        "docker-compose.cloud-agent.yml",
+        "tests/agents/tasks/test_agent_worker_lanes.py",
+        "tests/integration/test_agent_heartbeat_lane_merge_concurrency.py"
+      ],
+      "findings": [
+        {
+          "claim": "Meta lane table lists six functions",
+          "replacement": "Canonical LANE_TASKS meta also has capture_companion_source, extract_companion_features, quarantine_companion. Refresh table from final source."
+        },
+        {
+          "claim": "WORKER_MAX_JOBS=1 is inert in lane mode",
+          "replacement": "It clamps via min(lane knob,worker_max_jobs); keep explicit lane pin if desired but do not call lower ceiling inert. Earlier ceiling explanation is correct."
+        },
+        {
+          "claim": "Status says implemented but not deployed; historical host-default counts described as current",
+          "replacement": "Describe repository deployment topology only; retain past incident quantities as dated. Current deployment cannot be inferred from source."
+        },
+        {
+          "claim": "analysis lane default and worker memory example universal",
+          "replacement": "Differentiate physical-core derived default from historical named-host measurement and current explicit compose override. Settings activation finalized after config lands."
+        },
+        {
+          "claim": "Lane heartbeat / HTTP application state / Postgres broker boundaries",
+          "replacement": "Retain source-proven distinction; transitional drain must not double-dispatch active legacy queue jobs."
+        }
+      ],
+      "path": "docs/agent-queue-lanes.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections read; lane map/concurrency checked",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run python -m phaze.agent_watcher",
+        "docker compose -f docker-compose.agent.yml logs --tail=20 watcher"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/agent_watcher/observer.py",
+        "src/phaze/agent_watcher/debouncer.py",
+        "src/phaze/agent_watcher/poster.py",
+        "src/phaze/agent_watcher/__main__.py",
+        "src/phaze/services/agent_bootstrap.py:155",
+        "src/phaze/services/agent_bootstrap.py:239",
+        "tests/discovery/test_watcher_moves_end_to_end.py",
+        "tests/shared/core/test_task_split.py"
+      ],
+      "findings": [
+        {
+          "claim": "Watcher endpoint, debounce and no startup catchup",
+          "replacement": "Retain, source-check observer/debouncer/poster/main and tests; manual Discover scan fills downtime gaps."
+        },
+        {
+          "claim": "Diagram event flow omits moved event handling",
+          "replacement": "Confirmed on_moved feeds Debouncer.move(src,dest), carries prior-path lineage and posts settled destination for controller row repointing. Include move destination/lineage and quarantine exclusion in diagram fidelity ledger."
+        },
+        {
+          "claim": "Fresh install sample assumes app and agent compose API hostname networking",
+          "replacement": "Verify final deploy example network reachability before blessing http://api:8000 across separate compose projects. Keep host/container URL distinction explicit; exact env defaults wait for config/copy integration."
+        },
+        {
+          "claim": "Empty seed token logs generated token at INFO",
+          "replacement": "Source confirms ensure_dev_agent prints initial provisioned token; do not remove executable bootstrap guidance or paste real secrets in docs. Label dev-only and recommend normal agent provisioning."
+        },
+        {
+          "claim": "Max-pending entries older than3600 evicted without posting",
+          "replacement": "Current Debouncer gives one grace extension at first cap crossing and evicts only after two consecutive max_pending windows without settling; touch never resets grace flag. Do not promise a single-window hard eviction."
+        }
+      ],
+      "path": "src/phaze/agent_watcher/README.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections read; provider/config fields not finalized",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "docker compose -f docker-compose.telemetry.example.yml up -d",
+        "export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318",
+        "open http://localhost:3000"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/analysis_exec.py",
+        "src/phaze/analysis_child.py",
+        "src/phaze/services/analysis.py:794",
+        "src/phaze/telemetry/bootstrap.py",
+        "tests/shared/telemetry/test_trace_context_across_exec.py",
+        "tests/shared/telemetry/test_span_budget.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current model_sweep row states 34 per coarse chunk",
+          "replacement": "State one per active model per coarse chunk: default 12, rollback 34. Preserve 45-span 2026-08-27 trace as a real 34-model observation."
+        },
+        {
+          "claim": "Always-on budget table presented without model mode date",
+          "replacement": "Explicitly label arithmetic as historical 34-model corpus calculation; do not replace exact 46/306/388/566073 values with invented measurements for current default."
+        },
+        {
+          "claim": "One trace crosses exec; no per-window spans; file identity absent metric labels",
+          "replacement": "No semantic correction. Preserve bounded slot identities and trace-only identifiers."
+        }
+      ],
+      "path": "docs/telemetry/traces.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections read; current generic emission versus dated trace",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "$HOME",
+        "scripts/measure_concurrent_identity.py"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/telemetry/slots.py",
+        "src/phaze/telemetry/bootstrap.py:_instance_id",
+        "src/phaze/tasks/agent_worker.py:429",
+        "tests/shared/telemetry/test_telemetry_slots.py",
+        "tests/analyze/services/test_burst_telemetry_slots.py"
+      ],
+      "findings": [
+        {
+          "claim": "Shared identity counter corruption; bounded per-slot identity fix; rejected delta configuration",
+          "replacement": "No rewrite to experiment; preserve all schedules, exact counts, percentages, SDK/collector versions and negative results."
+        },
+        {
+          "claim": "Current host slot pool / burst slot assignment / reserved lane identities",
+          "replacement": "Source supports bounded slots and burst namespace. Current settings reload detail pending config integration; historical experiment does not become proof of every new lifecycle path."
+        }
+      ],
+      "path": "docs/telemetry/concurrent-identity.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Dated collector experiment and current follow-up sections",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "scripts/telemetry_overhead.py",
+        "--file",
+        "git hash-object"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/services/analysis.py",
+        "src/phaze/telemetry/bootstrap.py:shutdown_telemetry",
+        "scripts/telemetry_overhead.py",
+        "docs/spikes/phaze-u1n7j-host-compute-fix-verification.md"
+      ],
+      "findings": [
+        {
+          "claim": "Multi-hour pair is running and outstanding, indefinitely",
+          "replacement": "This is a dated 2026-08-26 evidence state, not current running work. Retain exact 59m39s measurement and state no later result established by this review; investigate repository evidence before marking criterion complete."
+        },
+        {
+          "claim": "Model sweep/inference arithmetic uses 34 models as general current contract",
+          "replacement": "Label arithmetic for measured 34-model configuration. Current default 12 does not license scaling measured wall/RSS numbers."
+        },
+        {
+          "claim": "Python3.13 job-image note could look like current runtime recommendation",
+          "replacement": "Explicit historical environment caveat; current supported runtime is 3.14. Preserve the failed AST-identity lesson and original measurement environment."
+        },
+        {
+          "claim": "Fine windows equal ceil(d/30) universally",
+          "replacement": "Current geometry drops trailing fine remainder shorter than15s except first window; coarse emits every audio-bearing window. Preserve old recorded count tables as measurement evidence; current formula must express this natural-window rule."
+        }
+      ],
+      "path": "docs/telemetry/overhead.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Dated measurement provenance and current/pending claims",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.internal:4318",
+        "docker compose -f docker-compose.telemetry.example.yml up -d",
+        "curl -s http://localhost:8889/metrics"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/telemetry/bootstrap.py",
+        "src/phaze/telemetry/slots.py",
+        "deploy/telemetry/otel-collector.example.yaml:43",
+        "alerts/phaze-alerts.yml",
+        "tests/shared/telemetry/test_telemetry_bootstrap.py",
+        "tests/shared/telemetry/test_export_timeout_units.py",
+        "tests/shared/telemetry/test_telemetry_never_breaks_analysis.py"
+      ],
+      "findings": [
+        {
+          "claim": "Three alert rules",
+          "replacement": "Four rules currently in alerts/phaze-alerts.yml, including PhazeJunkReviewExecutionStuck; distinguish three analysis rules from total."
+        },
+        {
+          "claim": "Collector series expire after five minutes in example stack",
+          "replacement": "Five minutes is documented upstream default; committed example explicitly metric_expiration:10m. Describe example actual ten minutes; historical observed five-minute disappearance stays dated if retained."
+        },
+        {
+          "claim": "One complete current trace cannot be truncated because corpus maximum388 < queue2048",
+          "replacement": "Keep historical measured maximum/model mode; bounded per-process queue and rejected oldest exports do not universally guarantee no current trace truncation for arbitrary future file duration or unavailable collector. Qualify to observed corpus and current operation budgets."
+        },
+        {
+          "claim": "Host/burst namespaces, per-host stable identity, no per-pod metric dimension; no endpoint disables SDK",
+          "replacement": "No semantic correction, supported by bootstrap/slots. Preserve multi-host requirement and inability of force_flush success to prove collector delivery."
+        }
+      ],
+      "path": "docs/telemetry/exporter.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections read",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "prom/prometheus:v3.10.0",
+        "check rules /alerts/phaze-alerts.yml",
+        "test rules /alerts/phaze-alerts.test.yml"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "alerts/phaze-alerts.yml:40",
+        "alerts/phaze-alerts.yml:83",
+        "alerts/phaze-alerts.yml:114",
+        "alerts/phaze-alerts.yml:151",
+        "tests/shared/telemetry/test_alert_rules.py",
+        "alerts/phaze-alerts.test.yml"
+      ],
+      "findings": [
+        {
+          "claim": "Opening says three survive though title and added junk section total four",
+          "replacement": "Three measured analysis rules plus one explicitly chosen junk-review triage rule: four total. Preserve origin of every threshold."
+        },
+        {
+          "claim": "RSS selector scopes alert to Linux pod by analysis service",
+          "replacement": "Source selector job=~phaze/phaze-analysis.* also matches host analysis identities; it does not establish Linux/cgroup scope. Document deployment-side scoping requirement, or explicitly resolve desired supported filter; do not claim current enforcement."
+        },
+        {
+          "claim": "Rule must not derive outage from absence, backlog depth or analysis elapsed runtime",
+          "replacement": "Retain; alert source and focused tests support it. Historical accepted drain rate does not prove future observed health."
+        },
+        {
+          "claim": "promtool tests and adoption commands",
+          "replacement": "Keep real consumer validation commands and operator-owned deployment boundary; no production alert provisioning performed."
+        }
+      ],
+      "path": "docs/telemetry/alerting.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections read",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run",
+        "docker compose exec api uv run phaze queue status",
+        "docker compose exec api uv run phaze backfill reenqueue-incomplete-analyses",
+        "now()",
+        "COMMIT;",
+        "ROLLBACK",
+        "scheduling_ledger"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/tasks/reenqueue.py:88",
+        "src/phaze/services/stranded_analysis_recovery.py",
+        "src/phaze/tasks/execution_filesystem.py",
+        "src/phaze/tasks/_saq_reap.py",
+        "src/phaze/services/reanalysis_backfill.py",
+        "src/phaze/routers/pipeline/recovery.py",
+        "src/phaze/database.py",
+        "src/phaze/main.py:177"
+      ],
+      "findings": [
+        {
+          "claim": "SAQ active-key manual DELETE can run based on stale row status alone",
+          "replacement": "Require proving no worker can still execute/report, quiesce owning consumer/recovery/dispatch and inspect state before vacating active key; preserve ledger row. Status/age alone is not safe to authorize duplicate filesystem work."
+        },
+        {
+          "claim": "Migration runs automatically and unconditionally though text names AUTO_MIGRATE gate",
+          "replacement": "Do not assert schema guarantee for deployments with auto migration disabled; require explicit migration-head confirmation before command. Final implementation behavior of database.run_migrations must be cited."
+        },
+        {
+          "claim": "Public operative sections embed phase/bead/version vocabulary and one-time migration tasks",
+          "replacement": "Use current functional names for routine operation; keep one-time destructive/fingerprint cleanup clearly historical/manual with existing safety instructions and evidence links."
+        },
+        {
+          "claim": "Junk-review executing recovery proves job absence, owner state, durable ledger and quiescence before manual reset",
+          "replacement": "No semantic weakening. Keep transaction with now(), psql review_id variable, locks, no-job/no-ledger guards, exact-status predicate and whole-approved-set dispatch caveat."
+        },
+        {
+          "claim": "Whole-ledger force recovery vs targeted stranded command",
+          "replacement": "Retain distinction: force only bypasses empty-queue detection, only_keys scopes exact ledger set; preserve owner affinity and executed-move exclusion."
+        }
+      ],
+      "path": "docs/runbook.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All text read; force-local/spill defaults require final config source",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/tasks/execution_filesystem.py:move",
+        "src/phaze/tasks/execution_filesystem.py:_move_across_filesystem",
+        "src/phaze/tasks/_shared/queue_factory.py",
+        "src/phaze/enums/stage.py",
+        "src/phaze/services/stage_status.py",
+        "tests/review/tasks/test_execution_filesystem_engine.py",
+        "tests/review/tasks/test_execution_commit_marker_durability.py",
+        "tests/shared/core/test_task_split.py",
+        "src/phaze/services/agent_task_router.py:queue_for",
+        "src/phaze/services/enqueue_router.py:95",
+        "src/phaze/services/pipeline_counters.py:33",
+        "src/phaze/tasks/_shared/deterministic_key.py:104",
+        "src/phaze/tasks/_shared/model_bootstrap.py",
+        "src/phaze/templates/shell/partials/header.html:67",
+        "src/phaze/templates/shell/partials/rail.html",
+        "src/phaze/services/pipeline/stages.py",
+        "src/phaze/services/companion_view.py",
+        "src/phaze/tasks/release_awaiting_cloud.py"
+      ],
+      "findings": [
+        {
+          "claim": "Universal copy then source-verify then delete",
+          "replacement": "Separate same-filesystem atomic publication from cross-filesystem bounded staged copy. Verify original identity; verify published cross-FS destination; durable proposal marker/fsync before unlink; replay requires corroboration."
+        },
+        {
+          "claim": "Six stages described but stage diagram skips tracklist and implies auto chain",
+          "replacement": "Include tracklist enrichment/selection and label stages operator-triggered; stage output relationships are not implicit automatic enqueue edges."
+        },
+        {
+          "claim": "Agent no application ORM, direct Postgres broker and Redis cache",
+          "replacement": "No semantic correction; preserve exact boundary and source evidence on every edge."
+        },
+        {
+          "claim": "Control plane owns one unsuffixed queue peragent; agent9tasks",
+          "replacement": "Actual cache keys(agent_id,lane), three lane queues and read-only legacybase visibility; LANE_TASKS union baseline12tasks. Refresh canonical finalregistry without hardcoded stale9."
+        },
+        {
+          "claim": "Agent startup downloads missingweights",
+          "replacement": "Current startup validates pinnedsize manifest and exits ifmissing; modelprovision explicit, no runtime download."
+        },
+        {
+          "claim": "7-name counter namespace and9-task keyregistry",
+          "replacement": "Actual PIPELINE_FUNCTIONS has6names atbaseline; _KEY_BUILDERS13. Avoid duplicated fixedcounts unless guard derives; explain keyedtasks versus instrumented subset."
+        },
+        {
+          "claim": "Perstage degrade uses rollback",
+          "replacement": "Source uses nestedSAVEPOINT to avoid fullsession rollback expiry. Keep current transaction safety explanation consistent with its own UntrustedInput section."
+        },
+        {
+          "claim": "Architecture backendgraph compute\u2192S3B",
+          "replacement": "ComputeAgentBackend transports via rsync/pushscratch; Kueue stages via configured S3buckets. Remove false compute\u2192S3 dependency, preserve legitimate sharedbucket Kueue topology and label ownership."
+        },
+        {
+          "claim": "Everyfile routes local immediately under force-local",
+          "replacement": "New enqueues route local; drain noops, existingawaiting remainheld. Correct blanket claim and diagram guard; configpane control owns write, header shows readonlywarning."
+        },
+        {
+          "claim": "Header interactiveforce-local pill and Agentdot; railcount14then13",
+          "replacement": "Current header includes readonly _routing_override_warning, Configgear edits override; agentOnline count in rail. Actual nav_link calls14, including Junkreview. Use functional destinations and source-current count, remove selfcontradictory history."
+        },
+        {
+          "claim": "services all FastAPIrequestfree",
+          "replacement": "companion_view imports Request/HTMLResponse/Jinja2Templates; describe pragmatic domain vs presentationadapters, not universal enforcedlayering."
+        },
+        {
+          "claim": "StoredAnalysisWindow.camelot column",
+          "replacement": "Readtime property after066; energy/moodpersisted. Keep exact schema distinction."
+        },
+        {
+          "claim": "All agentHTTP under13routers",
+          "replacement": "Newcapture/config/junk/local companion APIs expand roster. Generate finalroute module inventory or omit rigidcount; tokenowned agentid boundary remains."
+        },
+        {
+          "claim": "WireText noDoScap",
+          "replacement": "Retain widthvswork distinction explicitly; companioncapture path/text cap is intentionalbounded work even mappedText, as source contract explains."
+        }
+      ],
+      "path": "docs/architecture.md",
+      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All837lines read; source-traced routing/queue/UI/counters/bounds/execution; not an assertion everyclaimverified",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "updated against current source",
+      "evidence": [
+        "tests/db_guard.py",
+        "tests/conftest.py",
+        "scripts/redis-seat-registry.sh",
+        "scripts/derive-seat-name.sh",
+        "scripts/parallel_test_runner.py",
+        "justfile",
+        "tests/shared/scripts/test_caller_seat_lanes.py"
+      ],
+      "findings": [
+        {
+          "claim": "One Postgres DB per pytest process, Postgres+Redis seat isolation and lock-header evidence",
+          "replacement": "Retain; db_guard uses session lock and fails loudly, collect-only exception distinct; tests ports distinguish developer5432 from harness5433 with explicit override behavior."
+        },
+        {
+          "claim": "Commands, exact path and function syntax in long incident record",
+          "replacement": "Protect machine instruction paths and now()/desc()/all() examples; identifiers in user-provided instruction paths are not archive identifiers. Keep exact log/pytest/coverage evidence distinctions."
+        }
+      ],
+      "path": "docs/gates-and-isolation.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Instruction summaries and matching DB/seat source inspected; 1785-line guide not fully reviewed",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run python scripts/measure_metric_contract.py --minutes 30 --models-dir",
+        "measurements/analysis-run.json",
+        "measurements/metric-contract-2026-08-26.md"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/telemetry/catalogue.py:233",
+        "src/phaze/telemetry/catalogue.py:242",
+        "src/phaze/telemetry/catalogue.py:678",
+        "tests/shared/telemetry/test_metric_catalogue.py",
+        "deploy/telemetry/otel-collector.example.yaml:43",
+        "src/phaze/telemetry/slots.py"
+      ],
+      "findings": [
+        {
+          "claim": "Catalogue current table has28 metrics and8612 series ceiling",
+          "replacement": "No semantic correction at baseline: importing pure catalogue module computes28 and8612, table kinds/combinations/counts match. Keep ceiling as supported registry budget, distinct from observed default12-model series."
+        },
+        {
+          "claim": "Opening says exactly34 models",
+          "replacement": "At most34 supported rollback combinations, default12 active. Later arithmetic already distinguishes12/34; make opening consistent."
+        },
+        {
+          "claim": "Five ladders and BUCKETS_MODEL_OP table row",
+          "replacement": "Current source has seven ladders including separate BUCKETS_GRAPH_OP and BUCKETS_INFERENCE. Replace stale combined MODEL_OP with exact current ranges/consumers; preserve old measured distributions as dated."
+        },
+        {
+          "claim": "5-minute disappearance in committed example",
+          "replacement": "Current example sets10m explicitly; retain observed default5m disappearance as dated experiment and clarify changed example."
+        },
+        {
+          "claim": "Current deployment host/burst slot caps4+4",
+          "replacement": "This is a configuration example/historical measurement; actual ceiling formula remains2290\u00d7(host slots+sum burst caps) plus non-analysis budget. Do not assert live deployed cap from repository review."
+        },
+        {
+          "claim": "Every metric and label bound documented; forbidden file identifiers",
+          "replacement": "No semantic correction. Preserve catalogue ownership, strict instrumentation policy and separate trace identity; do not remove hard metric-ceiling guard while removing unrelated fixed diagram-count guard."
+        }
+      ],
+      "path": "docs/telemetry/metric-catalogue.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections; runtime contract vs dated collector experiment",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "just install",
+        "just download-models models",
+        "just up",
+        "curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health",
+        "just repowise-coverage my-seat"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "justfile:168",
+        "justfile:196",
+        "docker-compose.yml:180",
+        "src/phaze/services/agent_task_router.py",
+        "src/phaze/tasks/_shared/queue_factory.py",
+        "docs/design/0002-fingerprint-removal.md",
+        "src/phaze/services/pipeline/proposals.py",
+        "src/phaze/services/companion_autolink.py"
+      ],
+      "findings": [
+        {
+          "claim": "Core authorization boundary, exact hashes vs retired acoustic fingerprinting",
+          "replacement": "Retain human approve then explicit apply boundary, tag-write separation, exact-SHA dedupe. Audio fingerprints removed; chromaprint retained permanently by operator decision, not an active feature or cleanup candidate."
+        },
+        {
+          "claim": "Redis prose and Valkey9 diagram",
+          "replacement": "Clarify Redis-compatible client/protocol/service redis, implementation Valkey9. Declared production/harness/CI pins agree; this dispatch actually reuses a protected older Redis7 container per root evidence, which is validation limitation, not tracked source mismatch."
+        },
+        {
+          "claim": "just install synchronizes then builds CSS",
+          "replacement": "Current install depends setup then tailwind: sync before CSS. Do not invert order in quick-start."
+        },
+        {
+          "claim": "Topology drawing omits agent cache connections and collapses API vs controller custody",
+          "replacement": "Preserve accurate broker/ORM boundary; replacement manifest explicitly cite agent cache_redis edges and authenticated results/watcher API. Do not imply automatic stage chaining."
+        },
+        {
+          "claim": "Recovery-only automatic enqueues claim broad",
+          "replacement": "Check wording against automatic companion association/import triggers and drain; constrain to stage advancement policy, not every background action. Provider-related refinement pending final branch."
+        }
+      ],
+      "path": "README.md",
+      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All text and both diagrams",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv sync",
+        "just install",
+        "just up",
+        "just up-dev",
+        "just db-upgrade",
+        "just test-db-for <name>",
+        "just test-db-release <name>",
+        "curl --cacert ./certs/phaze-ca.crt"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "justfile:168",
+        "justfile:192",
+        "justfile:196",
+        "justfile:211",
+        "docker-compose.yml",
+        "docker-compose.agent.yml",
+        "src/phaze/enums/stage.py",
+        "scripts/derive-seat-name.sh",
+        "tests/db_guard.py",
+        "tests/shared/core/test_env_example_watcher_defaults.py"
+      ],
+      "findings": [
+        {
+          "claim": "just install runs tailwind before uv sync",
+          "replacement": "Actual install: setup tailwind, setup runs uv sync. Correct sequencing without altering recipe."
+        },
+        {
+          "claim": "just up depends tailwind and rebuilds app.css",
+          "replacement": "Actual up creates certs then docker compose -f docker-compose.yml up -d, no tailwind dependency. up-dev and test-browser depend tailwind. Image build compiles CSS, local serving requires install/tailwind."
+        },
+        {
+          "claim": "Core stack plus models completes first scan/analyze workflow; each button worker logs",
+          "replacement": "Core stack has no file-server agent; metadata/analyze execute on owning lane worker, not controller worker. Add explicit agent registration/agent-stack prerequisite before first scan. just worker-logs follows control worker only."
+        },
+        {
+          "claim": "Six numbered stage mapping / diagram omits tracklist, includes discovery",
+          "replacement": "Stage enum six excludes discovery and includes tracklist. Distinguish ingress, enrichment, decision and apply and optional tracklist contribution; metadata/analyze independent/operator-triggered."
+        },
+        {
+          "claim": "Host db-upgrade idempotent but switches global env DSNs",
+          "replacement": "Preserve host/container distinction; prefer concrete container migration invocation or one-command host overrides so operator does not accidentally persist container-invalid localhost settings. Final env-copy dependency governs exact snippet."
+        },
+        {
+          "claim": "Port conflict resolved by POSTGRES_BIND_IP/REDIS_BIND_IP",
+          "replacement": "IP variables change address, not port. State same-port conflict on same address needs address or mapping change; do not imply these are port knobs."
+        },
+        {
+          "claim": "Test seats hashed; copy all three exports, exclusive session guard",
+          "replacement": "Retain. Name/hash agreement caveat is outdated: appended hash exists for every name, not only hyphen names; safest guidance always copy exact printed exports."
+        }
+      ],
+      "path": "docs/quick-start.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "python3 -m saq phaze.tasks.agent_worker.settings",
+        "just image-build-arm64",
+        "just parity-dump",
+        "scripts/parity/golden-x86.json",
+        "OMP_NUM_THREADS=1",
+        "LD_PRELOAD"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "Dockerfile.agent-arm64:52",
+        "Dockerfile.agent-arm64:57",
+        "Dockerfile.agent-arm64:98",
+        "Dockerfile.agent-arm64:201",
+        "Dockerfile.agent-arm64:266",
+        "Dockerfile.agent-arm64:277",
+        "Dockerfile.agent-arm64:298",
+        ".github/workflows/docker-publish.yml",
+        "tests/agents/deployment/test_sccache.py",
+        "tests/agents/deployment/test_ffmpeg_pin.py"
+      ],
+      "findings": [
+        {
+          "claim": "Python3.13 exception, system interpreter launch, TF2.20 and pinned essentia SHA",
+          "replacement": "Committed Dockerfile.agent-arm64 uses exactly this scoped existing exception. Do not rewrite to3.14 or uv run merely to satisfy generic runtime prose; source would no longer match. Report scoped architectural exception and retain python3 inside-image launch."
+        },
+        {
+          "claim": "Chromaprint necessity unverified and no app consumer",
+          "replacement": "Retain permanent installed-library decision; avoid reopening removal investigation. It is not an active acoustic fingerprint feature."
+        },
+        {
+          "claim": "Native libs, source-build fixes, OMP1 correctness mitigation, separate parity gate",
+          "replacement": "Source matches declared pins/commands. Keep historical measured compile/cache timings exact; do not claim rerun or current deployment verification."
+        },
+        {
+          "claim": "Parity diagram claims rebuild identical digest vs provenance/push rebuild",
+          "replacement": "Manifest should describe actual workflow dependency and validation before publication; do not assert deterministic byte identity from cache assumption unless workflow proves exact image lineage. Existing measured parity retained; check final workflow source before diagram generation."
+        },
+        {
+          "claim": "OMP runtime ceiling reload wording",
+          "replacement": "Pending final config merge: cite explicit environment ceiling behavior and leave implementation prose unchanged until final source reviewed."
+        }
+      ],
+      "path": "docs/arm64-agent-image.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "PHAZE_CLOUD_AGENT_IMAGE",
+        "PHAZE_CLOUD_AGENT_CMD",
+        "python3 -m saq phaze.tasks.agent_worker.settings",
+        "uv run saq phaze.tasks.agent_worker.settings",
+        "-p phaze-a1",
+        "/var/lib/phaze/scratch"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/backend_selection.py",
+        "src/phaze/main.py",
+        "src/phaze/runtime_config_backends.py",
+        "docker-compose.cloud-agent.yml:61",
+        "docker-compose.cloud-agent.yml:68",
+        "src/phaze/tasks/agent_worker.py",
+        "src/phaze/telemetry/slots.py"
+      ],
+      "findings": [
+        {
+          "claim": "Registry is startup-read; restart API and control worker to apply",
+          "replacement": "Potentially stale already: baseline main starts runtime_config_backends_watcher and registered backend watcher; final config branch explicitly owns reload policy. Defer exact activation contract to merged implementation."
+        },
+        {
+          "claim": "arm64/x86 image and command swap",
+          "replacement": "No correction: cloud compose defaults arm64 systempython3; x86 image override needs uv run. Preserve both command/image overrides together."
+        },
+        {
+          "claim": "A1 cap2 worked example vs cloud compose pin1 and memory rationale",
+          "replacement": "Treat caps/ranks as illustrative not current capacity recommendation. Explicitly explain backend cap and agent lane limit are distinct and worker may queue if cap exceeds actual concurrency; do not assert two8GB jobs safe on12GB."
+        },
+        {
+          "claim": "Rank/utilization/id tie-break and all-offline immediate vs full staleness local spill",
+          "replacement": "Source matches selection policy. Local detection is LocalBackend identity, not hardcoded rank99; phrase99 as example/default, never mandatory rank."
+        },
+        {
+          "claim": "Co-located agent scratch/project identity isolation",
+          "replacement": "Retain exact file custody warning and per-host stable telemetry identity requirement; multi-host agent telemetry setting now deserves cross-link."
+        }
+      ],
+      "path": "docs/multi-compute.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "rg --files",
+        "wc -l",
+        "src/phaze/routers/shell/"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/models/analysis.py:11",
+        "src/phaze/services/set_projection.py",
+        "tests/shared/core/test_docs_ia_current.py",
+        "src/phaze/config.py",
+        "src/phaze/services/review.py",
+        "src/phaze/tasks/execution.py",
+        "src/phaze/tasks/reenqueue.py",
+        "src/phaze/tasks/reconcile_cloud_jobs.py"
+      ],
+      "findings": [
+        {
+          "claim": "Fourteen Python modules directly under package",
+          "replacement": "Baseline actual glob finds24, not14. Recompute final integration counts with documented script. Nested package counts match baseline; top-level count currently unguarded."
+        },
+        {
+          "claim": "Models do not import services",
+          "replacement": "False: models/analysis.py imports camelot_code from pure services/set_projection.py. Distinguish disallowed IO/request coupling from this existing pure projection dependency, without changing code."
+        },
+        {
+          "claim": "Migration head091/count53 and package counts",
+          "replacement": "Baseline migration count53 correct; final092 changes count/head. Provider integration may add modules; refresh only against final tree."
+        },
+        {
+          "claim": "Six facade/capability diagram over22 nodes",
+          "replacement": "Split by capability group or faithful zoned view, preserving all cited import edges in manifest. Never collapse distinct owners solely to fit compact aesthetic."
+        },
+        {
+          "claim": "Agent app ORM boundary and separate broker ownership",
+          "replacement": "Retain correct boundary; verify source refs for each edge. No enum/queue import simplification."
+        }
+      ],
+      "path": "docs/project-structure.md",
+      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All text and diagrams",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "just --summary",
+        "setup",
+        "check-fast",
+        "check-all",
+        "docs-check"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "justfile",
+        "tests/shared/test_just_recipe_contract.py",
+        "scripts/check_documentation_integrity.py",
+        ".github/workflows/code-quality.yml"
+      ],
+      "findings": [
+        {
+          "claim": "docs-check described Mermaid-rendering gate",
+          "replacement": "Replace maintained diagram source/export/render validation wording while retaining existing recipe name and public contract; historical Mermaid checks remain separate."
+        },
+        {
+          "claim": "install setup sync plus tailwind, up production vs up-dev live reload",
+          "replacement": "Current contract table is correct and useful; use it to correct quick-start contradictions. Do not make runtime recipe changes to fit prose."
+        },
+        {
+          "claim": "Check-fast selected/check full/check-all hooks plus full distinct",
+          "replacement": "Preserve categories and external callers. docs tooling may add command only if needed, update inventory/test in same change."
+        }
+      ],
+      "path": "docs/just-recipe-contract.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Full public recipe table reviewed and names checked against just --summary; docs-check description reconciled with current asset gate.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "/api/internal/agent/analysis/{file_id}/progress",
+        "/api/internal/agent/proposals/{proposal_id}/state",
+        "/saq/",
+        "/s/tagwrite",
+        "/s/move"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/pipeline/proposals.py:42",
+        "src/phaze/routers/agent_analysis.py:487",
+        "src/phaze/routers/agent_proposals.py:58",
+        "src/phaze/routers/shell/stage_maps.py",
+        "src/phaze/main.py:225",
+        "src/phaze/web/saq_mount.py",
+        "docker-compose.cloud-agent.yml",
+        "src/phaze/services/backend_selection.py"
+      ],
+      "findings": [
+        {
+          "claim": "Proposal gate only requires FileMetadata+AnalysisResult row existence",
+          "replacement": "Source requires satisfied metadata/analyze (done or explicit skip), no existing proposal and no enrich work in flight. Failed-only or partial rows do not qualify. Document no-data skip context correctly."
+        },
+        {
+          "claim": "Analysis progress endpoint fine-window-only",
+          "replacement": "Source accepts fine/coarse count pairs and optional coarse_work_percent; no completion side effects. Preserve backward-compatible optional coarse body fields."
+        },
+        {
+          "claim": "Joint Proposal+FileRecord state transition",
+          "replacement": "Proposal status plus optional current_path update; no FileRecord.state. Echo wire file_state is compatibility field, not DB state."
+        },
+        {
+          "claim": "shell.py owner",
+          "replacement": "Actual routers/shell/ package, not deleted shell.py. Correct module citation."
+        },
+        {
+          "claim": "Preset local rank0, Kueue1..N, computeN+1 diagram",
+          "replacement": "Registry kinds are arbitrary ranks, not fixed kind priority. Diagram must show rank/utilization/cap policy and distinguish actual cloud_job statuses; PUSHED is not CloudJobStatus member."
+        },
+        {
+          "claim": "SAQ compute bypass explanation",
+          "replacement": "Dashboard actually includes controller and fileserver lane/base queues; compute SAQ queues excluded by roster filter, while Kueue pod runs one-shot job. Do not claim every kind=compute agent bypasses SAQ; rsync compute agent uses it."
+        },
+        {
+          "claim": "Current tags/preview redirects label retired separate workflows",
+          "replacement": "Compatibility aliases all route to Changes Review currently; update presentation description preserving actual path aliases. Review actual write endpoints separately."
+        },
+        {
+          "claim": "Tracklist retirement blanket statement",
+          "replacement": "Pending provider implementation; preserve accepted historical retirement scope and describe current enabled registry after branch lands."
+        }
+      ],
+      "path": "docs/api.md",
+      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Fulltext read; route table exhaustive verification still pending",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/spikes/phaze-zaf2l-where-phaze-spends-time.md",
+        "src/phaze/services/pipeline",
+        "src/phaze/routers/shell/stage_context.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current corpus and implementation reviewable now, endpoint acceptance pending deployment",
+          "replacement": "Date all this as2026-09-21 snapshot. Do not turn578.3ms or6394.3/5938.1 scans into current SLA. Find later measured evidence before replacing pending outcome; none established during this review."
+        },
+        {
+          "claim": "Five-second poll cadence and shared status SQL optimization",
+          "replacement": "Keep historical rationale; current counts implementation may evolve and provider dependencies change stats. Source trace get_awaiting_cloud_count before treating optimization as present contract."
+        }
+      ],
+      "path": "docs/pipeline-stats-performance.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "All38lines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/postgres-jit.md",
+        "docs/design/0012-verification-fidelity-and-operator-attribution.md",
+        "src/phaze/database.py"
+      ],
+      "findings": [
+        {
+          "claim": "JIT staysON decision supersedes prior recommendation",
+          "replacement": "Preserve accepted operator decision and original contradictory proposal as history with explicit final decision. No runtime/connection setting changes."
+        },
+        {
+          "claim": "Production-shaped synthetic measurements and timing claims",
+          "replacement": "Keep all exact quantities and no-new-production-read boundary. Long executable SQL appendix must not be mechanically scrubbed or reformatted; inspect separately for identifiers with approved historical-audit semantics before changes."
+        },
+        {
+          "claim": "Every connection keeps jit on as a current source guarantee",
+          "replacement": "Source contains no JIT force setting: application inherits server setting. Dated server on/threshold observations remain dated, not current deployment proof. Preserve superseding leave-on decision and its rationale distinctly from contrary measured performance findings."
+        }
+      ],
+      "path": "docs/postgres-jit.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Current decision and PgBouncer evidence boundary read; appendix inspected programmatically for EXPLAIN SELECT/DELETE safety and read-only transaction. Long historical SQL operands not all re-read; no query executed.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run python scripts/report-deployments.py",
+        "docker compose exec api uv run phaze agents add",
+        "now()",
+        "/home/operator/phaze/certs/phaze-ca.crt",
+        "python3 -m saq phaze.tasks.agent_worker.settings",
+        "docker compose -f docker-compose.agent.yml",
+        "PHAZE_QUEUE_URL_FILE",
+        "certs/phaze-ca.crt"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "docker-compose.yml",
+        "docker-compose.agent.yml",
+        "src/phaze/entrypoint.py:34",
+        "src/phaze/cert_bootstrap.py",
+        ".github/workflows/ci.yml:5",
+        ".github/workflows/docker-publish.yml",
+        "src/phaze/tasks/_shared/model_bootstrap.py:111",
+        "src/phaze/services/set_projection_backfill.py:select_files_needing_projection",
+        "src/phaze/routers/admin_agents.py",
+        "scripts/report-deployments.py"
+      ],
+      "findings": [
+        {
+          "claim": "No music/model/output file mounts on control plane",
+          "replacement": "Preserve no archive/model/output mounts. Qualify that certs and optional configuration/secrets are legitimate mounts; table claiming only certs conflicts with runtime directory examples."
+        },
+        {
+          "claim": "Kueue submit/watch diagram edges originate API",
+          "replacement": "Control worker/backend adapters drive submissions/reconciliation, API owns callbacks/presign. Diagram must distinguish actual code owner instead of conflating all control-plane components."
+        },
+        {
+          "claim": "Header Internal CA / mTLS bootstrap",
+          "replacement": "Actual mechanism is server TLS verified by distributed CA plus agent bearer token. No client certificate handshake configured in entrypoint; do not call this mTLS."
+        },
+        {
+          "claim": "Publish annotated tag push soletrigger; latest most recent tagged release",
+          "replacement": "ci.yml triggers main pushes plus CalVer tag pushes, and docker-publish push true for nonPR; latest uses defaultbranch metadata. Annotation not mechanically required by trigger. Version-pinned releases remain recommended, but describe actual trigger semantics."
+        },
+        {
+          "claim": "Model download lock expected startup log",
+          "replacement": "Current ensure_models_present validates read-only manifest only; no download/lock. Remove impossible lock line while retaining model presence/size diagnostics."
+        },
+        {
+          "claim": "/admin/agents renders page",
+          "replacement": "Legacy endpoint redirects to /s/agents; describe live utilitypane plus HTMX activity/table routes."
+        },
+        {
+          "claim": "Projection backfill only outdated existing profiles; re-running costs nothing",
+          "replacement": "Selection covers missing and oldversion profiles for files with windows. No-op second run still pays selection query; say no recomputation rather than zero cost."
+        },
+        {
+          "claim": "Secrets env and runtime hotreload defaults / head076",
+          "replacement": "Exact key/default/reload sections pending final config. Currenthead076 aside already stale against baseline091; update finalhead092 after integration without rewriting migration-history decisions."
+        },
+        {
+          "claim": "Parity byte-for-byte claim",
+          "replacement": "BPM/key exact; model scores within comparator tolerance, not wholeanalysis JSON byteidentity. Preserve actual parity algorithm and imagepublication ordering."
+        },
+        {
+          "claim": "Destructive CA directory removal then restart as universal safe recipe",
+          "replacement": "Keep operator-only nature and impact; ensure new directory exists with correct ownership and containermount visibility before regeneration, distribute publicCA only, then restart clients. Do not execute during docs work or invent automatic rotation."
+        }
+      ],
+      "path": "docs/deployment.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All sections read with one short truncated build-diagram excerpt; source-traced topology, image pins, model startup, publish triggers, projection and TLS",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "just db-upgrade",
+        "just db-revision \"message\"",
+        "just db-current",
+        "just db-downgrade",
+        "just db-history",
+        "now()"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/models/base.py",
+        "src/phaze/enums/tag_write.py",
+        "src/phaze/models/runtime_config_override.py",
+        "src/phaze/models/provider_source.py",
+        "src/phaze/models/discogs_link.py",
+        "src/phaze/models/proposal.py",
+        "src/phaze/models/analysis.py",
+        "src/phaze/enums/stage.py",
+        "alembic/versions/066_drop_analysis_window_camelot.py"
+      ],
+      "findings": [
+        {
+          "claim": "All models inherit TimestampMixin",
+          "replacement": "False: immutable provider observations/events, transport rows, deployments and other specialized entities inherit Base directly. State common convention only for models that actually use mixin; immutable evidence uses explicit timestamp/ordinal fields."
+        },
+        {
+          "claim": "TagWriteStatus5members",
+          "replacement": "Actual seven: queued, completed, failed, save_failed, discrepancy, verify_failed, no_op. Explain queued and save_failed uncertainty/Undo snapshot; do not collapse to failed."
+        },
+        {
+          "claim": "Schema table completeness",
+          "replacement": "AST finds41models/tables at baseline; runtime_config_override absent from opening table despite migration073 row. Add control configuration table plus final092 additions."
+        },
+        {
+          "claim": "Full ER diagram omits immutable provider and selection graph",
+          "replacement": "Current schema contains sourceobjects/reads/observations/candidates/selections/events, sourcefile SETNULL, media CASCADE, immutable observation references, Discogs alternative legacy-vs-provider CHECK. Split core custody and provider authority diagrams preserving all relevant FK/cardinality/retention semantics."
+        },
+        {
+          "claim": "Provider and Discogs persistence",
+          "replacement": "DiscogsLink supports exactlyone legacytrack OR observation+positive trackposition; one accepted index per binding. Existing diagram only legacy track chain insufficient. Selectionevents deliberately retain history withoutmedia FK; do not invent cascade."
+        },
+        {
+          "claim": "Six-stage diagram omits tracklist and implies metadata\u2192analyze chain",
+          "replacement": "Correct explicit enrichment/selection topology; preserve derived read-time statuses and separate cloud sidecar. Final provider stagecompletion contract pending."
+        },
+        {
+          "claim": "Every database row is current historicretirement banner",
+          "replacement": "Blanket history status conflicts current schema; retain migration082 retired-source fact as history while documenting final provider implementation. Finalhead091/count53 must refresh at final092 integration."
+        },
+        {
+          "claim": "Proposal partialunique and computed Camelot narrative",
+          "replacement": "Correct existing pending-only unique upsert and migration066 read-time Camelot; retain. Migration019 reference is preflatten history, not extant currentmigration filename."
+        }
+      ],
+      "path": "docs/database.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All349lines plus first schema/ER section read earlier; enum, tables, cardinalities and migration shape compared",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run --no-sync python -m phaze.agent_watcher locate-stale",
+        "phaze backfill reconcile-stale-rows",
+        "--apply",
+        "walked_roots",
+        "walk_errors=0"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/services/companion_availability.py",
+        "src/phaze/services/stale_rows.py",
+        "src/phaze/agent_watcher/locate.py",
+        "tests/discovery/services/test_companion_availability.py",
+        "tests/discovery/services/test_stale_rows.py",
+        "tests/discovery/cli/test_stale_rows_cli.py"
+      ],
+      "findings": [
+        {
+          "claim": "Unavailable is not extracted coverage; unknown-unmarked not verifiedreadable",
+          "replacement": "No semantic correction; available_companion_clause requires bothmarkers NULL, counts missing first then ambiguous. Preserve totals and kept-links scope."
+        },
+        {
+          "claim": "Explicit reconciliation only, repeatfresh dryrun before authorized apply",
+          "replacement": "Retain noautomatic deletion and exact scoped authorization sequence; implementation merge/deployment not evidence production repair happened. Date release2026.10.3 limitation."
+        },
+        {
+          "claim": "Filesystem budget1,048,576 and nofollow/roots completeness",
+          "replacement": "Keep exact bound and no-absence-on-incomplete-search requirement; end-to-end locate/reconcile path needs final source reading before any runnable example edits."
+        }
+      ],
+      "path": "docs/operations/companion-availability.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Entire57line operating sequence",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "POST /api/internal/agent/companion-captures"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/schemas/agent_companion_capture.py",
+        "src/phaze/tracklist_providers/domain.py:213",
+        "src/phaze/services/companion_capture_worker.py",
+        "src/phaze/services/companion_capture.py",
+        "src/phaze/routers/agent_companion_capture.py",
+        "tests/discovery/services/test_companion_capture.py",
+        "tests/discovery/routers/test_agent_companion_capture.py",
+        "tests/integration/test_companion_capture_broker_seam.py"
+      ],
+      "findings": [
+        {
+          "claim": "Capture bytes/chars/lines/wire/deadline defaults andmaxima",
+          "replacement": "No semantic correction: DiscoveryBudget/CaptureBudget source matches262144/131072/4096/1048576/30 defaults and1048576/262144/16384/2097152/120 maxima. Keep quantities exact."
+        },
+        {
+          "claim": "Descriptor/nofollow oneboundedread, revision scope and full digest evidence",
+          "replacement": "Worker pins dirs/source, caps reads and compares stamps, distinguishes bytecomplete but texttruncated; unsupported NUL. No correction, retain source-vs-currentavailability distinction."
+        },
+        {
+          "claim": "Capture is not parsing/selection/authorization",
+          "replacement": "Retain; never relabel newread as reviewed authority. Report stale inventory as retryevidence; captureattempt history separate from semantic observation dedup."
+        },
+        {
+          "claim": "Date/bead/epic header",
+          "replacement": "Current functional guide should use useful lastreview metadata and refer decisionhistory by link, not irrelevant epic labels. Preserve dated decisions elsewhere."
+        }
+      ],
+      "path": "docs/operations/companion-capture.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Entire44lines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "8192-character",
+        "00:01:01",
+        "application/json",
+        "/s/tracklist"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/services/companion_view.py",
+        "src/phaze/services/companion_details.py",
+        "src/phaze/routers/local_sources.py",
+        "src/phaze/routers/request_guards.py:188",
+        "tests/browser/test_companion_viewing.py",
+        "tests/integration/test_companion_viewing.py",
+        "tests/integration/test_local_source_import.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current localpreview and storedtext browsing",
+          "replacement": "Retain acquisition-free rendering, escaped/paged text, preview-vs-fullhistory distinction. Pending content cannot authorize tag/path changes or tracklistdone."
+        },
+        {
+          "claim": "Sameorigin browser command evidence vs JSON and bearer callbacks",
+          "replacement": "request_guards and local_sources dependencies support distinction; preserve siblingsite/crosssite refusal. Explicit tokenfreshness never replaces origin evidence."
+        },
+        {
+          "claim": "CUE selectedsource mapping and frameprecision",
+          "replacement": "Preserve explicit FILEordinal and qualified75fps boundary; do not flatten parts or infer timeprecision. Final provider authority integrations must recheck eachconsumer before textupdate."
+        },
+        {
+          "claim": "Dates/beads and local-only wording",
+          "replacement": "Update current operator framing after providerintegration; preserve dated end-to-end verification claims, no production archive access implied."
+        }
+      ],
+      "path": "docs/operations/companion-viewing.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All90lines; source/read snippets inspected, full routebehavior audit pending",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/maintenance_inventory.py:documentation_class",
+        "scripts/audit_historical_evidence.py"
+      ],
+      "findings": [
+        {
+          "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
+          "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
+        },
+        {
+          "claim": "Current guidance links vs frozen evidence",
+          "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
+        }
+      ],
+      "path": ".planning/README.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Archive landingpage and auditboundary",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/maintenance_inventory.py:documentation_class",
+        "scripts/audit_historical_evidence.py"
+      ],
+      "findings": [
+        {
+          "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
+          "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
+        },
+        {
+          "claim": "Current guidance links vs frozen evidence",
+          "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
+        }
+      ],
+      "path": "docs/spikes/README.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Archive landingpage and auditboundary",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/maintenance_inventory.py:documentation_class",
+        "scripts/audit_historical_evidence.py"
+      ],
+      "findings": [
+        {
+          "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
+          "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
+        },
+        {
+          "claim": "Current guidance links vs frozen evidence",
+          "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
+        }
+      ],
+      "path": "docs/superpowers/specs/README.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Archive landingpage and auditboundary",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/maintenance_inventory.py:documentation_class",
+        "scripts/audit_historical_evidence.py"
+      ],
+      "findings": [
+        {
+          "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
+          "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
+        },
+        {
+          "claim": "Current guidance links vs frozen evidence",
+          "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
+        }
+      ],
+      "path": "docs/telemetry/measurements/README.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Archive landingpage and auditboundary",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "alembic/versions/082_retire_external_tracklist_acquisition.py",
+        "Dockerfile",
+        "pyproject.toml",
+        "src/phaze/services/remote_lookup.py",
+        "docs/design/0024-tracklist-source-retirement.md",
+        "docs/design/0025-remote-provider-sources.md"
+      ],
+      "findings": [
+        {
+          "claim": "External acquisition removed blanketopening",
+          "replacement": "Scope retired scraping/scheduledacquisition explicitly; later official-API operatorlookups already present inbaseline, finalglobalproviders branch expands configuration. Do not revive retired pathway or present oldretirement as banon every currentprovider."
+        },
+        {
+          "claim": "Production noPatchright/Chrome/Xvfb; devPlaywright",
+          "replacement": "Dockerfile contains nobrowser install; playwright remains browsergroup. Preserve productvsdevtool distinction and migration082 dropfacts."
+        }
+      ],
+      "path": "docs/tracklist-retirement.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Retirement and operatorlookup exception",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "/home/datum/phaze-iq64v/candidate/analyze.py",
+        "/home/datum/phaze-iq64v/code/start-analysis.sh",
+        "/home/datum/phaze-iq64v/code/repeat-analysis.sh"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/services/analysis_models.py",
+        "scripts/analysis_eval_candidate_one_variant.py",
+        "scripts/analysis_eval_stage_one_variant_models.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current coarse tier34; adoptionseparate pendingbead",
+          "replacement": "Baseline analysis_models selects12default/34rollback; candidate adopted in source. Reframe as2026-09-30 experiment and linkcurrentcontract, preserving96.4/92.7/2.025/2.108/65of208exact."
+        },
+        {
+          "claim": "Hoststaged /home/datum paths and JSONfilenames",
+          "replacement": "These are executable investigationinstruction paths, not archivepathidentifiers. Preserve exactly under operatorcopy rule; do not mechanicallyreplace with generic scratch if commands thenbreak."
+        },
+        {
+          "claim": "Qualityunverified despitecompletewindows andspeed",
+          "replacement": "Retain. Do not turnagreeing incumbent predictions into independentaccuracy."
+        }
+      ],
+      "path": "docs/analysis-evaluation-one-variant-candidate.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Datedperformance candidate record",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "summary.json",
+        "analysis_eval_score.py"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/analysis_eval.py",
+        "scripts/analysis_eval_finalize.py",
+        "scripts/analysis_eval_score.py",
+        "docs/analysis-evaluation.md"
+      ],
+      "findings": [
+        {
+          "claim": "StatusPENDING and samplefive/eightgenrelabels",
+          "replacement": "Template is intentionallyblank; distinguish generictemplate placeholders from dated8filesample context. Never markpass or fillmetricswithoutreal pairedrun."
+        },
+        {
+          "claim": "Trackedreport may copySHA/IDreferences",
+          "replacement": "Clarify only code/image/toolprovenance and approvedaggregate identifiers; do not encourage committing archivefileUUID/contentdigests. Actualmanifest and privateartifactfilenames preserved; no blind scrub of JSONpaths."
+        },
+        {
+          "claim": "Contractqualityagreement andunscored fields",
+          "replacement": "Retain independentlabel boundary, predeclaredtolerances and replayfriendly matchedconditions."
+        }
+      ],
+      "path": "docs/analysis-evaluation-report-template.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Reusableblank template vs specificsample references",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "--protocol current",
+        "--protocol neutral",
+        "--command-json",
+        "--workers 1",
+        "/home/datum/phaze-iq64v",
+        "docs/analysis-evaluation-labels.example.json"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/analysis_windows.py",
+        "src/phaze/services/analysis_models.py",
+        "src/phaze/services/analysis_wire.py",
+        "src/phaze/services/set_projection_writer.py",
+        "src/phaze/routers/agent_analysis.py",
+        "scripts/analysis_eval.py",
+        "scripts/analysis_eval_export_reference.py"
+      ],
+      "findings": [
+        {
+          "claim": "UpCloud baselinecomplete no replacementmeasured and localbranchstate",
+          "replacement": "Staleagainst completedcandidate siblingguide and current12model default. Reframe version2evaluation contract/history, distinguish noindependentreplacement from measuredEssentiaablation."
+        },
+        {
+          "claim": "Finecoverage tolerates trailingsegment<15; output adapter and independentaccuracy",
+          "replacement": "Retain sourceproved naturalwindow geometry and realstoredconsumer distinction. Do not claim topaggregate features equals fullchild features; adapter must preserve projectionmeaning."
+        },
+        {
+          "claim": "Existinghost and stagepaths currentoperationalguarantee",
+          "replacement": "Preserve pathsyntax as historicalreproduction instructions; explicitlydate hoststaging state rather than assert currentreachability. Nohost/archiveprobes authorized."
+        },
+        {
+          "claim": "Manifest selectedlive UUID/SHA metadata",
+          "replacement": "Do not duplicate identities innewledger/prose/diagrams. Anyreviewof existingtrackedmanifest must honorarchiveprivacy and exactquantitypreservation; coordinate root rather than silentlychanging scripts or filenames."
+        }
+      ],
+      "implementation_notes": [
+        "Replaced the real control-plane host name with its role; exact evaluation commands, staged paths, filenames and measurements remain unchanged."
+      ],
+      "path": "docs/analysis-evaluation.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All54longparagraphlines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "/home/datum/phaze-iq64v/code/run-candidate-v2.sh",
+        "candidate-command.json",
+        "candidate-run-context.json",
+        "results/candidate-1/summary.json"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/analysis_eval_run_candidate_host.sh",
+        "scripts/analysis_eval_start_host.sh",
+        "scripts/analysis_eval_repeat_host.sh",
+        "scripts/analysis_eval_finalize.py"
+      ],
+      "findings": [
+        {
+          "claim": "Completedcandidatepass andoneuse launchers",
+          "replacement": "Preserve exactdated results and refusal to overwrite, mark historicalhoststate not currentlyverified deployment."
+        },
+        {
+          "claim": "Generic candidatecommand reusescandidate-1 alreadyexists",
+          "replacement": "Use explicitlyfresh illustrative runID forfuturecandidate command or visiblystate substitute unusedID, preserving existing recorded filenames/history."
+        },
+        {
+          "claim": "Qualitynoninferiorityopen despite2xbatch",
+          "replacement": "No correction: keepaccuracyunverified for lackindependent labels; candidateadoption source is separate fromqualityproof."
+        }
+      ],
+      "path": "docs/analysis-evaluation-upcloud-runbook.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All64lines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "scenario_node_map.tsv"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "tests/analyze/recovery_cloud/scenario_node_map.tsv",
+        "scripts/maintenance_inventory.py"
+      ],
+      "findings": [
+        {
+          "claim": "Scenario map retainedcount",
+          "replacement": "No correction: accompanying scenario_node_map.tsv has241datarows atbaseline. This records preservedmigrationscenarios, not invariant livepytestcollectioncount."
+        },
+        {
+          "claim": "State/ownership capability split",
+          "replacement": "Keep explicitproducer/consumer families and assertionfreefixture helper rule; refresh onlyif fileownershipchanges, not formatforcosmeticuniformity."
+        }
+      ],
+      "path": "tests/analyze/recovery_cloud/README.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Modulecapabilityownership andpreserved mapcount",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "scenario_node_map.tsv"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "tests/review/capabilities/scenario_node_map.tsv",
+        "scripts/maintenance_inventory.py"
+      ],
+      "findings": [
+        {
+          "claim": "Scenario map retainedcount",
+          "replacement": "No correction: accompanying scenario_node_map.tsv has236datarows atbaseline. This records preservedmigrationscenarios, not invariant livepytestcollectioncount."
+        },
+        {
+          "claim": "State/ownership capability split",
+          "replacement": "Keep explicitproducer/consumer families and assertionfreefixture helper rule; refresh onlyif fileownershipchanges, not formatforcosmeticuniformity."
+        }
+      ],
+      "path": "tests/review/capabilities/README.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Modulecapabilityownership andpreserved mapcount",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run python scripts/bead_feedback.py --bead phaze-example",
+        "--bead",
+        "bh work show --json",
+        "bh work issue --json"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/bead_feedback.py:65",
+        "scripts/bead_feedback.py:129",
+        "scripts/bead_feedback.py:203"
+      ],
+      "findings": [
+        {
+          "claim": "Readerread-onlyuses/runs andacceptanceevidence",
+          "replacement": "Source scansruns/uses separately andaccepted velocityNone; retained lifecycleunknowns matchguide. No correction incheckedcontract."
+        },
+        {
+          "claim": "bh lifecyclecommands and reportoutside trackedfiles",
+          "replacement": "Keep exactAPIsand perbeadscratch. Do not run againstgloballifecyclelogs merelyfor docsreview or infercurrentvelocity."
+        }
+      ],
+      "path": "docs/bead-feedback-readback.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Completeoperatingguide",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        ".git/fast-gate-escalations.log",
+        ".git/bh/validation/runs/*/manifest.json",
+        "manifest.json",
+        "gate.log",
+        "uv run --no-sync python"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/bead_feedback.py",
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/gates-and-isolation.md"
+      ],
+      "findings": [
+        {
+          "claim": "Currentcohortcosts reportedas evidence andnotachievablesaving",
+          "replacement": "No numericrewrite. Preserve232attempts/289uses andallpopulation/latencyboundaries exactly; snapshotwindow doesnotcharacterizecurrentselector afterlaterimplementation."
+        },
+        {
+          "claim": "Nextthreeinterventions futurephrasing",
+          "replacement": "Markproposalsasdatedassessment; linkacceptedimplementationoutcome/currentreadbackguide rather thanimply unstartedtoday. Do not retroactivelycall repeatedgreens waste."
+        }
+      ],
+      "path": "docs/bead-feedback-measurement.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Complete241lines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/services/tag_write_disk.py:429",
+        "src/phaze/enums/tag_write.py",
+        "src/phaze/tasks/tag_write.py"
+      ],
+      "findings": [
+        {
+          "claim": "Partialsave uncertainty anddurablerevisioncheck",
+          "replacement": "Current source supportsdocumentedbehavior. Retain controller-firstcompatibility, snapshotUndoanchor, authorizationtime fencevsworkerfreshness distinction and independentconnection evidence claims."
+        },
+        {
+          "claim": "Beadidentifierheader",
+          "replacement": "Current maintainguide should functionalname/crosslinks; datedimplementation evidence retainsattribution. Never reinterpret fixturetransaction proofasproductiondelivery."
+        }
+      ],
+      "path": "docs/quality-implementation/tag-partial-save-undo.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Implementationoutcomeandverificationboundary",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/services/tag_comparison.py:231",
+        "src/phaze/services/tag_writer.py:152"
+      ],
+      "findings": [
+        {
+          "claim": "Partialsave uncertainty anddurablerevisioncheck",
+          "replacement": "Current source supportsdocumentedbehavior. Retain controller-firstcompatibility, snapshotUndoanchor, authorizationtime fencevsworkerfreshness distinction and independentconnection evidence claims."
+        },
+        {
+          "claim": "Beadidentifierheader",
+          "replacement": "Current maintainguide should functionalname/crosslinks; datedimplementation evidence retainsattribution. Never reinterpret fixturetransaction proofasproductiondelivery."
+        }
+      ],
+      "path": "docs/quality-implementation/tag-reviewed-revision.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Implementationoutcomeandverificationboundary",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "bh work claim",
+        "bh work submit",
+        "bh work review",
+        "just check-fast",
+        "just check-all",
+        "just test-db-for <seat>"
+      ],
+      "disposition": "updated against current source",
+      "evidence": [
+        "CLAUDE.md",
+        "justfile",
+        "tests/db_guard.py",
+        "scripts/redis-seat-registry.sh",
+        "docs/just-recipe-contract.md",
+        "docs/AGF.md:49"
+      ],
+      "findings": [
+        {
+          "claim": "Neverpushmain boundary",
+          "replacement": "Repository CLAUDE currently distinguishes code directpush anddocsPR; guideblanketneverpush alignsdeveloperrole but canmisleadmerger. State rolespecific policy anddocsPRrequirement without changinguserauthorization."
+        },
+        {
+          "claim": "Review --run mandatesfreshvalidation",
+          "replacement": "Keep ability butdescribe exacttreeattested reuse whencurrentbh reuses; no claim allreviewalwaysrunsfreshsuite. Historicalleaserecheck remainsdatedexternal observation, not remeasured."
+        },
+        {
+          "claim": "Scratch/seat isolation andlifecycle authority",
+          "replacement": "Retain perbeadpaths, copy3exports, onepytestperDB, no sharedcontainerteardown andagentliveness proofbeforeabandoningqueuedseat."
+        },
+        {
+          "claim": "Phaze currently uses local landing",
+          "replacement": "Per-hive work.landing=pr overrides global default local; root config finish opened PR760 and main remains unchanged pending CI/external merge. Document effective hive policy and bh land verification; other hives may differ. Preserve developer versus reviewer/merger separation."
+        }
+      ],
+      "path": "docs/AGF.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All135lines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "updated against current source",
+      "evidence": [
+        "assets/src/app.css:567",
+        "src/phaze/templates/shell/shell.html:36",
+        "src/phaze/templates/shell/partials/rail.html",
+        "src/phaze/templates/shell/partials/header.html",
+        "src/phaze/templates/shell/partials/record_dock.html"
+      ],
+      "findings": [
+        {
+          "claim": "Utilitynodes neutralgray activefill vs allsameactive treatment",
+          "replacement": "Current nav_link macro uses samecyanwash/insetbar for pipeline/review/utility; earlier surfacebullet stale and conflicts Quietrail section. Correct toactualsharedtreatment."
+        },
+        {
+          "claim": "No shared reduced-motion rule in app.css",
+          "replacement": "Source567 has appwideprefers-reduced-motion suppression for animation/transitions/scroll; remove stale inconsistency12. No productchange necessary."
+        },
+        {
+          "claim": "Jura300/500 andInter400/600",
+          "replacement": "SourceGoogleFonts linkmatches. Preserve typographicidentity; offline diagram fallback must behonest, no claim fonts bundled."
+        },
+        {
+          "claim": "Inspector modalvsdock andunknownvszero",
+          "replacement": "Current record_dock ownership andreadonlymodel match checkedcontract; preserve accessibility boundaries and fixtureappearance-only limitations."
+        },
+        {
+          "claim": "Futurediagramprofile skins",
+          "replacement": "Use existingtokens/source, diagram-designlayout; do not interpret editorialvariant aspermission tochangeproductidentity or ambientmotion."
+        }
+      ],
+      "path": "docs/ui-design-reference.md",
+      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All311lines; source-critical identity andinteractionclaims checked",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "assets/src/app.css",
+        "src/phaze/templates/shell/shell.html:36",
+        "src/phaze/templates/ui/primitives.html",
+        "tests/shared/test_table_header_guard.py"
+      ],
+      "findings": [
+        {
+          "claim": "Phaze semanticlight/dark colors andInter/Jura roles",
+          "replacement": "Matches assets/src/app.css andservedfontloader. Use asprojectprofile source, preserve5.5:1producttext target; newdiagram fills/connectors still requireactualcontrast checks."
+        },
+        {
+          "claim": "Tableheader examplegenericbg/text instead of canonicaltable-th",
+          "replacement": "Current CSS has global table-th/table-head Jura11px tracked contract; reconcile examples tosharedprimitive, not createanotherclass."
+        },
+        {
+          "claim": "Radius/classes mapping",
+          "replacement": "Do not accept handlistedv4radius numbers onfaith. No compiledCSS inthisreadonlyworktree; verify exactclasscomputedvalue during authorizedbrowserphase beforecorrection."
+        },
+        {
+          "claim": "Filemanifestdimensions",
+          "replacement": "Existing42PNG/SVGasset dimensions/viewboxes collected inprivateartifact. Preserve brandassets; no regenerationorvisualvalidationclaimed. Need comparealldeclaredsizes atimplementationtime."
+        }
+      ],
+      "path": "design/DESIGN_SYSTEM.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All321lines; tokenvalues, headercomponent andmanifestmetadata",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "design/DESIGN_SYSTEM.md",
+        "assets/src/app.css"
+      ],
+      "findings": [
+        {
+          "claim": "Designphilosophy asliteral technicalrule",
+          "replacement": "Treat asbrandorigin/philosophy, notruntimecontract orproofgeometryusesgoldenratio. Existingpalette/type/source takeprecedence forcurrentdiagrams."
+        },
+        {
+          "claim": "Noornament / constrainedaccent",
+          "replacement": "Compatiblewithdiagram-design editorialrestraint; no substantivechange needed. Do not rewrite prose into inventedcurrentmeasurements."
+        }
+      ],
+      "path": "design/resonant-precision.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All15longparagraphlines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "noqa: S603",
+        "nosec B603 B607",
+        "oklch(0.21 0.034 264.665)",
+        "uv run python -c",
+        "now()",
+        "desc()",
+        "all()"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/check_documentation_integrity.py",
+        "scripts/audit_historical_evidence.py",
+        "tests/shared/test_adr_citation_resolution.py",
+        "pyproject.toml"
+      ],
+      "findings": [
+        {
+          "claim": "Noarchive identifiers, exactquantities, codevsprose distinction",
+          "replacement": "Keep. Newdiagramlabels syntheticfunctionalnames; do not groupdigits inports/version/commands/JSONorCSS. Broadmechanicalcleanup is explicitlyforbidden."
+        },
+        {
+          "claim": "Corpusnumberformatbackfill beingconverted now",
+          "replacement": "Markasdated2026-08-26 transition iffinalhistory provescompleted; do not assertcurrentinprogress basedonoldnote. Preservedbadhistoricalexamples areintentional."
+        },
+        {
+          "claim": "Banditsuppression andADRfilename rules",
+          "replacement": "Preserve exactregex/example syntax andpragma scopes. No newtestneededforpurepreservation; existingtoolversions aredatedmeasurement, notcurrentpackagepin."
+        },
+        {
+          "claim": "Localinstructionpaths vs publishedarchiveidentifiers",
+          "replacement": "Honor explicitoperatorcopy requirement: executablemachineinstruction paths/filenames and now()/desc()/all() remainvalid; no blanketsubstitution basedonbeadlikepaths."
+        }
+      ],
+      "path": "CONVENTIONS.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All263lines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "updated against current source",
+      "evidence": [
+        "scripts/check_documentation_integrity.py:_index_errors",
+        "scripts/maintenance_inventory.py:documentation_class",
+        "docs/essentia-analysis.md",
+        "src/phaze/services/analysis_models.py"
+      ],
+      "findings": [
+        {
+          "claim": "Entirelistedcorpus currentproduct anddevelopercontract",
+          "replacement": "Manydatedqualityassessments/audits andmeasurements arepointintimeevidence despite maintainedclassification. Group explicitcurrentmanual/decision/evidencesections; donotretireusefulhistory silently."
+        },
+        {
+          "claim": "Essentia isDSP/decodebound",
+          "replacement": "Staleagainst guideownmeasuredcorrection andcurrent12model selection. Describecurrentexhaustive/chunkboundedanalysis plusdatemeasuredoptimizationhistory, no unqualifiedbottleneck claim."
+        },
+        {
+          "claim": "ArchitectureMermaiddiagrams andoldcandidatehandoff exactremainingsteps",
+          "replacement": "Updateassetformat/currentstatustitles andcrosslinknewprovider guideafterintegration; retainhistoricalevidence parserexplanation."
+        },
+        {
+          "claim": "Indexcompleteness",
+          "replacement": "Integrity_index_errors requires everymaintainedMarkdownpath linked, including moduleREADMEs andarchiveslandingpages. Newprofile/auditdocs/diagramauthoring guide must beindexed, no blanketexclusion."
+        }
+      ],
+      "path": "docs/README.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All147lines; referencedmaintainedguides andclassboundary",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run python scripts/maintenance_inventory.py --rev",
+        "--paths",
+        "uv run python scripts/compare_python_ast.py --base",
+        "--target HEAD"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/maintenance_inventory.py",
+        "scripts/check_documentation_integrity.py",
+        "scripts/audit_historical_evidence.py",
+        "scripts/compare_python_ast.py"
+      ],
+      "findings": [
+        {
+          "claim": "Fixedbaselinecounts andhistoricalprecedence",
+          "replacement": "Keepimmutablebaseline/sourcecounts, donotreplacewithcurrent128. Laterauditneedsownexecutionrevision ascurrentpreflightdoes."
+        },
+        {
+          "claim": "Sourceoftruth andruntimeprompt exemption",
+          "replacement": "Retain noappbehaviorchanges tomakedocs true; runtime-loaded namingprompt untouched; accepteddecision/code conflicts flaggedexplicitly."
+        },
+        {
+          "claim": "Mermaidcurrentchecker description",
+          "replacement": "Preservehistoricalauditcommands/claims; addlinktonewmaintaineddiagramcontract atcurrentguidancepoint, retainhistoricalMermaidseparate. No blanketexcludeHTML/SVGfromcurrentinventory."
+        },
+        {
+          "claim": "Prohibitedpersonalhost/account/scratchscope vs copyguard",
+          "replacement": "Clarify contextonlyifneeded: noarchive/liveidentifiers, preservevalidlocalinstructionpaths peroperatorcopydecision; neverusebroadscrubthatcorruptscommands."
+        }
+      ],
+      "path": "docs/repository-maintenance-contract.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "All212lines",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run python scripts/audit_historical_evidence.py --base",
+        "just docs-check",
+        "just check-all"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/audit_historical_evidence.py",
+        "scripts/maintenance_inventory.py",
+        "scripts/check_documentation_integrity.py"
+      ],
+      "findings": [
+        {
+          "claim": "Fixedauditpopulations/oldMermaidCLI/counts",
+          "replacement": "Accuratedatedauditdescriptions mustremainasrecorded; do notupdate24rendercount/oldCLIasifnewmigrationranthen. Addcurrentcontractcrosslink onlyifreaderneedsnavigation."
+        },
+        {
+          "claim": "Gateproofandlimitations",
+          "replacement": "Keepownsource/revision/runlimitation andincompletebrowsercleanup classification. Newmigrationvalidatesnewpipeline separately, no claim historicalauditprovesnewassets."
+        }
+      ],
+      "path": "docs/historical-evidence-audit-2026-09-11.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Completereporttables,commands,limitations",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": [
+        "uv run python scripts/audit_historical_evidence.py --base",
+        "just docs-check",
+        "just check-all"
+      ],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/audit_historical_evidence.py",
+        "scripts/maintenance_inventory.py",
+        "scripts/check_documentation_integrity.py"
+      ],
+      "findings": [
+        {
+          "claim": "Fixedauditpopulations/oldMermaidCLI/counts",
+          "replacement": "Accuratedatedauditdescriptions mustremainasrecorded; do notupdate24rendercount/oldCLIasifnewmigrationranthen. Addcurrentcontractcrosslink onlyifreaderneedsnavigation."
+        },
+        {
+          "claim": "Gateproofandlimitations",
+          "replacement": "Keepownsource/revision/runlimitation andincompletebrowsercleanup classification. Newmigrationvalidatesnewpipeline separately, no claim historicalauditprovesnewassets."
+        }
+      ],
+      "path": "docs/maintenance-audit-2026-09-10.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Completereporttables,commands,limitations",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve executable syntax, real instruction paths and JSON filenames; no commands executed against deployment.",
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/backends/compute_agent.py:110",
+        "src/phaze/tasks/functions.py:739",
+        "src/phaze/cli/__init__.py:272",
+        "src/phaze/services/analysis_sizing.py"
+      ],
+      "findings": [
+        {
+          "claim": "WORKER_MAX_JOBS does not cap concurrency",
+          "replacement": "A lower legacy ceiling still clamps derived concurrency; document min behavior."
+        },
+        {
+          "claim": "Agent setup supplies a token without registering an explicit compute identity",
+          "replacement": "Document registration with required --id and --kind compute, then token delivery; preserve actual arm64 image runtime exception."
+        },
+        {
+          "claim": "Scratch is deleted after analysis universally",
+          "replacement": "Successful/terminal paths clean scratch; retryable paths can preserve it. Distinguish extracted-video scratch from transferred source scratch."
+        },
+        {
+          "claim": "Registry always restart-only and routing always chooses A1",
+          "replacement": "Defer exact activation policy to merged config implementation; rank-first chooses eligible available backend, possibly another cloud or local fallback."
+        },
+        {
+          "claim": "Compute dispatch behaves as one fully atomic broker/database transaction",
+          "replacement": "Durable sidecar intent is committed before flush_pending broker enqueue; SAQ enqueue autocommits. Explain recovery seam honestly; compute s3_key is None."
+        },
+        {
+          "claim": "Always Free capacity quoted as timeless",
+          "replacement": "Retain dated June2026 external capacity context; no current cloud quota claim from this source-only review."
+        }
+      ],
+      "path": "docs/cloud-burst.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Full guide read and compute dispatch/cleanup/registration source traced",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve executable syntax, real instruction paths and JSON filenames; no commands executed against deployment.",
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/services/kube_staging.py:711",
+        "src/phaze/services/kube_staging.py:746",
+        "tests/agents/deployment/test_k8s_runbook.py:37",
+        "src/phaze/tasks/controller.py:547",
+        "src/phaze/job_runner.py:788",
+        "src/phaze/scripts/download_models.py:236",
+        "src/phaze/cli/__init__.py:272",
+        "Dockerfile.job"
+      ],
+      "findings": [
+        {
+          "claim": "Role covers actual Kubernetes call graph",
+          "replacement": "Live list_pods_for_job calls core Pod.list but Role and test REQUIRED_RBAC omit pods/list. Update docs example and static guard scope after release. Job.list is intentionally reserved and unused; do not falsely require jobs/list for current scheduler."
+        },
+        {
+          "claim": "reconcile_cloud_jobs runs every5minutes",
+          "replacement": "Controller schedules reconcile everyminute; stage_cloud_window is every5minutes. Diagram already says everyminute, so reconcile prose with source."
+        },
+        {
+          "claim": "agents add --kind compute is copy-paste ready",
+          "replacement": "--id is required; supply explicit example identity and preserve token secret handling."
+        },
+        {
+          "claim": "2Gi PVC is sufficient for provisioned model manifest",
+          "replacement": "Committed manifest is68files,3264667851bytes (3.0404588682577014GiB), obtained by pure manifest import. Use sufficient example capacity with headroom; preserve immutable measured capacity/timing records unchanged."
+        },
+        {
+          "claim": "RWO is enough for eventual multi-node read-only model sharing",
+          "replacement": "Document claim/access-mode limitation: RWO example and readonly pod mount are distinct; operator must provision topology-compatible storage, not promise cross-node sharing."
+        },
+        {
+          "claim": "Lane concurrency causes one analyze process per pod",
+          "replacement": "job_runner.run executes one resolved file and one analysis child; persistent-agent lane concurrency does not control one-shot pod task count. Thread sizing still applies inside child."
+        },
+        {
+          "claim": "CPU-only rationale is DSP rather than TensorFlow",
+          "replacement": "Current analysis includes TensorFlow model sweeps; CPU-only is implemented deployment support, not evidence TF is absent or a universal throughput claim."
+        },
+        {
+          "claim": "Current sizing evidence applies forever to shipping code",
+          "replacement": "Keep exact dated model-mode/node/timing evidence; default12 vs rollback34 changes mean old measurements are not a fresh current guarantee. No new measurement or cap/runtime change."
+        },
+        {
+          "claim": "S3 diagram URLs fully describe file transport",
+          "replacement": "Preserve presign control edges and add file-server io PUT byte edge plus pod GET byte edge; control plane does not stream archive bytes."
+        },
+        {
+          "claim": "Registry restart-only repeated, secrets end-to-end _FILE universal",
+          "replacement": "Defer activation wording to final config; distinguish envFrom token Secret example from supported _FILE alternative and retain public-CA-only custody."
+        }
+      ],
+      "implementation_notes": [
+        "Replaced the real host name in the dated operator quotation with host-prod; incident date, attempt count, thresholds and quoted decision remain exact."
+      ],
+      "path": "docs/k8s-burst.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "1379-line guide read in chunks; runtime operator examples, sizing claims and graph relationships compared with committed source",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/select_impacted_tests.py",
+        "scripts/check_documentation_integrity.py",
+        "tests/shared/telemetry/test_analysis_instrumentation.py"
+      ],
+      "findings": [],
+      "path": "docs/quality-implementation/consumer-mapping-disposition.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/select_impacted_tests.py",
+        "scripts/check_documentation_integrity.py",
+        "tests/shared/telemetry/test_analysis_instrumentation.py"
+      ],
+      "findings": [
+        {
+          "claim": "Source inspection mentions fixed25 Mermaid blocks and CLI11.12.0",
+          "replacement": "Retain as explicit inspected-source snapshot at cf7b4cad; point current owners to replacement artifact manifest and rendered consumer. Do not rewrite this into a claim the excluded pilot was executed."
+        }
+      ],
+      "path": "docs/quality-implementation/immutable-parse-disposition.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/select_impacted_tests.py",
+        "scripts/check_documentation_integrity.py",
+        "tests/shared/telemetry/test_analysis_instrumentation.py"
+      ],
+      "findings": [],
+      "path": "docs/quality-implementation/mixed-validation-disposition.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/select_impacted_tests.py",
+        "scripts/check_documentation_integrity.py",
+        "tests/shared/telemetry/test_analysis_instrumentation.py"
+      ],
+      "findings": [],
+      "path": "docs/quality-implementation/selector-equivalence-disposition.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/select_impacted_tests.py",
+        "scripts/check_documentation_integrity.py",
+        "tests/shared/telemetry/test_analysis_instrumentation.py"
+      ],
+      "findings": [],
+      "path": "docs/quality-implementation/coverage-generation-disposition.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/select_impacted_tests.py",
+        "scripts/check_documentation_integrity.py",
+        "tests/shared/telemetry/test_analysis_instrumentation.py"
+      ],
+      "findings": [],
+      "path": "docs/quality-implementation/telemetry-capture-disposition.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/final-union-verification.md"
+      ],
+      "findings": [],
+      "path": "docs/quality-implementation/accepted-increment.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read all scope, frozen-source and validation claim boundaries",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "docs/quality-implementation/final-union-verification.md"
+      ],
+      "findings": [
+        {
+          "claim": "Final assembled gate pending / this batch not yet main",
+          "replacement": "Treat as dated pre-landing report. Resolve any current-status summary only with existing landing PR/bead evidence, never with this dispatch gate or by inferring old measurements from current tree."
+        }
+      ],
+      "path": "docs/quality-implementation/implementation-outcome.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read decisions, canonical repairs, task outcomes, populations, timing, final gate and limitations",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "tests/ci_shards.json",
+        "scripts/select_impacted_tests.py",
+        "docs/bead-feedback-readback.md"
+      ],
+      "findings": [],
+      "path": "docs/quality-implementation/pilot-disposition-manifest.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read all8pilot rows, cohort, R4 metrics/context loss, interpretation boundary and deferred nodes",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/templates",
+        "tests/browser"
+      ],
+      "findings": [],
+      "path": "docs/zero-selection-review-release-verification.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read deployed evidence, zero-row limitations and pending read-only release follow-up",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/config_base.py",
+        "src/phaze/config_control.py",
+        "src/phaze/config_agent.py",
+        "src/phaze/runtime_config_triggers.py"
+      ],
+      "findings": [
+        {
+          "claim": "First textual field reader proves read-at-startup semantics",
+          "replacement": "A textual reference inventory does not establish lifecycle activation. Reclassify each retained field against merged runtime config catalog, safe boundary and actual captured resource behavior; multipart snapshots/timeout/retry details pending final source."
+        }
+      ],
+      "path": "docs/runtime-config-settings-audit.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Full final-ref and integrated summary read; 42-key table source-matched, critical consumers traced, validation narrative explicitly separated from current implementation summary.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/services/proposal_parsing.py:13",
+        "pyproject.toml"
+      ],
+      "findings": [],
+      "path": "docs/ideas/decision-model-opportunities.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read all127lines; source response fields verified present",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "CLAUDE.md:633",
+        "scripts/select_impacted_tests.py",
+        "justfile"
+      ],
+      "findings": [
+        {
+          "claim": "Every ad-hoc submit generally uses selected code as current supported path",
+          "replacement": "Keep dated gate history distinct from supported strict selector/refusal/full fallback. Current authority remains actual justfile and bh configuration; final docs implementation mixed renderer/tooling changes must receive required full closure."
+        },
+        {
+          "claim": "Direct main pushes and no code PR described in extracted guidance",
+          "replacement": "CLAUDE currently repeats that guidance, while supplied session AGENTS/user instructs never push main/everyfeaturePR. Follow session instruction; do not silently resolve governance conflict by rewriting historical incident record."
+        }
+      ],
+      "path": "docs/git-topology-and-verification.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read348lines in chunks; current claims versus dated extraction boundaries",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
+      "disposition": "updated against current source",
+      "evidence": [
+        "tests/buckets.json",
+        "tests/ci_shards.json",
+        ".github/workflows/tests.yml"
+      ],
+      "findings": [
+        {
+          "claim": "Eight buckets still complete and unchanged",
+          "replacement": "tests/buckets.json now9 including browser; seven CI shard entries separately cover nonbrowser suite, dedicated browser job separately. Keep Phase63 counts and removed fingerprint/services history dated rather than treating file counts as current."
+        }
+      ],
+      "path": "tests/BUCKETS.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read current prose and most300line reorg table; current bucket/shard JSON read completely",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/coverage-baseline.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/runtime-profile.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/testing-risk-inventory.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/analysis-hunt.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/mutation-hunt.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/companion-hunt.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/assertion-proposal.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/coverage-proposal.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/selector-proposal.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/runtime-optimization-proposal.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/quality-implementation/implementation-outcome.md",
+        "docs/quality-implementation/pilot-disposition-manifest.md",
+        "scripts/select_impacted_tests.py"
+      ],
+      "findings": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
+      "path": "docs/quality-assessment/implementation-plan.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve commands, paths and manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/project-structure.md",
+        "docs/quality-implementation/implementation-outcome.md",
+        "scripts/maintenance_inventory.py"
+      ],
+      "findings": [
+        {
+          "claim": "Dated evidence and pending-at-writing lifecycle status may be read as current source results",
+          "replacement": "Retain source SHA, exact measured counts, failures, unsupported claims and unchanged evidence rows. Clarify date/scope and current owner links; never replace old figures with this dispatch results or infer deployment."
+        }
+      ],
+      "path": "docs/coverage-baseline-refresh.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read all prose and portions of216-row measured-module table; table not exhaustively independently rederived.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve commands, paths and manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/project-structure.md",
+        "docs/quality-implementation/implementation-outcome.md",
+        "scripts/maintenance_inventory.py"
+      ],
+      "findings": [
+        {
+          "claim": "Dated evidence and pending-at-writing lifecycle status may be read as current source results",
+          "replacement": "Retain source SHA, exact measured counts, failures, unsupported claims and unchanged evidence rows. Clarify date/scope and current owner links; never replace old figures with this dispatch results or infer deployment."
+        }
+      ],
+      "path": "docs/structural-maintenance-audit-2026-09-12.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read90line dated audit completely; actual current facade boundaries were traced in projectstructure/core reviews.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve commands, paths and manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/project-structure.md",
+        "docs/quality-implementation/implementation-outcome.md",
+        "scripts/maintenance_inventory.py"
+      ],
+      "findings": [
+        {
+          "claim": "Dated evidence and pending-at-writing lifecycle status may be read as current source results",
+          "replacement": "Retain source SHA, exact measured counts, failures, unsupported claims and unchanged evidence rows. Clarify date/scope and current owner links; never replace old figures with this dispatch results or infer deployment."
+        }
+      ],
+      "path": "docs/structural-maintenance-rebaseline-2026-09-11.md",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
+      "review_scope": "Read135line provenance/commands/common invariants; remaining stored-health tables not fully reread.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve commands, paths and manifest filenames.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "docs/project-structure.md",
+        "docs/quality-implementation/implementation-outcome.md",
+        "scripts/maintenance_inventory.py"
+      ],
+      "findings": [
+        {
+          "claim": "Dated evidence and pending-at-writing lifecycle status may be read as current source results",
+          "replacement": "Retain source SHA, exact measured counts, failures, unsupported claims and unchanged evidence rows. Clarify date/scope and current owner links; never replace old figures with this dispatch results or infer deployment."
+        }
+      ],
+      "path": "docs/quality-implementation/final-union-verification.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read all288lines including all6 fault hashes/receipt outcomes, later unreached oracles, timeout harness amendments,4oracle-gap controls and final gate limitations. Existing current consumer node paths verified in source inventory; no experiment rerun.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve now()/desc()/all(), real machine instruction paths, JSON manifest names and exact measurements.",
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/config.py",
+        "src/phaze/config_secrets.py",
+        "src/phaze/runtime_config.py",
+        "src/phaze/runtime_config_catalog.py"
+      ],
+      "findings": [
+        {
+          "claim": "All config via env; only10 reloadable keys and everything else restart-only",
+          "replacement": "Final merged catalog and activation contract govern env/file/DB layer policy and operation-safe capture. Do not infer pending implementation from baseline."
+        },
+        {
+          "claim": "API_HOST/API_PORT/OUTPUT_PATH are settings",
+          "replacement": "Copy dependency repairs removed/inert settings claims; reread final source preserving Compose host API_PORT and certificate PHAZE_API_HOST distinctions."
+        },
+        {
+          "claim": "Secret flowchart/default branch describes every settings source",
+          "replacement": "Preserve direct env versus _FILE handling and whitespace exceptions; scope diagram as secret resolver rather than excluding explicit init/config layers."
+        },
+        {
+          "claim": "Kubernetes burst pods out of scope and merely pick ConfigMap next Job",
+          "replacement": "One-shot job_runner fetches authenticated typed policy before work through shared runtime_config_agent, without heartbeat import/liveness reporting. Existing child keeps captured policy."
+        },
+        {
+          "claim": "Remote agents have no Postgres reachability",
+          "replacement": "Agent config poll is HTTP, but persistent lane workers independently use Postgres SAQ brokers; distinguish ORM-free role from no database network edge."
+        },
+        {
+          "claim": "Pipeline header force-local master toggle writes route_control",
+          "replacement": "Config pane owns write; header warning is read-only. Preserve durable routing gate behavior."
+        },
+        {
+          "claim": "Implicit local registry cap=1 in diagram",
+          "replacement": "_default_local_registry uses derive_sizing().concurrency:1 on4physicalcores,8 on32. Show derived cap, not universal1."
+        },
+        {
+          "claim": "No application TOML config file; all config via env",
+          "replacement": "Startup Settings env/.env plus live runtime.toml and DB overrides plus separately reloadable backend/bucket TOML registry are implemented. Clarify their distinct scope and authority."
+        },
+        {
+          "claim": "Remote provider controls all restart-only",
+          "replacement": "Final provider source stores exact registered provider_<id>_policy JSON rows in runtime_config_override with request-boundary resolution; env credentials remain startup-only. These policy keys are separate from RuntimeConfig42."
+        },
+        {
+          "claim": "Minimum dev .env block is a complete standalone Compose bringup",
+          "replacement": "Block omits mandatory POSTGRES_PASSWORD; ensure coherent synthetic database password/ORM+broker DSNs and file-agent registration. Preserve actual direct env names and user-copy commands."
+        },
+        {
+          "claim": "Watcher max_pending is absolute one-window eviction",
+          "replacement": "Each pending entry captures policy and receives one grace extension; unsettled eviction occurs on second crossing, preserving moved lineage."
+        },
+        {
+          "claim": "s3_client_timeout bounds one task wall-clock/oneSDKattempt",
+          "replacement": "Per newly built control-side client connect/read timeout; installed botocore max_attempts1 means initial+one retry. Separate agent httpx per-part guard and serialized SAQ net600baseline."
+        },
+        {
+          "claim": "All flat PHAZE_S3_* variables were removed without shim",
+          "replacement": "Retired global endpoint/bucket/credential fields moved into TOML, while S3 scalar policy aliases (timeouts, presign lifetimes, part size and lifecycle) remain supported. Do not tell operators those live policy inputs are ignored."
+        }
+      ],
+      "path": "docs/configuration.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Merged startup/live/registry/provider lifecycle and complete field-reference reconciliation; 42 live keys and 88 Settings fields independently source-matched. Retired fields, client/broker boundaries, snapshot timing and executable examples reviewed.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve exact header/environment names, commands, paths and literal JSON manifest names.",
+      "disposition": "updated against current source",
+      "evidence": [
+        "src/phaze/runtime_config.py",
+        "src/phaze/runtime_config_catalog.py",
+        "src/phaze/config_base.py",
+        "src/phaze/config_control.py",
+        "src/phaze/config_agent.py",
+        "src/phaze/config_redis.py"
+      ],
+      "findings": [
+        {
+          "claim": "LLMmodel purpose says changing model after restart while live column says next batch",
+          "replacement": "Make purpose consistent with captured next-batch live semantics. Clarify roles column means declaring Settings roles versus actual consumer owners."
+        },
+        {
+          "claim": "New guide not in existing copy guard tuple",
+          "replacement": "Include new public operator configuration reference in CURRENT_DOCS; preserve exact X-Phaze-Config-Version protocol header exemption."
+        }
+      ],
+      "path": "docs/configuration-inventory.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Settings/nestedregistry/provider/directdeployment/control categories read; count/default-kind contract examined;42livekeys reconciled.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "command_preservation": "Preserve exact header/environment names, commands, paths and literal JSON manifest names.",
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "src/phaze/services/remote_policy.py",
+        "src/phaze/services/remote_lookup_batches.py",
+        "src/phaze/models/remote_lookup_batch.py",
+        "src/phaze/services/remote_transport.py",
+        "src/phaze/tasks/controller.py"
+      ],
+      "findings": [],
+      "path": "docs/global-tracklist-providers.md",
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Read all operator instructions; exactref policy/storage/bounded expansion/recovery/selection boundaries reviewed. Source checks:CHUNK100 keyset expansion bounded by upperUUID; active pair partial unique index; eligibility excludes explicit tracklist selection;120s lease, five transient failures,50display-only row limit,minute recovery. Preserve scope as bounded expansion, not a promised immutable point-in-time snapshot.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "disposition": "reviewed current implementation/provenance",
+      "evidence": [
+        "tests/shared/core/test_operator_copy.py"
+      ],
+      "findings": [],
+      "path": "docs/operator-copy-inventory.md",
+      "review_level": "current developer guide: source-traced review",
+      "review_scope": "Full developer record reviewed; scoped wire/path/RIGHTS_EVIDENCE exemptions and executable command preservation checked.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "disposition": "reviewed current implementation/provenance",
+      "evidence": [
+        "scripts/render_documentation_diagrams.py"
+      ],
+      "findings": [],
+      "path": "docs/diagram-authoring.md",
+      "review_level": "current developer guide: source-traced review",
+      "review_scope": "Full authoring/tooling guide checked against actual renderer, pinned helper paths/options, local font licenses and browser verifier.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "disposition": "reviewed current implementation/provenance",
+      "evidence": [
+        "docs/audits/current-design-ledger.json"
+      ],
+      "findings": [],
+      "path": "docs/audits/current-design-review.md",
+      "review_level": "current developer guide: source-traced review",
+      "review_scope": "Review summary and inventory scopes reconciled with this ledger; pending sidebar followup remains explicit.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    },
+    {
+      "disposition": "reviewed current implementation/provenance",
+      "evidence": [
+        "docs/diagrams/profile.json"
+      ],
+      "findings": [],
+      "path": "scripts/vendor/diagram_design/skills/diagram-design/references/style-guide.md",
+      "review_level": "current developer guide: source-traced review",
+      "review_scope": "Full adapted Phaze profile reviewed; upstream contrast/skin checks exercise this profile.",
+      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+    }
+  ],
+  "runtime_ast_proof": {
+    "baseline": "517c56be",
+    "unchanged_runtime_ast_excluding_docstrings": {
+      "src/phaze/services/remote_lookup.py": true,
+      "src/phaze/services/s3_staging.py": true,
+      "src/phaze/tasks/_shared/agent_bootstrap.py": true
+    }
+  },
+  "scope_note": "Full/current source traces are distinguished from partial dated-evidence dispositions. No production/archive probes or fresh historical benchmarks. Original scratch preflight remains unchanged.",
+  "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+}

@@ -9,56 +9,9 @@ This guide walks through bringing up a fresh two-host deployment from a clean ch
 
 Optionally, the control plane can offload analysis to **cloud backends** declared in a `backends.toml` — a cloud-compute agent and/or one-or-more Kueue clusters. Cloud offload is entirely additive: with no `backends.toml` mounted, the deployment is the local-only two-host topology below.
 
-```mermaid
-flowchart TB
-    subgraph app["Application server (docker-compose.yml)"]
-        api["api<br/>FastAPI + admin UI (TLS :8000)"]
-        ctl["worker<br/>PHAZE_ROLE=control"]
-        pg[("postgres :5432<br/>metadata + SAQ broker")]
-        rd[("redis :6379<br/>cache / counters")]
-        cfg{{"backends.toml<br/>(optional, mounted)"}}
-        api --- pg
-        api --- rd
-        ctl --- pg
-        ctl --- rd
-        cfg -. loaded by .-> api
-        cfg -. loaded by .-> ctl
-    end
+![Phaze Deployment Guide](diagrams/deployment-1.png)
 
-    subgraph fs["File server(s) (docker-compose.agent.yml, one per host; 3 lanes)"]
-        aro["worker-analyze + worker-io<br/>PHAZE_ROLE=agent (2 read-only lanes)"]
-        meta["worker-meta<br/>PHAZE_ROLE=agent (rw archive lane)"]
-        wt["watcher"]
-        media[("/data/music")]
-        aro -->|"ro"| media
-        meta -->|"rw"| media
-        wt -->|"ro"| media
-    end
-
-    subgraph cloud["Cloud-compute agent (docker-compose.cloud-agent.yml)"]
-        ca["worker (arm64, kind=compute)<br/>network_mode: host over Tailscale"]
-    end
-
-    subgraph kueue["N Kueue clusters (kind=kueue)"]
-        k1["Cluster A<br/>LocalQueue"]
-        s1[("S3 staging A")]
-        k2["Cluster B<br/>LocalQueue"]
-        s2[("S3 staging B")]
-        k1 --- s1
-        k2 --- s2
-    end
-
-    fs -->|"HTTPS:8000 API "| api
-    fs -->|"Postgres :5432 SAQ broker"| pg
-    fs -->|"Redis :6379 cache"| rd
-    cloud -->|"HTTPS :8000 API"| api
-    cloud -->|"Postgres :5432 SAQ broker"| pg
-    cloud -->|"Redis :6379 cache"| rd
-    api -->|"submit/watch Jobs (kube API)"| k1
-    api -->|"submit/watch Jobs (kube API)"| k2
-    k1 -->|"callback HTTPS :8000 API"| api
-    k2 -->|"callback HTTPS :8000 API"| api
-```
+[Open the interactive-size HTML](diagrams/deployment-1.html) · [Download SVG](diagrams/deployment-1.svg)
 
 ## Deployment Targets
 
@@ -357,7 +310,7 @@ The `api` container does **not** start uvicorn directly. It runs `uv run python 
 
 The entrypoint reads three env vars, all with safe defaults so a plain `docker compose up` works in dev: `PHAZE_CERTS_DIR` (default `/certs`), `PHAZE_API_HOST` (default `localhost`, baked into the leaf CN), and `PHAZE_API_TLS_SANS` (default `localhost,127.0.0.1,api`). The bootstrap is idempotent — restarts against a populated `/certs/` skip regeneration.
 
-## Internal CA / mTLS bootstrap
+## Internal CA / server TLS and bearer authentication
 
 `phaze.cert_bootstrap` generates a self-signed ECDSA P-256 CA (10-year validity) and a CA-signed leaf cert (2-year validity) into `/certs/` on the app-server's first start:
 
@@ -586,7 +539,7 @@ You should see (per lane worker; `lane=` varies by service):
 
 - `phaze.tasks.agent_worker startup role=agent api=https://... auth_id_prefix=phaze_agent_a1b2... queue=phaze-agent-fileserver-east-analyze lane=analyze`
 - `validating model weights -- essentia weights at /models (~3.1 GB across 68 files); ...`
-- `another worker holds the model download lock -- waiting for it to finish before re-validating`
+- A missing or wrong-size model is a provisioning failure; runtime workers validate the read-only model set and never acquire a download lock.
   (the sibling lanes on a fresh start)
 - `models validated`
 - `phaze.tasks.agent_worker startup complete agent_id=fileserver-east queue=phaze-agent-fileserver-east-analyze lane=analyze`
@@ -650,7 +603,7 @@ Called from the CI `docker-publish` job, which runs only after `aggregate-result
 This workflow produces **three** GHCR artifacts across three build stages (`push` is `true` for non-PR events):
 
 - A **single-image matrix** (`build-and-push`) builds `Dockerfile` (api) on `linux/amd64`.
-- A native-arm64 stage builds `Dockerfile.agent-arm64` on an `ubuntu-24.04-arm` runner, with the essentia C++ compile going through an `sccache` cache mount that the job restores from `actions/cache` (see `docs/arm64-agent-image.md`). It `load`s (does not push) the image, runs an import smoke test, and hands the resolved `-arm64` tags + OCI labels to a **parity-gated pusher** (`parity-guard`) — the arm64 image reaches GHCR only after its analysis output matches the x86 golden byte-for-byte, so a parity-divergent image can never publish ahead of the guard.
+- A native-arm64 stage builds `Dockerfile.agent-arm64` on an `ubuntu-24.04-arm` runner, with the essentia C++ compile going through an `sccache` cache mount that the job restores from `actions/cache` (see `docs/arm64-agent-image.md`). It `load`s (does not push) the image, runs an import smoke test, and hands the resolved `-arm64` tags + OCI labels to a **parity-gated pusher** (`parity-guard`) — the arm64 image reaches GHCR only after its analysis output matches the x86 golden under the comparator's exact BPM/key and configured score tolerances, so a parity-divergent image can never publish ahead of the guard.
 - A `build-job-runner` stage builds `Dockerfile.job` **FROM** the freshly-pushed x86 api image (a `needs: build-and-push` dependent, not a matrix row) — the Kueue one-shot Job image.
 
 | Artifact | Dockerfile | Platform | Consumed by |
@@ -666,24 +619,15 @@ This workflow produces **three** GHCR artifacts across three build stages (`push
 
 **Release version scheme (CalVer).** Releases use CalVer `YYYY.M.REVISION` with a **bare** tag (no `v` prefix — the first CalVer tag is `2026.7.0`) and a **no-leading-zero month** (`2026.7.0`, not `2026.07.0`). REVISION is a **per-month zero-based** counter: the Nth release within a given `YYYY.M`, starting at `0` and **resetting each calendar month**, so same-month patch releases just increment REVISION (`2026.7.0` → `2026.7.1`). Milestones are named; versions are dated — the two are decoupled.
 
-**Publish trigger (invariant).** GHCR publish fires on the **push of an annotated tag** (`git tag -a 2026.7.0 -m "…"` then `git push origin 2026.7.0`) — creating the tag locally publishes nothing; the *push* of the tag ref is the sole trigger. If a tag was pushed wrong (bad SHA, premature), delete-and-recreate it: `git push --delete origin 2026.7.0`, fix, then re-tag and push again to re-fire the pipeline. `docker-publish.yml`'s metadata-action is scheme-agnostic (`type=semver` parses `2026.7.0` → `{{version}}=2026.7.0`, `{{major}}.{{minor}}=2026.7`), so no workflow edit is needed to adopt CalVer.
+**Publish triggers.** The committed CI workflow publishes on pushes to `main` and matching
+three-part version tags. A tag created only locally publishes nothing. The workflow matches
+the pushed ref; it does not require Git's annotated-tag form. Tagged releases produce
+version-pinnable image tags; keep the deployment pin aligned with a published release.
 
-```mermaid
-flowchart LR
-    df1["Dockerfile"] --> api["ghcr.io/…/phaze<br/>(amd64)"]
 
-    api -->|"docker-compose.yml + agent.yml"| use1["api / worker / watcher"]
+![docker-publish.yml` (build + push to GHCR)](diagrams/deployment-2.png)
 
-    api -.->|"FROM (needs build-and-push)"| dfjob["Dockerfile.job"]
-    dfjob --> job["…/phaze/job (amd64)"]
-    job -->|"kind=kueue Jobs"| kueue["Kueue backend"]
-
-    df4["Dockerfile.agent-arm64"] --> loadarm["build + load (arm64)<br/>import smoke"]
-    loadarm --> gate{"parity guard<br/>arm64 == x86 golden?"}
-    gate -->|"pass"| arm["…/phaze:*-arm64"]
-    gate -->|"fail"| block["push blocked"]
-    arm -->|"docker-compose.cloud-agent.yml"| compute["kind=compute agent"]
-```
+[Open the interactive-size HTML](diagrams/deployment-2.html) · [Download SVG](diagrams/deployment-2.svg)
 
 The `Dockerfile` is multi-stage. A `css-builder` stage (`FROM python:3.14-slim AS css-builder`) compiles `assets/src/app.css` → `src/phaze/static/css/app.css` with the pinned standalone Tailwind v4 binary (`TAILWIND_VERSION=v4.3.2`, kept in sync with the justfile `tailwind` recipe — no Node, no CDN); the final `base` stage (`FROM python:3.14-slim AS base`) copies only the generated CSS. `base` installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
 
@@ -768,13 +712,21 @@ To stop and restart cleanly without rebuilding: `just down` (`docker compose dow
 
 ## One-time cleanup after the background heartbeat fix
 
-Builds **before** background heartbeat registered the heartbeat as a SAQ `CronJob` with `unique=True`, which parks a deterministic row keyed `cron:heartbeat_tick` in the Postgres broker (`saq_jobs`). After you redeploy the new agent image, nothing re-schedules that row (the heartbeat now runs as an in-process asyncio background task), so it lingers as a stale parked entry. Run this one-time cleanup **after the new agent image is deployed**, against the queue database (`PHAZE_QUEUE_URL`):
+Builds before the background heartbeat used a SAQ `CronJob` with a deterministic
+`cron:heartbeat_tick` key. A rolling deployment can leave old workers alive on other queues.
+Before deleting a legacy cron row, replace or stop **every owner of the targeted queue**, prove
+that no old worker can reschedule/finalize the task and that no buffered execution remains,
+and inspect the exact queue/key. A new image on one host alone is insufficient proof.
+Against the broker database (`PHAZE_QUEUE_URL`), inspect first and delete only that verified row:
 
 ```sql
-DELETE FROM saq_jobs WHERE key = 'cron:heartbeat_tick';
+SELECT queue, key, status FROM saq_jobs WHERE key = 'cron:heartbeat_tick';
+-- Replace <verified-queue> only after the worker-quiescence checks above.
+DELETE FROM saq_jobs WHERE queue = '<verified-queue>' AND key = 'cron:heartbeat_tick';
 ```
 
-It is harmless if the row is already absent (e.g. on a fresh broker or after a `saq_jobs` truncate). This mirrors the prior Redis orphaned-cron-purge runbook, adapted to the Postgres broker.
+The deletion is idempotent when that exact row is absent. Keep the owning workers stopped
+until remediation finishes; current workers use the in-process heartbeat and do not need a cron row.
 
 ## Set-projection backfill (after an energy-weights or projection-version change)
 
@@ -785,7 +737,7 @@ Changing the energy scalar's weights, or bumping `set_projection_writer.CURRENT_
 docker compose exec api uv run phaze backfill set-projection
 ```
 
-The command is idempotent — it re-derives only the `SetProfile` rows whose `projection_version` is behind the code's current value, never the whole corpus, so re-running it costs nothing. It prints a report including files scanned/projected/skipped/failed and the wall-clock duration; record the derived rows/s and that wall-clock figure as a dated amendment under the ADR's §10, the same way prior version bumps were recorded.
+The command is idempotent — it re-derives only missing `SetProfile` rows and rows whose `projection_version` is behind the code's current value, never the whole corpus, so re-running it costs nothing. It prints a report including files scanned/projected/skipped/failed and the wall-clock duration; record the derived rows/s and that wall-clock figure as a dated amendment under the ADR's §10, the same way prior version bumps were recorded.
 
 ## Historical: sidecar volume chown runbook (removed, fingerprint removal)
 
@@ -836,7 +788,7 @@ docker compose restart api            # cert_bootstrap regenerates + prints the 
 
 Every file-server agent will fail to connect until you re-distribute the new `phaze-ca.crt`. The loud banner is the only safeguard — do not delete the certs directory casually.
 
-> **Kubernetes burst path (v6.0).** The K8s one-shot Job does **not** bake the CA into its image — it mounts the public `phaze-ca.crt` from the operator-created `core/v1` Secret named by `[backends.kube].ca_secret_name` (default `phaze-internal-ca`) read-only at `/certs`. After regenerating the CA above, re-create that Secret with the new `phaze-ca.crt` (`kubectl create secret generic phaze-internal-ca --from-file=phaze-ca.crt=./certs/phaze-ca.crt`) and let in-flight Jobs re-submit — no Job-image rebuild. See [k8s-burst.md §6](k8s-burst.md) for the full runbook.
+> **Kubernetes burst path (v6.0).** The K8s one-shot Job does **not** bake the CA into its image — it mounts the public `phaze-ca.crt` from the operator-created `core/v1` Secret named by `[backends.kube].ca_secret_name` (default `phaze-internal-ca`) read-only at `/certs`. After regenerating the CA above, update that Secret in its configured namespace with the new public `phaze-ca.crt` (for the example namespace: `kubectl create secret generic phaze-internal-ca --namespace phaze --from-file=phaze-ca.crt=./certs/phaze-ca.crt --dry-run=client -o yaml | kubectl apply -f -`) and let in-flight Jobs re-submit — no Job-image rebuild. See [k8s-burst.md §6](k8s-burst.md) for the full runbook.
 
 ## Pinning the agent image for production
 
@@ -847,7 +799,7 @@ For first-time setup, `PHAZE_IMAGE_TAG=latest` pulls the most recent tagged rele
 PHAZE_IMAGE_TAG=2026.8.4
 ```
 
-Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:<version>` on tagged releases. The pin MUST be a 3-part CalVer `YYYY.M.REVISION` value (for example, `2026.8.4`) matching a published release tag (`ci.yml` only publishes on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag).
+Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:<version>` on tagged releases. The pin MUST be a 3-part CalVer `YYYY.M.REVISION` value (for example, `2026.8.4`) matching a published release tag (version tags come from matching three-part tag pushes; `main` also publishes development images).
 
 ## Provisioning models
 

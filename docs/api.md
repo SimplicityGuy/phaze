@@ -21,7 +21,7 @@ Both 404 into their own presentation's not-found rendering rather than raising; 
 that not-found section inside the shell.
 
 The record context reads the narrow migration-`063` projection rather than decoding each window's
-large `features` JSONB: `SetProfile` plus `AnalysisWindow.energy`, `.camelot`, and `.mood_scores`
+large `features` JSONB: `SetProfile` plus persisted `AnalysisWindow.energy` and `.mood_scores` (with `.camelot` computed at read time from `musical_key`, following migration `066`)
 feed the timeline, harmonic journey, record facts, track segments, glyph, poster, and deterministic
 similar-set ranking. There is no separate projection API; analysis completion writes it as part of
 the existing internal analysis callback, and the three record presentations are read-only.
@@ -71,13 +71,18 @@ still bounded.
 
 **Metadata extraction is operator-triggered only.** The `POST /api/internal/agent/files` discovery upsert no longer auto-enqueues metadata extraction — discovery only persists file rows. `extract-metadata` (JSON or HTMX) is now the sole producer of `extract_file_metadata` jobs, and it queues every music/video file regardless of state (backfill/re-extraction).
 
-**`proposals` convergence gate.** `proposals/generate` (and the HTMX `/pipeline/proposals`) only enqueues files that have *both* a `FileMetadata` and an `AnalysisResult` row, chunked into batches of `settings.llm_batch_size` (default 10). `generate_proposals` is a batch task (one job per batch), routed through the same `enqueue_router`.
+**`proposals` convergence gate.** The shared proposal producer requires Metadata and Analyze
+both satisfied (`done` or explicitly skipped), neither stage in flight, and no existing proposal.
+A row's mere existence is insufficient. Eligible files are batched using `llm_batch_size`
+(default 10); `generate_proposals` runs on the controller queue. Selected source facts are
+optional, but a selected binding must remain fresh and usable when the proposal consumes it.
 
-**External tracklist acquisition has been removed.** Stored tracklists remain available for review, Discogs matching and cue generation.
+
+**The legacy source-specific acquisition path is retired.** Stored tracklists remain available for review, Discogs matching and cue generation. Registered remote providers have a separate deliberate enablement and durable lookup workflow; see [Global tracklist providers](global-tracklist-providers.md).
 
 **Bulk match.** `POST /pipeline/match-tracklists` enqueues one `match_tracklist_to_discogs` job per **pending match** tracklist (every tracklist **not** reachable from `discogs_links` via the `version → track → link` walk — the complement of `match.done`). It is a **controller** task (task routing rule), routed through `enqueue_router.resolve_queue_for_task` to the **controller** queue — never the consumer-less default queue — and it never raises `NoActiveAgentError` (no agent empty-state). Already-linked tracklists are skipped, and the deterministic key `match_tracklist_to_discogs:<tracklist_id>` dedups in-flight replays, so a double-click/refresh cannot multiply the backlog. The button is gated disabled: **"Needs tracklist"** until at least one tracklist exists (`matchTotal === 0`); **"Matching…"** while a batch is in flight (`matchBusy > 0`, checked **before** the nothing-pending state so a running batch is always visible); and **"All matched"** once the pending set is empty. The endpoint enqueues nothing and returns 200 (rendering `No tracklists ready for matching`) when the pending set is empty. Manual only — no auto-trigger.
 
-**Recovery-only automation model.** Steady state produces **zero** automatic enqueues — every stage advances only when the operator clicks its trigger. The **only** automatic enqueue is a single gated recovery pass on controller startup: `recover_orphaned_work(ctx)` runs a `count_inflight_jobs` queue-loss detector and **no-ops** when any `saq_jobs` row is queued/active. Since Postgres broker migration the SAQ broker is **Postgres** (durable across restarts — SAQ re-dequeues the surviving `saq_jobs` rows itself), so a normal reboot loses nothing and recovery is a no-op; it reconciles all eight stages only on a genuine queue-loss (truncate / restore-from-backup / fresh migration). The every-5-min `reenqueue_discovered` auto-advance cron (and the producer itself) were **removed** — `reap_stalled_scans` (every minute) is unchanged; `refresh_tracklists` is **no longer a cron at all** (operator-triggered tracklist refresh made it an on-demand, operator-targeted re-arm of the drain). The DAG's global **Recover** button (`POST /pipeline/recover`) calls the **same** idempotent producer with `force=True` as the cold-boot safety net: `force` bypasses **only** the no-op detect gate, never the per-item dedup, so a forced reconcile over a live queue collapses every still-in-flight item to a skipped no-op. Every re-enqueue flows through the identical deterministic-key producers the manual triggers use (`<task>:<natural_id>`), so recovery and manual paths cannot drift and recovery can never double the backlog (the duplicate-enqueue failure class is closed). The endpoint schedules the producer fire-and-forget in a background task and returns a "recovery started" fragment immediately, so it never blocks or 500s the HTTP response.
+**Explicit advancement and intent continuation.** Operators advance pipeline stages deliberately; the controller does not automatically chain Metadata → Analyze → Propose. Existing durable intent can continue automatically through cloud submission/reconciliation, lookup-batch continuation and companion import/recovery. A separate gated recovery pass on controller startup also exists: `recover_orphaned_work(ctx)` runs a `count_inflight_jobs` queue-loss detector and **no-ops** when any `saq_jobs` row is queued/active. Since Postgres broker migration the SAQ broker is **Postgres** (durable across restarts — SAQ re-dequeues the surviving `saq_jobs` rows itself), so a normal reboot loses nothing and recovery is a no-op; it reconciles all eight stages only on a genuine queue-loss (truncate / restore-from-backup / fresh migration). The every-5-min `reenqueue_discovered` auto-advance cron (and the producer itself) were **removed** — `reap_stalled_scans` (every minute) is unchanged; `refresh_tracklists` is **no longer a cron at all** (operator-triggered tracklist refresh made it an on-demand, operator-targeted re-arm of the drain). The DAG's global **Recover** button (`POST /pipeline/recover`) calls the **same** idempotent producer with `force=True` as the cold-boot safety net: `force` bypasses **only** the no-op detect gate, never the per-item dedup, so a forced reconcile over a live queue collapses every still-in-flight item to a skipped no-op. Every re-enqueue flows through the identical deterministic-key producers the manual triggers use (`<task>:<natural_id>`), so recovery and manual paths cannot drift and recovery can never double the backlog (the duplicate-enqueue failure class is closed). The endpoint schedules the producer fire-and-forget in a background task and returns a "recovery started" fragment immediately, so it never blocks or 500s the HTTP response.
 
 **DAG node counts on the 5s poll.** `GET /pipeline/stats` is polled every 5s by the dashboard. Alongside the stats bar it emits `hx-swap-oob` seed paragraphs with the id contract `dag-seed-<storeKey>` (one per DAG node sub-key: `metadataDone`/`metadataTotal`, `analyzeDone`/`analyzeTotal`, `tracklistDone`, `searchBusy` (tracklist search, the Search-node in-flight gate), `agentOnline` (online-agent count, drives the header's "Agents · N" badge), `scrapeDone`/`scrapeTotal`, `scrapeBusy` (tracklist matching, the Scrape-node in-flight gate), `matchDone`/`matchTotal`, `matchBusy` (tracklist matching, the Match-node in-flight gate), `proposalsDone`/`proposalsTotal`, `approved`, `executedDone`/`executedTotal`). Each per-node `done`/`total` is reconciled from `get_stage_progress` (DB-truth, the authority) with the maintained Redis `completed` counters as a degrade backstop, so the poll never 500s on a Redis hiccup. The `agentOnline` (online-agent count) read runs inside a degrade-safe SAVEPOINT and falls back to `0` on any DB error. The DAG canvas mirrors these store keys.
 
@@ -112,21 +117,9 @@ Operator overrides and control-side agent callbacks for the pluggable multi-back
 > the output tables via `services/stage_status.py`. See the caveat in
 > [cloud-burst.md → walkthrough](cloud-burst.md) for the same point in operator terms.
 
-```mermaid
-flowchart LR
-    D[DISCOVERED file] --> R{select_backend<br/>by cost-tier rank}
-    FL[/force-local override<br/>route_control 'global'/]:::override -.forces.-> R
-    R -->|rank 0| L[Local analyze]
-    R -->|rank 1..N| K[Kueue cluster 1..N<br/>S3 staging]
-    R -->|rank N+1| C[Cloud compute<br/>rsync push]
-    K -->|upload ack /s3/.../uploaded| KP[UPLOADED → submit_cloud_job]
-    C -->|push ack /push/.../pushed| CP[PUSHED → process_file]
-    K -. cap exhausted .-> SP[spill AWAITING_CLOUD → local]
-    C -. cap exhausted .-> SP
-    L -.timeout ANALYSIS_FAILED.-> BF[/backfill-cloud<br/>re-route long files/]:::override
-    BF --> R
-    classDef override fill:#fde68a,stroke:#b45309,color:#000;
-```
+![Multi-cloud backend lanes](diagrams/api-1.png)
+
+[Open the interactive-size HTML](diagrams/api-1.html) · [Download SVG](diagrams/api-1.svg)
 
 ### Per-stage pause / priority controls (drain scheduler)
 

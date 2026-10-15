@@ -35,15 +35,13 @@ service, player, or unattended library mutator.
 - Analyzes every natural fine and coarse window. There is no sampling cap or deepen mode; live
   PCM and process peak RSS are bounded at the chunk/process boundary, and long-running work stays
   live through progress heartbeats rather than a wall-clock timeout.
-- Reads stored tracklists and local cue companions, then matches tracklists
-  to Discogs data.
+- Reads stored tracklists and local cue companions, supports deliberately enabled remote-provider lookup batches, and matches reviewed source facts to Discogs data. See [Global tracklist providers](docs/global-tracklist-providers.md).
 - Generates structured rename and destination proposals through LiteLLM.
 - Presents filename and destination decisions together in **Changes Review**. Tags remain a
   separate, reversible authorization after execution.
-- Applies only approved work through an agent-owned copy/verify/delete path and records the
-  outcome in the audit log.
+- Applies only approved work through agent-owned guarded filesystem publication, verification and source unlink, with replay-aware outcome reporting.
 - Detects exact duplicates from discovery-time SHA-256 hashes. Audio fingerprinting was removed;
-  there are no audfprint, Panako, AcoustID, or fingerprint pipeline stages.
+  there are no audfprint, Panako, AcoustID, or fingerprint pipeline stages. The system Chromaprint package remains deliberately installed under the [permanent retention decision](docs/design/0002-fingerprint-removal.md); it is not a product fingerprinting feature.
 
 ## The operator workflow
 
@@ -63,58 +61,24 @@ search and per-file context without creating alternate approval paths.
 
 The usual flow is:
 
-```mermaid
-flowchart LR
-    D[Discover] --> M[Metadata]
-    D --> A[Analyze]
-    M --> P[Propose changes]
-    A --> P
-    D --> T[Tracklists]
-    P --> R[Changes Review]
-    R --> E[Execute approved]
-    E --> G[Tag review / write]
-    D --> X[Exact duplicate review]
-```
+![The operator workflow](docs/diagrams/overview-1.png)
+
+[Open the interactive-size HTML](docs/diagrams/overview-1.html) · [Download SVG](docs/diagrams/overview-1.svg)
 
 Metadata and analysis are independent enrichment stages. Steady-state advancement is
-operator-triggered; startup and the Recover action only reconcile genuine queue loss and use
-deterministic keys so repeated requests do not duplicate work.
+operator-triggered. Startup recovery is gated by queue-loss detection; the Recover action can explicitly reconcile existing intent without that gate. Cloud, companion and lookup work can continue persisted intent automatically. Deterministic keys prevent duplicate work from repeated enqueue requests.
 
 ## Architecture
 
 Phaze separates decisions from file custody.
 
-```mermaid
-flowchart LR
-    UI[FastAPI + HTMX console] --> PG[(PostgreSQL 18)]
-    CW[Controller SAQ worker] --> PG
-    UI --> R[(Valkey 9)]
-    CW --> R
+![Architecture](docs/diagrams/overview-2.png)
 
-    subgraph FS[File-server agent]
-      W[Watcher]
-      AM[Meta lane]
-      AA[Analyze lane]
-      AI[I/O lane]
-      F[(Music archive)]
-      W --- F
-      AM --- F
-      AA --- F
-      AI --- F
-    end
-
-    W -->|authenticated HTTPS| UI
-    AM -->|Postgres-backed SAQ queue| PG
-    AA -->|Postgres-backed SAQ queue| PG
-    AI -->|Postgres-backed SAQ queue| PG
-    AM -->|results over HTTPS| UI
-    AA -->|results over HTTPS| UI
-    AI -->|results over HTTPS| UI
-```
+[Open the interactive-size HTML](docs/diagrams/overview-2.html) · [Download SVG](docs/diagrams/overview-2.svg)
 
 - **PostgreSQL** is the system of record and the durable SAQ broker (`saq_jobs`). Agents use a
   raw libpq `PHAZE_QUEUE_URL` for their queue pool; application ORM access remains control-side.
-- **Redis** is not the task broker. It provides caches, rate limiting, execution progress, and
+- **Redis-compatible Valkey 9** is not the task broker. It provides caches, rate limiting, execution progress, and
   operational counters.
 - **The application server** runs the API/UI and controller worker without an archive mount.
 - **Each file server** runs a watcher plus `analyze`, `meta`, and `io` lane workers. Archive

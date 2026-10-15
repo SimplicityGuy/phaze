@@ -18,7 +18,7 @@ WHERE a.analysis_completed_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM cloud_job AS c WHERE c.file_id = a.file_id);
 ```
 
-It still returns **661 files**. The earlier spike measured these against **11,412** files with a
+The dated source query returned **661 files**; this review did not query the deployment again. The earlier spike measured these against **11,412** files with a
 duration (**5.79%**) and **223.99** of **11,492.22** audio-hours (**1.95%**). Every one has
 `fine_windows_analyzed = fine_windows_total`. None has a coarse-window count. All **661** have one
 `scheduling_ledger` entry for `process_file`, and none has a matching `saq_jobs` key. All ledger
@@ -47,7 +47,7 @@ The progress POST persists a partial row without changing the completion or fail
 `analysis_completed_at` and clears the ledger entry (`put_analysis` and
 `_finalize_analysis_outcome` in the same module). The terminal failure callback stamps `failed_at`
 and clears the ledger. A job that stops after progress but before either callback therefore leaves
-exactly the observed partial row and ledger entry. The derived file state remains `discovered`
+exactly the observed partial row and ledger entry. There is no persisted file-wide state; the relevant per-stage status is derived from output, skip and live-work rows
 because neither terminal marker exists; the old `files.state` write was removed (the streaming teardown comments
 beside those handlers).
 

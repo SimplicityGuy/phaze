@@ -1784,10 +1784,10 @@ download-models DIR:
 update-hooks:
     uv run pre-commit autoupdate --freeze
 
-[doc('Validate maintained documentation, including local anchors and real Mermaid rendering')]
+[doc('Validate maintained documentation, including local anchors and source-cited diagram assets')]
 [group('maintenance')]
 docs-check:
-    uv run python scripts/check_documentation_integrity.py --render-mermaid
+    uv run python scripts/check_documentation_integrity.py
 
 [doc('Lock and upgrade all dependencies')]
 [group('maintenance')]

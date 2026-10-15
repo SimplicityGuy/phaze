@@ -19,9 +19,10 @@ Nothing here branches on a provider id: every provider is reached through the sa
 persistence calls, and a failed read always reaches the operator as its own typed outcome, never as "nothing
 found" (:func:`operator_outcome`).
 
-No queue: a lookup is bounded by the registry's deadline (``DiscoveryBudget.deadline_seconds``), and the
-transport answers ``paced`` rather than waiting past it, so it runs inside the operator's request. That is an
-implementer's decision (bead phaze-b6430); a queue would add a polling surface and a second transport holder.
+Direct single-recording lookup remains request-bound by ``DiscoveryBudget.deadline_seconds``;
+the transport answers ``paced`` instead of waiting past it. Global batches use durable queued
+work through ``queued_lookup`` and the same core transport, preserving charged usage and
+successful-read continuation. The earlier no-queue rationale applied to the original direct path.
 """
 
 import asyncio

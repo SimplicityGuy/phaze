@@ -1,0 +1,35 @@
+{
+  "adaptation": "Checker source copied unchanged. Repository-relative style-guide is an explicitly adapted Phaze profile, not upstream default skin. System-font export is intentional; no Node runtime or mandatory network fonts.",
+  "copyright": "Copyright (c) 2025 Cathryn Lavery",
+  "files": [
+    {
+      "git_blob_sha1": "20e6550f1744cd4b9fcc2c637eb5bf556d3ff577",
+      "path": "scripts/verify-geometry.py",
+      "sha256": "2d28f803062211a8293e01c287f7cd48bac5b859efc62deb36582d06a6d8e5f4"
+    },
+    {
+      "git_blob_sha1": "c999e08af1b9fe758d162dde8daaf65f32332eb5",
+      "path": "scripts/lint-skin.py",
+      "sha256": "d5ca7990e00c0c7fdf0c9de8a0d9c29464df3c918c69c7fac3ee2e59d7184b59"
+    },
+    {
+      "git_blob_sha1": "046c5c47094687205563e8d5e2c547dca529a96e",
+      "path": "scripts/verify-contrast.py",
+      "sha256": "b9b51d1d1c5e1737cc9f3f74450a5300a20637d6cd3dd5c76289c9cd444c9249"
+    },
+    {
+      "git_blob_sha1": "11cd1039201b39e8153db06588abc32a1dd66e11",
+      "path": "skills/diagram-design/scripts/self_check.py",
+      "sha256": "4da309dc768c921153872715666859f4d2c3af384ec804b3d4159b549b7697ea"
+    },
+    {
+      "git_blob_sha1": "a9f55067bbead51b12153bec028b7600a810c676",
+      "path": "skills/diagram-design/scripts/export_svg.py",
+      "sha256": "0fd5fd85d99eaaa06df60235ee7a0a4f7478766e58de19c4de4cd944538afb5c"
+    }
+  ],
+  "license": "MIT",
+  "plugin_version": "2.6.99",
+  "repository": "https://github.com/cathrynlavery/diagram-design",
+  "revision": "d97c5c7477e54cee17cfa6459190610da0643a05"
+}

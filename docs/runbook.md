@@ -33,10 +33,10 @@ across mixed arm64/x86 hosts, see [multi-compute.md](multi-compute.md).
 
 When a cloud backend misbehaves (a Kueue cluster is wedged, a compute agent is unreachable, or a
 staging bucket is throwing errors) and you want **all** analysis to run on the local file server
-**right now**, use the **force-local master toggle** in the shell header. It is the incident
+**right now**, use the **force-local control** in the Config pane. It is the incident
 "pull everything back to local" switch — reversible, one click, and **no redeploy**.
 
-**Where it is.** The shell header carries a single master pill, seeded on **every** page (not just
+**Where it is.** The shell header carries a read-only status pill, seeded on **every** page (not just
 Analyze), so the global incident control shows correct state everywhere:
 
 | Pill state | Meaning |
@@ -44,7 +44,7 @@ Analyze), so the global incident control shows correct state everywhere:
 | `CLOUD ROUTING` (neutral pill) | Normal operation — backends dispatch by rank across the registry (multi-backend routing active). |
 | `FORCED LOCAL` (amber incident pill) | Engaged — all routing is pinned to local; no new cloud/Kueue dispatch happens. |
 
-**Engaging it.** Click the pill to toggle `CLOUD ROUTING` → `FORCED LOCAL`. This writes a durable
+**Engaging it.** Open Config and use its force-local control to change `CLOUD ROUTING` → `FORCED LOCAL`. This writes a durable
 `route_control` row (it survives a restart — the switch is state, not an env var) and takes effect
 **live**, gating routing at two places at once:
 
@@ -53,26 +53,11 @@ Analyze), so the global incident control shows correct state everywhere:
 - **The duration router** — new long files (duration ≥ the route threshold) route to the **local**
   queue instead of being held for cloud.
 
-```mermaid
-stateDiagram-v2
-    [*] --> CLOUD_ROUTING
-    CLOUD_ROUTING: CLOUD ROUTING
-    CLOUD_ROUTING: backends dispatch by rank (multi-backend)
-    CLOUD_ROUTING --> FORCED_LOCAL: click pill (engage)
-    FORCED_LOCAL --> CLOUD_ROUTING: click pill (revert)
+![Force-local incident revert](diagrams/runbook-1.png)
 
-    state "FORCED LOCAL<br/>durable route_control row · reversible · no redeploy" as FORCED_LOCAL {
-        [*] --> Gates
-        Gates: Two gates fire at once
-        Gates --> Drain: stage_cloud_window no-ops (no stage/push)
-        Gates --> Router: duration router → local queue
-        --
-        Held: Files already held in AWAITING_CLOUD
-        Held: stay held (drain no-ops — neither dispatched nor spilled)
-    }
-```
+[Open the interactive-size HTML](diagrams/runbook-1.html) · [Download SVG](diagrams/runbook-1.svg)
 
-**Reverting it.** Click the pill again to toggle `FORCED LOCAL` → `CLOUD ROUTING`. You will see the
+**Reverting it.** Use the same force-local control in Config again to toggle `FORCED LOCAL` → `CLOUD ROUTING`. You will see the
 confirmation "Cloud routing restored — backends dispatch by rank." Normal rank-tiered dispatch
 resumes on the next drain tick. Reverting is the **safe** direction — there is nothing destructive
 about this toggle, so it is fine to flip it during an incident and flip it back once the backend
@@ -167,23 +152,9 @@ for the 15-minute window, not a stall. Persistent spillover all the way to `loca
 usually means every cloud tier is either offline or has been at cap past the threshold; check the
 offline lanes and any Inadmissible Kueue caption.
 
-```mermaid
-flowchart TD
-    start([Long file eligible for cloud]) --> rank[Walk backends in ascending rank]
-    rank --> avail{Backend available?<br/>probe passed}
-    avail -- no --> nextoff[Skip this tick; try next rank]
-    avail -- yes --> slot{in_flight &lt; cap?}
-    slot -- yes --> disp[["Dispatch here (rank-first winner)"]]
-    slot -- no --> nextfull[Spill to next rank]
-    nextoff --> more{More backends?}
-    nextfull --> more
-    more -- yes --> rank
-    more -- no --> localcatch{Why is every<br/>non-local tier unusable?}
-    localcatch -- "all OFFLINE" --> localnow[["local eligible NOW → spill to local"]]
-    localcatch -- "online but FULL" --> gate{"waited &ge; cloud_spill_to_local_after_seconds?<br/>(default 900s)"}
-    gate -- no --> hold[["Stay held in AWAITING_CLOUD this tick"]]
-    gate -- yes --> localgated[["local eligible → spill to local"]]
-```
+![Spillover behavior](diagrams/runbook-2.png)
+
+[Open the interactive-size HTML](diagrams/runbook-2.html) · [Download SVG](diagrams/runbook-2.svg)
 
 While **force-local** is engaged, none of this runs — the drain no-ops and new long files route
 straight to local (see [Force-local incident revert](#force-local-incident-revert)).
@@ -471,9 +442,7 @@ rollout mechanics.
 The deployed `api` service runs `alembic upgrade head` at process startup
 (`phaze.database.run_migrations`, called from `main.py`'s FastAPI lifespan, gated by
 `PHAZE_AUTO_MIGRATE` — on by default). This is what drops `analysis.sampled`
-(migration `060`). Because that migration runs automatically and unconditionally at boot, the
-column is guaranteed absent in every environment where this script can even be invoked — which is
-exactly why `reanalysis_backfill`'s selection query is windows-columns-only and never references
+(migration `060`). With `PHAZE_AUTO_MIGRATE=true`, startup applies that migration before serving requests. If automatic migration is disabled, the operator must apply and verify the schema explicitly before running the backfill. This is why `reanalysis_backfill`'s selection query is windows-columns-only and never references
 `sampled`: reading a dropped column would be a hard runtime error, not a style problem, at this
 point in the sequence.
 
@@ -529,9 +498,7 @@ needs no operator action.
 unbounded, so a `process_file` row stuck in `status='aborting'` or stranded `status='active'` is
 **excluded** from both automatic key reapers (`aborting_reaper` / `active_reaper`, both built on
 the shared `timeout <> 0` guard in `tasks/_saq_reap.py`) and will **not** self-heal on any timer.
-Manual remediation, mirroring the DELETE-not-transition precedent those reapers use (vacates the
-key entirely so the next enqueue is a plain INSERT, without repeating the operator's 2026-07-19 approved manual
-cleanup redone by hand each time):
+Manual remediation vacates the key so a later enqueue can insert it. **First prove worker quiescence:** stop the owning worker through its normal shutdown, verify the process is gone and cannot finalize or report this job, and ensure no other worker has the task buffered. An old timestamp or stale heartbeat alone does not prove this. Inspect the exact key and scheduling intent before deletion; leave workers stopped until the remediation completes. Then, for that verified stranded key only:
 
 ```bash
 docker compose exec postgres psql -U phaze -d phaze -c \

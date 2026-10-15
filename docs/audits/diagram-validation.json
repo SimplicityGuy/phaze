@@ -1,0 +1,1631 @@
+{
+  "browser": "155.0.8059.40",
+  "diagrams": [
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1246,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "9225fd0c960946e70793baad68129d64e4127d56dcaf41685e135afb13a87087",
+      "print_pages": 1,
+      "render_input_sha256": "79825b2a8706ee2bb9dda7fb019c19ebdad38d86c7b4d79b66eab5e6ebfa58a2",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 20,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 8,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "overview-1",
+      "source_sha256": "4e692e35d6583607806cc5a587a8ea499d6ffc03d37fa19ad31ae99f1aa775a1",
+      "svg_sha256": "469b3d922d3cabfd7806aa41ec8ca4e8af5d6a11ec0659851195affe83f3250f",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1432,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "f713b11732d75077ea4143d7f046738ad556cf0c5601b864cbb3899104ed3035",
+      "print_pages": 1,
+      "render_input_sha256": "a33eb827c2c080960289f64ee2640665783baa4a550de89515856460ec80eb88",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 12,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 22,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "overview-2",
+      "source_sha256": "bfea73c7df3ef341ff09c53b3d80e9b82a097d7e5ea8d7637c784fe60d498d44",
+      "svg_sha256": "1d55bcc1fd94fd53abc6fafcbf78ee3124eb3935bb1eb69322493475dab05295",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "bff88574465d9e06276a761e72d0d0f746224a470cc91903366ad2b690281209",
+      "print_pages": 1,
+      "render_input_sha256": "526e8fc34ef7afceb2f620e000b948fcb3cbfba6ececf27eaf52029a2022cb2d",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 25,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 15,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "api-1",
+      "source_sha256": "33fccf46784185f679b2e0b05033a817356d8029af814de94e77cc2fb847b879",
+      "svg_sha256": "4a2874d14f778034a77d12e3dc61481ebcd7bed70eabf59a8db6ce6b8a62a721",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "1a98f815db05d63312f2398145caac520b6411e3bfac46fc1a678e923586e6a1",
+      "print_pages": 1,
+      "render_input_sha256": "2c871e5e20f16c4a6d9c0f421c0d483e033db622b84a8648d4ddb407b912972b",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 20,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 10,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "architecture-1",
+      "source_sha256": "8adc20ae4da3e29ed5f1b9b5ece6a58a2eb10e5ca60a811cdc5417c06ecba020",
+      "svg_sha256": "91a6c29cba6b1d1e0895fcb665e01e198b83f2175088a0127fb54c120d576fe8",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "90bf68193e0515569497adc86817b89eb1b2976f6053644f6f03ec9f07831387",
+      "print_pages": 1,
+      "render_input_sha256": "c3ee6bdc12b9bccce5f7c97a4078b11fc58f83c5516bbf1ee86351875401b5af",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 24,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 10,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "architecture-2",
+      "source_sha256": "35e305e018cef8e615065fb5c614d4a350109b3f8473fdd9f55952c538505881",
+      "svg_sha256": "55afb0c04feb65afe7f121049143f724672dcaae4a96d9ecc329c73a1fb473f0",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1100,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "2021b1cf53be9a936a4b993cdd0de031a5a737a6fdbfd3df18ed8ea236239d6d",
+      "print_pages": 1,
+      "render_input_sha256": "9655af7926a5a192de9b227ff2f8431ef456aa020dc5738e0f8cce51522cc544",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 30,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 12,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "architecture-3",
+      "source_sha256": "158781c220e30f46d90c3ff240fd1c104fa569e90ce6a87309051e34f27c2e5b",
+      "svg_sha256": "13fd0bd0cd3773b734ad0d6f01b2625c8de8003b5de1b01a6d0c8105dcc5b4a9",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "fa1c93eb3ae718dcaa6f791f78c7e87c34f0c887ba55534693a24b72f9f52af8",
+      "print_pages": 1,
+      "render_input_sha256": "5a3a8feccb9e831f2cd243f4b23776fa3c4c7c8b4bb78baaab50e4dd21ca0a9e",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 16,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 34,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "architecture-4",
+      "source_sha256": "a7f565dc631977f114db22e28a61c93da53cd12aaf1c4b9f40f247c394bbd868",
+      "svg_sha256": "d09bd9482041898a9efcc9ff4a1c4ce917da28a0c0cf4712d67b494e71ad98d8",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "6286eeaaff8c172d73020e4701c056418ae79e878ac2cd3ba462a88bc1b215e8",
+      "print_pages": 1,
+      "render_input_sha256": "6d128333ceef3f4a7024c1904085af612e777e84013b48cb5e3a897ebe43fd10",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 32,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 24,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "architecture-5",
+      "source_sha256": "b625b322ef44c9d17fa39d6e86435f4d326d849818054b69322df2f316e97e40",
+      "svg_sha256": "a64da970f87b674256690201234207236d19926b0e6acad71b3d0dd02c9fe833",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "037053938a323b1d67f856888dad07332a3992c5e3ffd9910d7a251d2a425e3b",
+      "print_pages": 1,
+      "render_input_sha256": "13b5864f0fb17770aa3143aa9e73e66ed74356041e953265ececb854c6868782",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 37,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 41,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "arm64-agent-image-1",
+      "source_sha256": "ac4ba148de762e3a9192718c1c604ff2e7a2dc485015f0fc976539f0cbac0d39",
+      "svg_sha256": "c9a298a3b44b1986e645a5661829d01646fd166bdde7e790f14e715ff4f6e0b5",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "1c5abd48bd08adc3ad5ec7a24d89ad3776cfc164477b41b46059e226cff7b1ae",
+      "print_pages": 1,
+      "render_input_sha256": "21c85e2c48cd45fe740dd4c6351b8426d61a337a8718e884fb921e9c4721cd61",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 24,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 48,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "cloud-burst-1",
+      "source_sha256": "f93831970b497e047ccee560df0b4748676dc191862ec4d1019805b76bacea38",
+      "svg_sha256": "6a827078b20dfecf64e040dcc50056b029d1347f3233f0e2e8f606500b725076",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "4d7257a1884306bd566f68a6484c8a2d7c8c002a653850523efc8ad79f5ed3d2",
+      "print_pages": 1,
+      "render_input_sha256": "f6bce67d71ccc5f3a46bfb2e15ff2acd72711b886d8aa48e8e2b3867528ddfeb",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 37,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 17,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "configuration-1",
+      "source_sha256": "33ef68de680476b687b39067996fd1793b89a6b03d47c861d1f565e0ab63131e",
+      "svg_sha256": "8346682f0f63c00491db85b008dc843beac96d95d7d665b3886b21691fbd3252",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "f2d417fe426b492186acb46786c6e5651467594cbbc3cb77b81857814c6e2d62",
+      "print_pages": 1,
+      "render_input_sha256": "63633c364d9e5d8ccabe4fbfa0d492e8b28d3b468c9d625a82181ecdc4377030",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 34,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 26,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "configuration-2",
+      "source_sha256": "d788d128b153ac4bb61b854f571b628e05b96347fe11ce9b96e04001ceccb7a7",
+      "svg_sha256": "b1a47a6b9b94d83f74b34a97023d30fbfb489934db105bebffdf044298c7a79d",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1382,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "0156d8b510384c5dab24358127d62c4e7640f06d1da8a3a62be5c752e4247e1b",
+      "print_pages": 1,
+      "render_input_sha256": "317a380cb076a99c02531f205f909d1b85829f6acb7c3f325da0f5c8ff0f31c0",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 14,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 6,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "database-1",
+      "source_sha256": "5e45f8d2f3c3c0e87617c9fba94a7f647e3b0015a23da2a2e86d5397a7631ba0",
+      "svg_sha256": "743f11adc03bafacec0f2ce430b51881e3be74481f605f740c6fa259032b6bc4",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "4a157a97c528b29517a9bb60c62e76dc36da40737347faf1153e87a46a5aecc8",
+      "print_pages": 1,
+      "render_input_sha256": "059915b657298f5af9425d757a096776263df17ee2c2942c7346477dcf8ac8c0",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 24,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 10,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "database-2",
+      "source_sha256": "c4cb3929752d70eaad7e3c6b8b0648e3ebad5ec80354c75282722234eea9801c",
+      "svg_sha256": "ae15df86e141b13098844b98cc9f7ea2abd5c5ec7afb7f2c499436c6997c5fd1",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "8a843d1494bc0c26734dc9dc1ec2554cb4b01b29aadf28d1043f4b63451652fc",
+      "print_pages": 1,
+      "render_input_sha256": "63e5d561bf490c84a6067f72fd56c30179752356063dfdf565989d1abb025900",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 22,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 23,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "deployment-1",
+      "source_sha256": "b0865778c7676009323eda125f67e1eb33753176d8269b4cbf292b7ec61c7395",
+      "svg_sha256": "b80362df10347d628186dafe9e3f73e8255a7b263e45d9146cfdb8f8e5c26ed0",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "6bb1986defc40638cfaa09e7e4525ba5652ed699fd839b908bbc154b3ab1f834",
+      "print_pages": 1,
+      "render_input_sha256": "2cbc3e7be73fb62f3e06b341230a0a794b9d83652f30aa22840565670da06cd6",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 42,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 10,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "deployment-2",
+      "source_sha256": "edcb480c64d082d93bcef441da52f66e8f02c9d251d19751cdd992cd0e0c8ddd",
+      "svg_sha256": "f47886f5d7ebecc9589dabf383f4a85926c92b8f8fd6eb20061d8cdcab91ede2",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "3b78e893c0ded9df11f29b40eee04ab7f6504faf25ac16fb71a48d8230cb1a90",
+      "print_pages": 1,
+      "render_input_sha256": "3a8e052fa7cda0a49eab52e46a76ffc3c93e442198ba905a73be7bfbf784b756",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 24,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 39,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "k8s-burst-1",
+      "source_sha256": "1f044e270d2663b3a3e159afd35da1c9aec9b530f68f949bd5219576448d09ba",
+      "svg_sha256": "b3475f1c158bd445fb7828ad67abaa2067b7efd78a01a4bbef4c61987bef8262",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1432,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "4b4689cd5c5c44af44df9db4807f6d358ecd093e3f74e69428c302c47f59bc83",
+      "print_pages": 1,
+      "render_input_sha256": "97cd4f4e6d336da2217a6d46ad0bb1a4d11f0fda327f1144b751bf52d574fcec",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 24,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 52,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "k8s-burst-2",
+      "source_sha256": "6daf49455fbd282fa6bb54f53c3a1196988fd4aed72f3e4364ecddfd0251d2fc",
+      "svg_sha256": "f46d48441bbbe8148da250a90f751090743003b962b3f2e08822d21e8c9307e4",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "bd781dc69182fe9d3e4685503ccee18f071bbd780ea5d96b9cc34b52a2b82650",
+      "print_pages": 1,
+      "render_input_sha256": "f3fd156f023e584220fc50d446ee641f43d976051c1e5feae20660756e9176c0",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 48,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 81,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          },
+          {
+            "familyName": ".SF NS",
+            "glyphCount": 1,
+            "isCustomFont": false,
+            "postScriptName": ".SFNS-Bold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "multi-compute-1",
+      "source_sha256": "8f8c8c3f10b23fe45bf663434c64224c4f5b0c9e12c6e0a20567c8d34597aefa",
+      "svg_sha256": "87c27500b5248190e2b0f484f8e79ed3a516ea4421a99a80675a2449975ab307",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "18dfa26ad6a65bf59696cde66a8d4276ec401c9fb56dfe2b36b22e14392586a8",
+      "print_pages": 1,
+      "render_input_sha256": "91d40ff309854f6374474f51fa6ca528ba3f5d0ef7b0963b103b421462f27ef5",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 18,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 19,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "project-structure-1",
+      "source_sha256": "cb274c997f0e1660e1d3ca8f5dc64e98943f3009b8b1105c7f9a7b0c78cfcf68",
+      "svg_sha256": "be209b64cb2b9701a1423cc9d182dbbc21dfc6d339f0a4bd5ef1a5ccd11e7549",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "b5bd779f39ee44a0f7c19286b7e6209156f16388b27c964421d70c6304c53555",
+      "print_pages": 1,
+      "render_input_sha256": "09e5b9bd46ac5e9273e270b5f91d1f478f3e7158eec70b4b1cd399ba9bb09895",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 23,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 8,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "project-structure-2",
+      "source_sha256": "4cd2193ae524da1b7d1dd839143c6f874cda6d0ca49f596f0242881050b69d9b",
+      "svg_sha256": "956ae6324e4ff37b83cf7ec5dd92a58606cbfd1f7f96e00f3ae7b0e1959ddaec",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1275,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "b965e93061b68b4fb92f04cdd3c5bdd78d8beaabe670426a7c7b00b157233dd9",
+      "print_pages": 1,
+      "render_input_sha256": "8737df2118aed287c42404aaa921e6f9c50a3afd56ed53566e68f99672e50ef8",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 18,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 10,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "quick-start-1",
+      "source_sha256": "1dd39a9c42a8590dbd53d239cf0bb6c7c48fe9542a6780a686afb86b1b6154a2",
+      "svg_sha256": "00a3d3592623b443e3908d0268ce49035bb755cb8a4d670ab08a9ba78372372d",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "f0a2f079dcf9206db5da920fe51ef6591ee4e1de3364c6916016d9d95fd7c906",
+      "print_pages": 1,
+      "render_input_sha256": "a6724f6ad983571c405984eb838a362af187f5b245c56442ff6cd7f5efb8d8b9",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 27,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 5,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "runbook-1",
+      "source_sha256": "9447d190be3c7f6ba52dd8fe07869d0ffa0c28317b796283bc75d5af3026cbb3",
+      "svg_sha256": "410bfc84481dbdc396cba3b94fb8f6beba46ab9ea89ddf48e59e18a9b523510e",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "b2e84b63f6a216b2c0cb4d1d335b9c08aa5a517c46b76a461c5752a6e7d3ecd4",
+      "print_pages": 1,
+      "render_input_sha256": "9989d2df1326aebe02b094237dab64f599c9f3d0a0389f86c824786773969b51",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 18,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 27,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "runbook-2",
+      "source_sha256": "76a2019de6a95b08496291d5f9bb3111e795d30ab3cfd0dc1e9c8110086ac0b8",
+      "svg_sha256": "4b594a4a3111464259c879102227d453ab5f98679b2a14dc06cd86e43fc0f172",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1408,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "d0b47c2648a83a2743c5161472132834135f711012f1e25001b2fe374b91bade",
+      "print_pages": 1,
+      "render_input_sha256": "f5e6881d72c93cf4702f53d873f188e830e7947881682e941ed39f264727a518",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 14,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 21,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "watcher-events",
+      "source_sha256": "2f3eb87caa6b6ad8303ff24a13c2f74162d0757029ce930268c687616f0a7dc3",
+      "svg_sha256": "a0395ae6d9e10e5c0383567087e2af2a9d30791f0d0021848ff853a877dd6d22",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1385,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "588d2d71d42d1030aca138b4100147bea56a44592eee3faee297179ff36b2960",
+      "print_pages": 1,
+      "render_input_sha256": "abb6df023c1ab916b91cf01fe95c16b972f7b9e41a81540ba39c6a1dc3de238f",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 37,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 6,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "database-companions",
+      "source_sha256": "da4fd91c64e40f77b815dfcece9047564e410c320f6966b615557a8d88311510",
+      "svg_sha256": "2db9c4e8c714c46df0e975eb629b8672d10b113aa533f758193eddd0f7a0a907",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1305,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "49ade816369f06fbe901d3119df226115f65a6a5c91a54487290838238fc6df0",
+      "print_pages": 1,
+      "render_input_sha256": "8c7056df23ff65f83a01f35d44f570b2dcdc0483a6814112faf4b97178d3298e",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 33,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 10,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "database-tracklists",
+      "source_sha256": "7de2e456c8b4ced9ed757849053f437240506bb966524d27da7079a1b84f374e",
+      "svg_sha256": "da849ec7d9e94dfdb2522aa5c29fa37d61f39e8ea9b4d215c3cd561bbb411d57",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1385,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "7b272eb80c14f4099d596b3173edafdb47e6ef9115dc25715afbf72f0000804d",
+      "print_pages": 1,
+      "render_input_sha256": "a8bc9e525d07d9f982dc33a09337bf053afd2314c487b56459eb7c614e69a56f",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 39,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 23,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "database-provider-evidence",
+      "source_sha256": "3cbd1237c5d4265821ad22b82ea595c5b10e7139de889fce11a80fda02d7817e",
+      "svg_sha256": "e8d5ce019d3ef100c0bc9fdb99440285d632cd5318a074f649e1750d234b65b4",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1376,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "2d7aef9a910d8f7ba2c34975311b482c8a31a82157bea4fb5fc0862f19db6998",
+      "print_pages": 1,
+      "render_input_sha256": "80c90a70c46741fc63a08982378b89e30107a1d41273364688f8755d9c710ed9",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 29,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 21,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "database-lookup-work",
+      "source_sha256": "bcf1bd8fb3b4c0a1068801ecfe3f577e4662a0d826ebc509dcc1702d9bd30042",
+      "svg_sha256": "48441b5de9e5b32cd6242a57545ecb65eece5c01e7852bf588ff4280e137844f",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1305,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "b19bc99cf176c7b1967166fdad7728167c374464015df72e2e874d0f01565d91",
+      "print_pages": 1,
+      "render_input_sha256": "96fa851118d92b8a842204f66db47620a1956471b21335258e0f34f4259fa3e8",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 33,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 5,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "database-execution",
+      "source_sha256": "373a659031c6ecf8e5d08fb4a2ffc7bb3d8094640df0be39542c50ba26758de0",
+      "svg_sha256": "48ddf55e2bb5e1344ce5e9114276ba6931fd6320255c7068f34b22a1b5c98d38",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "f1cf370e04c3ecfd2f298fbab4dd7024115ec26a657a73bb62580c9cdc49a180",
+      "print_pages": 1,
+      "render_input_sha256": "23cd8a98dc4039c64e73f229c37824ade10b1a596d16f47223b91dc4229cb22a",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 27,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 14,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "structure-review",
+      "source_sha256": "6989f50e62a29d129058d0e96b215a681404c12573a8ea8221df4efc1571093f",
+      "svg_sha256": "c5ba543da407a155e1d9932442074af87d8ef92cdc2b4cbb2465ceee1ad07bd4",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "63e5e79c1fee00e776566615296d5faec525e79b1228015c6cc8c22477ec8f94",
+      "print_pages": 1,
+      "render_input_sha256": "c8a5c6ea4a7f1786dc72f75926f0c7f7988fefc2bb2501991a1fecf19fb4237a",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 29,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 14,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "structure-proposal",
+      "source_sha256": "5fe26868967a1f163edd3d6c6f9a9dfb06ad8f06a394bce21b5141e9afd41735",
+      "svg_sha256": "9a1d880fe6808714976242945af3021f07e9b823b567552488d1610aae867091",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "a7533726876ff87a4a33c789415e85e9e2d1a48d01cd0acf18fe1402459a360e",
+      "print_pages": 1,
+      "render_input_sha256": "11d6955c216309e53d9b20cde053f80d70c58f34a97d6f2ff60d402a0cda3dbc",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 30,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 21,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "structure-execution",
+      "source_sha256": "c6882b9c03a89dc8d80c4f1523f13cfec7c727552f6b6fc4d1a0e2860b6e5e3d",
+      "svg_sha256": "91dd3a3020858c3aa28080bd85579749e0b3c72dc638d399aed754ce45dd6951",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "ff0179fb5ba992847b5b2d1ff2669f97756fa6b320007e3d708f0b1031eb49b6",
+      "print_pages": 1,
+      "render_input_sha256": "89e505167c0370b0d2a672e3e5293e771eede4110d8537c62787a9f1ad04e59b",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 29,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 26,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "structure-recovery",
+      "source_sha256": "a50912d92db46bc37ebe0cfcbee0bc11ccf35987498b259c9404990d65e26243",
+      "svg_sha256": "10e093c30807362870e48d6506924d5d12041b5dff412a1b7174123c61e1e12a",
+      "text_overflow": []
+    },
+    {
+      "diamond_geometry": [],
+      "html_svg_text_geometry_equal": true,
+      "key_collisions": [],
+      "mobile": {
+        "body": 390,
+        "scroll": 1374,
+        "viewport": 390
+      },
+      "node_text_overflow": [],
+      "png_sha256": "7a527f950c8aa4b0d9a6dd2c0a2afde911a882a94a4cb19b88ff042b4388c678",
+      "print_pages": 1,
+      "render_input_sha256": "371d97b3f8972f623f24b9c79fd9acf8f82c75eb24ea2388d4e232598ac9bc4c",
+      "rendered_fonts": {
+        ".diagram-title": [
+          {
+            "familyName": "Jura Light",
+            "glyphCount": 30,
+            "isCustomFont": true,
+            "postScriptName": "Jura-Medium"
+          }
+        ],
+        ".node-label": [
+          {
+            "familyName": "Inter",
+            "glyphCount": 18,
+            "isCustomFont": true,
+            "postScriptName": "Inter-Regular_SemiBold"
+          }
+        ]
+      },
+      "skins": [
+        {
+          "background": "rgb(243, 244, 246)",
+          "skin": "light"
+        },
+        {
+          "background": "rgb(10, 12, 18)",
+          "skin": "dark"
+        }
+      ],
+      "slug": "structure-reconcile",
+      "source_sha256": "d925a0697a66c3a52df2045aa72b83fd2bc49b3ab4f621127388c474d64807ef",
+      "svg_sha256": "63668bf3a58e553ee62e53ac9ebadf5160b4c61249dc2d51ab7e0daebbe451ee",
+      "text_overflow": []
+    }
+  ],
+  "errors": [],
+  "external_requests": [],
+  "focused_guard_batch": {
+    "passed": 195,
+    "subsequent_live_inventory_module_recheck_passed": 13
+  },
+  "kind": "bounded documentation export validation; not a production probe or full-suite verdict",
+  "network": "offline",
+  "recorded_at": "2026-10-15T07:16:14.274554+00:00",
+  "reviewed_source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+}

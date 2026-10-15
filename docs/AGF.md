@@ -46,8 +46,7 @@ preserving the resulting tree.
 
 When a hive uses GitHub PR landing, publish the bead branch and open the PR after submission. Once
 GitHub reports the PR merged, `bh work land <id>` verifies that external state and closes the bead.
-Phaze currently uses local landing: only the merger runs `bh work merge <id>` after every required
-gate is resolved. Developers stop at submission and never approve or merge their own work.
+Phaze currently uses GitHub PR landing through its per-hive `work.landing: pr` override; that override takes precedence over a global local-landing default. The merge owner follows the effective hive workflow and calls `bh work land <id>` only after GitHub reports the required PR merged. Other hives can select a different landing policy. Developers stop at submission and never approve or merge their own work.
 
 ## Review and integration
 

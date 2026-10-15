@@ -31,7 +31,7 @@ a module makes the inventory fail until this page is reconciled.
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
 
-Fourteen Python modules live directly under `src/phaze/`. The main process boundaries are:
+25 Python modules live directly under `src/phaze/`. The main process boundaries are:
 
 | Module | Role |
 | ------ | ---- |
@@ -43,8 +43,8 @@ Fourteen Python modules live directly under `src/phaze/`. The main process bound
 | `analysis_child.py` | Killable per-file analysis subprocess entry point |
 | `logging_config.py` | Shared structured logging setup |
 
-Outside the package, `alembic/versions/` contains 53 migrations (`039` baseline through head
-`091`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
+Outside the package, `alembic/versions/` contains 54 migrations (`039` baseline through head
+`092`), `src/phaze/templates/` contains the server-rendered UI, `scripts/` contains maintenance
 and validation tools, and `tests/` is organized into the buckets documented in
 `tests/BUCKETS.md`.
 
@@ -87,53 +87,9 @@ runtime configuration, and maintained documentation, so it removed none.
 The diagram records the live import direction. Capability modules do not import back through their
 facade; callers retain the stable path while each owner remains independently testable.
 
-```mermaid
-flowchart LR
-    %% evidence: src/phaze/config.py; src/phaze/config_base.py
-    config["phaze.config facade"] --> configBase["shared settings"]
-    %% evidence: src/phaze/config.py; src/phaze/config_control.py
-    config --> configControl["control settings"]
-    %% evidence: src/phaze/config.py; src/phaze/config_agent.py
-    config --> configAgent["agent settings"]
-    %% evidence: src/phaze/routers/shell/stage_context.py; src/phaze/services/review.py
-    reviewCallers["review routers"] --> review["services.review facade"]
-    %% evidence: src/phaze/services/review.py; src/phaze/services/review_changes.py
-    review --> reviewChanges["changes read model"]
-    %% evidence: src/phaze/services/review.py; src/phaze/services/review_tagwrite.py
-    review --> reviewTagwrite["tag-write read model"]
-    %% evidence: src/phaze/services/review.py; src/phaze/services/review_dedupe.py
-    review --> reviewDedupe["dedupe read model"]
-    %% evidence: src/phaze/services/review.py; src/phaze/services/review_cue.py
-    review --> reviewCue["CUE read model"]
-    %% evidence: src/phaze/tasks/controller.py; src/phaze/services/proposal.py
-    proposalCallers["proposal tasks"] --> proposal["services.proposal facade"]
-    %% evidence: src/phaze/services/proposal.py; src/phaze/services/proposal_context.py
-    proposal --> proposalContext["context"]
-    %% evidence: src/phaze/services/proposal.py; src/phaze/services/proposal_parsing.py
-    proposal --> proposalParsing["parsing"]
-    %% evidence: src/phaze/services/proposal.py; src/phaze/services/proposal_persistence.py
-    proposal --> proposalPersistence["persistence"]
-    %% evidence: src/phaze/services/proposal.py; src/phaze/services/proposal_provider.py
-    proposal --> proposalProvider["provider edge"]
-    %% evidence: src/phaze/tasks/agent_worker.py; src/phaze/tasks/execution.py
-    agentWorker["agent worker registry"] --> execution["tasks.execution facade"]
-    %% evidence: src/phaze/tasks/execution.py; src/phaze/tasks/execution_filesystem.py
-    execution --> filesystem["filesystem engine"]
-    %% evidence: src/phaze/tasks/controller.py; src/phaze/tasks/reenqueue.py
-    recoveryCallers["controller + recovery reads"] --> recovery["tasks.reenqueue facade"]
-    %% evidence: src/phaze/tasks/reenqueue.py; src/phaze/tasks/recovery_backfill.py
-    recovery --> recoveryBackfill["ledger backfill"]
-    %% evidence: src/phaze/tasks/reenqueue.py; src/phaze/tasks/recovery_policy.py
-    recovery --> recoveryPolicy["classification + planning"]
-    %% evidence: src/phaze/tasks/reenqueue.py; src/phaze/tasks/recovery_queries.py
-    recovery --> recoveryQueries["database queries"]
-    %% evidence: src/phaze/tasks/reenqueue.py; src/phaze/tasks/recovery_replay.py
-    recovery --> recoveryReplay["queue + regeneration"]
-    %% evidence: src/phaze/tasks/controller.py; src/phaze/services/backends/kueue.py; src/phaze/tasks/reconcile_cloud_jobs.py
-    reconcileCallers["controller + Kueue"] --> reconcile["cloud reconcile facade"]
-    %% evidence: src/phaze/tasks/reconcile_cloud_jobs.py; src/phaze/tasks/cloud_reconcile_observation.py
-    reconcile --> observation["observation + classification"]
-```
+![Structural capability ownership](diagrams/project-structure-1.png)
+
+[Open the interactive-size HTML](diagrams/project-structure-1.html) · [Download SVG](diagrams/project-structure-1.svg)
 
 ## Shell templates and `/s/<stage>` routing
 
@@ -187,29 +143,9 @@ Each dependency line below carries a repo-relative source citation in the preced
 comment. The docs guard resolves those paths and verifies the direct router-to-model import and
 agent ORM exclusion.
 
-```mermaid
-flowchart LR
-    %% evidence: src/phaze/routers/record.py; src/phaze/services/analysis_timeline.py
-    routers["routers/"] --> services["services/"]
-    %% evidence: src/phaze/routers/record.py; src/phaze/models/set_profile.py
-    routers --> models["models/ + database.py"]
-    %% evidence: src/phaze/services/set_projection_backfill.py; src/phaze/models/set_profile.py
-    services --> models
-    %% evidence: src/phaze/tasks/controller.py; src/phaze/services/agent_task_router.py
-    controller["tasks/controller.py"] --> services
-    %% evidence: src/phaze/tasks/controller.py; src/phaze/database.py
-    controller --> models
-    %% evidence: src/phaze/tasks/agent_worker.py; src/phaze/services/enqueue_router.py
-    agent["tasks/agent_worker.py"] --> shared["ORM-free services, schemas, and agent tasks"]
-    %% evidence: src/phaze/tasks/agent_worker.py; src/phaze/tasks/_shared/queue_factory.py
-    agent --> broker["SAQ PostgresQueue broker"]
-    %% evidence: src/phaze/tasks/functions.py; src/phaze/services/agent_client.py
-    agent --> internal["internal-agent HTTP API"]
-    %% evidence: src/phaze/agent_watcher/poster.py; src/phaze/services/agent_client.py
-    watcher["agent_watcher/"] --> internal
-    %% evidence: src/phaze/main.py; src/phaze/routers/agent_analysis.py
-    internal --> routers
-```
+![Verified module layering](diagrams/project-structure-2.png)
+
+[Open the interactive-size HTML](diagrams/project-structure-2.html) · [Download SVG](diagrams/project-structure-2.svg)
 
 The broker boundary is deliberately separate from ORM transaction ownership. SAQ owns
 `saq_jobs` through its psycopg pool; application rows use SQLAlchemy sessions. Control-side queue
@@ -220,3 +156,35 @@ agent-side queue construction omits it and remains ORM-free (`tasks/_shared/queu
 
 **Related docs:** [Architecture](architecture.md) · [Database](database.md) ·
 [API Reference](api.md) · [Essentia Analysis](essentia-analysis.md)
+
+## Capability detail views
+
+### Review capability ownership
+
+![Review capability ownership](diagrams/structure-review.png)
+
+[Open HTML](diagrams/structure-review.html) · [Download SVG](diagrams/structure-review.svg)
+
+### Proposal capability ownership
+
+![Proposal capability ownership](diagrams/structure-proposal.png)
+
+[Open HTML](diagrams/structure-proposal.html) · [Download SVG](diagrams/structure-proposal.svg)
+
+### Execution capability ownership
+
+![Execution capability ownership](diagrams/structure-execution.png)
+
+[Open HTML](diagrams/structure-execution.html) · [Download SVG](diagrams/structure-execution.svg)
+
+### Recovery capability ownership
+
+![Recovery capability ownership](diagrams/structure-recovery.png)
+
+[Open HTML](diagrams/structure-recovery.html) · [Download SVG](diagrams/structure-recovery.svg)
+
+### Cloud reconciliation ownership
+
+![Cloud reconciliation ownership](diagrams/structure-reconcile.png)
+
+[Open HTML](diagrams/structure-reconcile.html) · [Download SVG](diagrams/structure-reconcile.svg)

@@ -1,6 +1,6 @@
 # Configuration
 
-All configuration is via environment variables (or a `.env` file). See [`.env.example`](../.env.example) for the operator-facing defaults.
+Startup settings use environment variables and `.env`; live scalar policy also uses `runtime.toml` and database overrides. Backend and bucket resources use a separate reloadable `backends.toml` registry. See [`.env.example`](../.env.example) for the operator-facing defaults.
 
 The canonical public import surface is [`src/phaze/config.py`](../src/phaze/config.py). The [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) hierarchy lives behind that facade in [`config_base.py`](../src/phaze/config_base.py), [`config_control.py`](../src/phaze/config_control.py), and [`config_agent.py`](../src/phaze/config_agent.py).
 
@@ -11,7 +11,7 @@ Phaze splits settings into a shared `BaseSettings` class plus two role-specific 
 | `PHAZE_ROLE` | Settings class    | Role                                                                 |
 |--------------|-------------------|---------------------------------------------------------------------|
 | `control` (default) | `ControlSettings` | Application server: LLM proposals, Discogs matching, fileless tasks |
-| `agent`      | `AgentSettings()`   | File server: HTTP client to the app server, file-bound SAQ tasks    |
+| `agent`      | `AgentSettings`   | File server: HTTP client to the app server, file-bound SAQ tasks    |
 
 `get_settings()` (cached via `lru_cache`) is the single dispatch point. A module-level `settings = ControlSettings()` singleton is preserved for back-compat with existing `from phaze.config import settings` call sites; agent entry points call `get_settings()` / `AgentSettings()` directly.
 
@@ -59,17 +59,9 @@ ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key   # no ANTHROPIC_API_KEY n
 
 Resolution order for a single secret-bearing field (`_resolve_secret_files`):
 
-```mermaid
-flowchart TD
-    A[Direct env var set?<br/>e.g. ANTHROPIC_API_KEY] -->|yes| B[Use env value verbatim<br/>_FILE sibling ignored]
-    A -->|no| C[_FILE sibling set?<br/>e.g. ANTHROPIC_API_KEY_FILE]
-    C -->|yes| D[Read file at path]
-    D -->|readable| E{push_ssh_key /<br/>push_known_hosts?}
-    E -->|yes| F[Keep verbatim<br/>trailing newline preserved]
-    E -->|no| G[.strip whitespace/newline]
-    D -->|missing / unreadable| H[Fail fast:<br/>ValidationError names var + path]
-    C -->|no| I[Field default]
-```
+![Secrets via files (`_FILE` convention)](diagrams/configuration-1.png)
+
+[Open the interactive-size HTML](diagrams/configuration-1.html) · [Download SVG](diagrams/configuration-1.svg)
 
 ## Core settings (all roles)
 
@@ -79,15 +71,14 @@ flowchart TD
 | `PHAZE_DATABASE_URL` (or `DATABASE_URL`) | No | `postgresql+asyncpg://phaze:phaze@postgres:5432/phaze`    | PostgreSQL connection string. Use `localhost` when running on the host instead of in Compose. |
 | `PHAZE_REDIS_URL` (or `REDIS_URL`)| No       | `redis://redis:6379/0`                                    | Redis connection string. **Cache / rate-limit / counters only** — no longer the SAQ broker (see `PHAZE_QUEUE_URL`). In production agent mode, a password is required (see Per-environment overrides). |
 | `REDIS_PASSWORD` (or `redis_password`) | No | (none) | Raw (un-encoded) Redis AUTH password. When set, percent-encoded into `redis_url`'s userinfo at construction time — safe for a password containing `/`, `#`, `?`, or `%`, which would otherwise break `redis.asyncio.Redis.from_url`'s RFC-3986 parser if embedded raw into the URL. Wins over any password already present in `redis_url`/`PHAZE_REDIS_URL`. Under docker compose, `REDIS_PASSWORD` is the SAME value `redis-server --requirepass` uses, passed through as its own env var rather than pre-assembled into a DSN. |
-| `PHAZE_QUEUE_URL` (or `queue_url`)| No       | `postgresql://phaze:phaze@postgres:5432/phaze`            | SAQ Postgres broker DSN. Must be the **raw libpq** form (`postgresql://…`), NOT the SQLAlchemy `postgresql+asyncpg://` dialect — psycopg3's pool cannot parse the `+driver` suffix (an `+asyncpg`/`+psycopg` value is auto-normalized). Carries DB credentials, so it is secret-bearing (`PHAZE_QUEUE_URL_FILE`). On agent hosts it points at the app-server Postgres LAN IP:5432 — agents open a psycopg3 pool to it (new firewall edge, relaxes). |
+| `PHAZE_QUEUE_URL` (or `queue_url`)| No       | `postgresql://phaze:phaze@postgres:5432/phaze`            | SAQ Postgres broker DSN. Must be the **raw libpq** form (`postgresql://…`), NOT the SQLAlchemy `postgresql+asyncpg://` dialect — psycopg3's pool cannot parse the `+driver` suffix (an `+asyncpg`/`+psycopg` value is auto-normalized). Carries DB credentials, so it is secret-bearing (`PHAZE_QUEUE_URL_FILE`). On agent hosts it points at the app-server Postgres LAN IP:5432 — agents open a psycopg3 pool to it (a separate broker connection in addition to authenticated HTTP). |
 | `DEBUG`                           | No       | `false`                                                  | Enable SQLAlchemy statement echo (separate from application log detail).                                                          |
-| `API_HOST`                        | No       | `0.0.0.0`                                                | API server bind address.                                                    |
-| `API_PORT`                        | No       | `8000`                                                   | API server port.                                                            |
 | `SCAN_PATH`                       | No       | `/data/music`                                            | Music directory mounted for scanning.                                       |
 | `MODELS_PATH`                     | No       | `/models` (config default; `.env.example` uses `./models`) | Essentia audio-analysis model directory, mounted read-only and validated at worker boot; phaze never downloads models. Point it at the consolidated set, or provision one with `just download-models <dir>`. |
-| `OUTPUT_PATH`                     | No       | `/data/output`                                           | Destination directory for executed file moves.                             |
 | `PHAZE_ENABLE_SAQ_UI` (or `enable_saq_ui`) | No | `true`                                          | Mount SAQ's built-in queue-monitoring dashboard at `/saq` in the `phaze-api` app (reusing the lifespan SAQ `PostgresQueue` instances; no extra broker, no extra port). Set `false` to skip the mount entirely. See [api.md](api.md) → SAQ Monitoring UI. |
 
+
+`API_HOST` and `OUTPUT_PATH` are not consumed Settings inputs. The certificate entrypoint reads `PHAZE_API_HOST` for the certificate common name, while Compose reads `API_PORT` for the host mapping; neither changes the API process's internal bind port.
 
 ## Worker / task queue settings (all roles)
 
@@ -273,17 +264,12 @@ Policy changes retain durable cloud budgets, attempt counters, Redis request his
 
 `DEBUG` controls SQLAlchemy statement echo, distinct from application log detail. The development-overlay `PHAZE_DEBUG` input was never an accepted alias and is removed. The `UID`/`GID` example inputs were also unwired and are removed; configure container users/mount ownership through deployment/image settings. Use `PHAZE_LOG_LEVEL=DEBUG` for normal diagnostics. Host `API_PORT`, certificate `PHAZE_API_HOST`/`PHAZE_API_TLS_SANS`, and separate ORM/broker URLs keep their supported behavior.
 
-**`log_level`'s accepted set is fixed, not "whatever this process's logging registry happens to
-know about".** `RuntimeConfig`'s validator originally resolved a candidate level name through
-`logging.getLevelNamesMapping()`, which is process-dependent: uvicorn registers an extra `TRACE`
-level (5) in the api/control process only, so `log_level=TRACE` validated in the api and was then
-rejected as unknown by every agent process reloading the identical override — found by the
-end-to-end retune demo  and fixed by derived thread sizing, which pins the validator
-to the explicit five-value set in the table above, independent of which levels a given process
-happens to have registered. `configure_logging`'s own unknown-level fallback (INFO, logged) is
-unchanged for the separate env-at-start path.
+**`log_level` accepts the same five levels in every process:** `DEBUG`, `INFO`, `WARNING`,
+`ERROR` and `CRITICAL`. Validation does not depend on the process logging registry; uvicorn's
+extra `TRACE` level is not accepted as a live setting. The separate startup environment path
+retains `configure_logging`'s logged INFO fallback for an unknown level.
 
-Everything else — every other field on `ControlSettings`/`AgentSettings()`, documented in its own
+Everything else — every other field on `ControlSettings`/`AgentSettings`, documented in its own
 section throughout the rest of this page (DB/queue/Redis connection URLs, auth tokens and
 credentials, `PHAZE_AGENT_ID`/`PHAZE_AGENT_LANE`, TLS/CA material, `SCAN_PATH`/scan roots, and so
 on) — is **restart-only**: today's static, read-once-at-boot path, unchanged by this feature. An
@@ -318,7 +304,7 @@ any longer.
   /admin/runtime-config/_table`.
 - **Remote agents**: a control-plane process shares Postgres, so `api`/the control worker learn
   of a DB-override reload via Postgres `NOTIFY` (with a fallback poll for a missed notify). A
-  remote agent has no Postgres reachability of its own, so it instead polls the
+  remote agent does not read application configuration tables directly (its separate SAQ broker still uses Postgres), so it instead polls the
   agent-authenticated `GET /api/internal/agent/config` on the **same ~30s cadence as its own
   liveness heartbeat** (ADR-0019 (runtime config hot-reload) §14, an accepted latency — *"~30s is fine"*) and reloads its
   local store only when the returned digest changes. The resolved effective config (value, source
@@ -326,31 +312,23 @@ any longer.
   the heartbeat request into `agents.last_status`, rendered in the per-agent activity panel on
   `/admin/agents`.
 
-### Kubernetes burst pods are out of scope
+### One-shot Kubernetes policy
 
-A Kueue burst pod runs one Job per file with no long-lived process inside it, so "live reload"
-does not mean anything there — it already picks up a `ConfigMap` change (and a `backends.toml`
-change) on its **next** Job, the same way it always has. See
-[k8s-burst.md](k8s-burst.md#hot-reload-and-burst-jobs) for the full statement.
+A Kueue pod fetches the authenticated typed policy envelope before starting its one file.
+The shared poller in `runtime_config_agent.py` does not start heartbeat machinery or update
+agent liveness. The analysis child then retains its captured stall, thread and inference-batch
+policy; a later override affects subsequent work. Pod credentials, mounts and observer topology
+remain deployment resources. See [Kubernetes burst jobs](k8s-burst.md#hot-reload-and-burst-jobs).
 
 ## Backend registry (`backends.toml`)
 
-**As of 2026.7.1  the typed backend registry is the SOLE cloud config surface.** It replaces the flat `PHAZE_CLOUD_TARGET` selector and the flat `PHAZE_S3_*` / `PHAZE_KUBE_*` / compute-scratch env vars, which were **removed with no back-compat shim**. Instead of one global cloud target, you declare a *registry* of backends (and their staging buckets) in a TOML file.
+**As of 2026.7.1  the typed backend registry is the SOLE cloud config surface.** It replaces the flat `PHAZE_CLOUD_TARGET` selector and global bucket/credential, Kubernetes-resource and compute-scratch environment inputs, which were **removed with no back-compat shim**. Instead of one global cloud target, you declare a *registry* of backends (and their staging buckets) in a TOML file.
 
 **Loading + zero-config default.** The registry is loaded from a TOML file pointed at by `PHAZE_BACKENDS_CONFIG_FILE` (default `/etc/phaze/backends.toml`). If the file is **absent**, the control plane synthesizes an **implicit single `kind=local` backend** — an all-local deploy needs **zero** config edits. The registry is sourced **only** from the TOML file (it is deliberately not an env var), and a present-but-empty `backends = []` fails fast at startup rather than silently booting with no backend.
 
-```mermaid
-flowchart TD
-    A[PHAZE_BACKENDS_CONFIG_FILE] --> B{File present?}
-    B -->|no| C[Implicit single kind=local backend<br/>id=local, rank=99, cap=1<br/>zero-config all-local]
-    B -->|yes| D[Parse TOML — authoritative]
-    D --> E{backends = empty?}
-    E -->|yes| F[Fail fast:<br/>refuse to boot with no backend]
-    E -->|no| G[_validate_registry model validator]
-    G --> H{Per-variant + whole-registry<br/>invariants hold?}
-    H -->|no| I["Fail fast:<br/>id-tagged ValidationError<br/>compute requires agent_ref + scratch_dir,<br/>kueue requires kube config + non-empty buckets,<br/>cluster-specific bucket ≤1 ref"]
-    H -->|yes| J[Registry live<br/>logged secret-free as id/kind/rank/cap]
-```
+![Backend registry (`backends.toml`)](diagrams/configuration-2.png)
+
+[Open the interactive-size HTML](diagrams/configuration-2.html) · [Download SVG](diagrams/configuration-2.svg)
 
 **`[[backends]]` — the analysis backends.** An array-of-tables; each entry is a discriminated union on `kind`:
 
@@ -394,7 +372,7 @@ The global tuning knobs below (route threshold, retry budgets, S3 presign/lifecy
 
 Cloud burst (v5.0) offloads **long** audio sets (duration ≥ the route threshold) to a free OCI A1 arm64 **compute agent** over Tailscale via an rsync push — instead of occupying a local file-server analysis lane for an extended period. The full feature walkthrough, runbook, and smoke test live in [cloud-burst.md](cloud-burst.md); this section is the canonical knob reference.
 
-Descriptions are sourced from the `Field(...)` text in `config_base.py`, `config_control.py`, and `config_agent.py`, all exported through [`phaze.config`](../src/phaze/config.py). The `Class` column is the role the field lives on (`ControlSettings` = the application server that owns routing; `AgentSettings()` = the compute agent). All knobs use the `PHAZE_*` (or bare-name) dual form described above unless noted.
+Descriptions are sourced from the `Field(...)` text in `config_base.py`, `config_control.py`, and `config_agent.py`, all exported through [`phaze.config`](../src/phaze/config.py). The `Class` column is the role the field lives on (`ControlSettings` = the application server that owns routing; `AgentSettings` = a file-server or compute agent). All knobs use the `PHAZE_*` (or bare-name) dual form described above unless noted.
 
 | Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
 |------|-----------------|-------|---------|----------|-------------|
@@ -404,31 +382,31 @@ Descriptions are sourced from the `Field(...)` text in `config_base.py`, `config
 | `push_max_attempts` | `PHAZE_PUSH_MAX_ATTEMPTS` (or `push_max_attempts`) | Control | `3` | no | Max push re-drives of a sha256-mismatched file before it **spills back to `AWAITING_CLOUD`** (tiered cloud drain: at the cap the file no longer hard-fails — its cloud budget is marked spent so the next drain tick routes it to local). Bounded `gt=0, lt=20`. |
 | `cloud_spill_to_local_after_seconds` | `PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS` (or `cloud_spill_to_local_after_seconds`) | Control | `900` | no | **Live — the tiered-drain staleness gate.** Seconds a long file waits in `AWAITING_CLOUD` while higher-rank backends are online-but-**FULL** before slow local (rank 99) becomes an eligible spill target. Offline backends spill to local immediately (not staleness-gated). Bounded `gt=0, lt=86400`. |
 | `cloud_uploading_stale_after_sec` | `PHAZE_CLOUD_UPLOADING_STALE_AFTER_SEC` (or `cloud_uploading_stale_after_sec`) | Control | `21600` | no | **Live — stranded-upload reaper.** Seconds a `cloud_job` may sit `UPLOADING` with no timestamp movement before the reconcile reaper spills it back to awaiting. Generous default (6h) because a multi-GB multipart upload is legitimately slow and bumps no timestamp while it transfers; MUST exceed the largest `s3_upload` SAQ net. Bounded `gt=0, lt=604800`. |
-| `cloud_uploaded_stale_after_sec` | `PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC` (or `cloud_uploaded_stale_after_sec`) | Control | `900` | no | **Live — lost-submit reaper.** Seconds a `cloud_job` may sit `UPLOADED` with no submit enqueued before the reconcile reaper spills it back to awaiting. Much tighter than the `UPLOADING` bound: `report_uploaded` enqueues `submit_cloud_job` in the same transaction, so nothing legitimately dwells here. Bounded `gt=0, lt=604800`. |
+| `cloud_uploaded_stale_after_sec` | `PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC` (or `cloud_uploaded_stale_after_sec`) | Control | `900` | no | **Live — lost-submit reaper.** Seconds a `cloud_job` may sit `UPLOADED` with no submit enqueued before the reconcile reaper spills it back to awaiting. Much tighter than the `UPLOADING` bound: `report_uploaded` commits durable `UPLOADED` intent before enqueueing `submit_cloud_job`; an enqueue failure can leave this recoverable intermediate state. Bounded `gt=0, lt=604800`. |
 | `cloud_submitted_stale_after_sec` | `PHAZE_CLOUD_SUBMITTED_STALE_AFTER_SEC` (or `cloud_submitted_stale_after_sec`) | Control | `21600` | no | **Live — lost-push reaper.** Seconds a compute `cloud_job` may sit `SUBMITTED` with no live `push_file` broker key before the reconcile reaper spills it back to awaiting. Default 6h, the same as the `UPLOADING` bound it mirrors; MUST exceed the largest `push_file` SAQ net. Bounded `gt=0, lt=604800`. |
-| `compute_scratch_dir` | ~~`PHAZE_COMPUTE_SCRATCH_DIR`~~ (removed) | Control | *n/a* | no | **REMOVED in backend registry migration (superseded), accessor retired in multi-compute routing/.** This flat control-side scratch-dir mirror no longer exists as a settings field; the control plane now reads each compute backend's `scratch_dir` from [`backends.toml`](#backend-registry-backendstoml) directly. **MUST match `cloud_scratch_dir`** on the compute agent (a drift surfaces as a sha256/transfer failure). |
-| `cloud_scratch_dir` | `PHAZE_CLOUD_SCRATCH_DIR` (or `cloud_scratch_dir`) | Agent | `None` | no | Remote scratch directory on the compute agent where pushed files land and are later read by `process_file`. **MUST match the control-plane compute backend's `scratch_dir` in [`backends.toml`](#backend-registry-backendstoml)** (the flat control-side `compute_scratch_dir` field was **removed in backend registry migration**); it is also the cloud-agent compose's named-volume mount path. |
+| `compute_scratch_dir` | ~~`PHAZE_COMPUTE_SCRATCH_DIR`~~ (removed) | Control | *n/a* | no | **REMOVED in backend registry migration (superseded), accessor retired in multi-compute routing.** This flat control-side scratch-dir mirror no longer exists as a settings field; the control plane now reads each compute backend's `scratch_dir` from [`backends.toml`](#backend-registry-backendstoml) directly. **MUST match `cloud_scratch_dir`** on the compute agent (a drift surfaces as a sha256/transfer failure). |
+| `cloud_scratch_dir` | `PHAZE_CLOUD_SCRATCH_DIR` (or `cloud_scratch_dir`) | Agent | `None` | no | Remote scratch directory on the compute agent where pushed files land and are later read by `process_file`. **MUST match the control-plane compute backend's `scratch_dir` in [`backends.toml`](#backend-registry-backendstoml)** (the flat control-side `compute_scratch_dir` field was **removed in backend registry migration**); it is also the cloud-agent Compose host-bind path. |
 | `push_ssh_user` | `PHAZE_PUSH_SSH_USER` (or `push_ssh_user`) | Agent | `None` | no | SSH username for the rsync push target. |
 | `push_timeout_sec` | `PHAZE_PUSH_TIMEOUT_SEC` (or `push_timeout_sec`) | Agent | `600` | no | rsync I/O-stall timeout (seconds) for a single `push_file` transfer; MUST stay below the SAQ `push_file` job timeout so the kill is deterministic. Bounded `gt=0, lt=86400`. |
 | `push_connect_timeout_sec` | `PHAZE_PUSH_CONNECT_TIMEOUT_SEC` (or `push_connect_timeout_sec`) | Agent | `30` | no | SSH connect-handshake timeout (seconds) for the rsync push. Bounded `gt=0, lt=3600`. |
 | `push_ssh_key` | `PHAZE_PUSH_SSH_KEY` (or `push_ssh_key`) | Agent | `None` | **YES** (whitespace **preserved**) | SSH identity private key for the rsync push, file-mounted via `PHAZE_PUSH_SSH_KEY_FILE`. Never logged. |
 | `push_known_hosts` | `PHAZE_PUSH_KNOWN_HOSTS` (or `push_known_hosts`) | Agent | `None` | **YES** (whitespace **preserved**) | Pinned `known_hosts` for strict SSH host-key checking of the push target, file-mounted via `PHAZE_PUSH_KNOWN_HOSTS_FILE`. Must be re-provisioned with the compute agent's host key after it comes up. Never logged. |
 | `agent_token` | `PHAZE_AGENT_TOKEN` (or `AGENT_TOKEN`) | Agent | required | **YES** | Bearer token the compute agent authenticates with (same field as any agent). File-mount via `PHAZE_AGENT_TOKEN_FILE`. |
-| `worker_max_jobs` | `WORKER_MAX_JOBS` | all | `8` | no | **Agent concurrency** — concurrent SAQ jobs per worker. On the 12 GB Always-Free A1, set this to **`1`**: a single concurrent analysis is RAM-bound on that shape. |
+| `worker_max_jobs` | `WORKER_MAX_JOBS` | all | `8` | no | **Agent concurrency** — concurrent SAQ jobs per worker. On the 12 GB Always-Free A1, set this to **`1`**: this is the conservative single-file deployment policy, not a current memory measurement. |
 | *n/a (raw env var)* | `PHAZE_AGENT_QUEUE` | Agent | required | no | **Cloud queue name** the compute agent consumes (`phaze-agent-<agent_id>`). ⚠️ This is the single structural exception below — it is **not** a pydantic-settings field, so it has **no alias** and no `_FILE` support. |
 
 ### Kube submit/reconcile settings (v6.0)
 
-Kubernetes burst (v6.0 Kubernetes Burst) adds Kueue-cluster analysis: the control plane submits **suspended Kueue Jobs** via the kube API, watches them to completion, and reconciles their status. These knobs are the kube client surface the submit seam, submit task, and reconcile cron read.
+Kubernetes burst (v6.0 Kubernetes Burst) adds Kueue-cluster analysis: the control plane submits **suspended Kueue Jobs** via the kube API and polls/reconciles their status. These knobs are the kube client surface the submit seam, submit task, and reconcile cron read.
 
 > **Superseded in 2026.7.1.** In v6.0 these were flat `PHAZE_KUBE_*` env vars gated by `PHAZE_CLOUD_TARGET=k8s`; that selector and the flat `kube_*` knobs (plus the `_enforce_kube_config_when_k8s` validator) were **removed with no shim**. A Kueue backend now declares this config under its `[[backends]] kind="kueue"` → `[backends.kube]` submodel in [`backends.toml`](#backend-registry-backendstoml), and the discriminated-union submodel requires the API URL / namespace / local-queue **per backend** at startup (via `_validate_registry`). The rows below are retained as a **historical field reference**; kube credentials live on the **control plane only** (the agent and pod never receive them) as inline `*_file` secret pointers in `backends.toml`.
 
 | Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
 |------|-----------------|-------|---------|----------|-------------|
-| `cloud_submit_max_attempts` | `PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS` (or `cloud_submit_max_attempts`) | Control | `3` | no | Max kube Job **submit** attempts before a file is marked `ANALYSIS_FAILED`. A **distinct** budget from `push_max_attempts` (the rsync leg). Bounded `gt=0, lt=20`. |
+| `cloud_submit_max_attempts` | `PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS` (or `cloud_submit_max_attempts`) | Control | `3` | no | Charged kube re-drive ceiling before the sidecar spills to awaiting and the next drain selects the local safety net. Cloud exhaustion does not itself hard-fail analysis. A **distinct** budget from `push_max_attempts` (the rsync leg). Bounded `gt=0, lt=20`. |
 | `cloud_redrive_backoff_sec` | `PHAZE_CLOUD_REDRIVE_BACKOFF_SEC` (or `cloud_redrive_backoff_sec`) | Control | `120,600,1800` | no | Seconds to wait before each **charged** kube Job re-drive, comma-separated: entry *n* is the wait before the *n*-th re-drive of `attempts` or `node_loss_redrives`, and the last entry repeats. The default spaces the three re-drives of the default cap over 2 + 10 + 30 = 42 minutes, so a fault shorter than that cannot spend a file's whole budget, where the old every-tick re-drive spent it in about three minutes. The waiting row **keeps its burst-lane slot** and its staged object and is not charged again for the wait. An uncharged re-drive (exit `14`, control plane unreachable) never waits; the backend breaker bounds it. `0` re-drives on the tick that saw the failure. Each entry `0..86400`, at least one entry. |
 | `cloud_node_loss_max_redrives` | `PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES` (or `cloud_node_loss_max_redrives`) | Control | `1` | no | Max re-drives of a kube Job whose **pod died with its node** before the file spills to the local safety net. A **third**, separate budget: it charges `cloud_job.node_loss_redrives`, never `attempts`, because a node reboot is not the file's fault — but it *is* bounded, and deliberately the tightest of the three, because a node-loss re-drive is the case most likely to recur (whatever killed the node is still there). Total pods one `cloud_job` row can produce is `1 + cloud_submit_max_attempts + cloud_node_loss_max_redrives`. Bounded `gt=0, lt=20`. |
-| `cloud_budget_cooldown_days` | `PHAZE_CLOUD_BUDGET_COOLDOWN_DAYS` (or `cloud_budget_cooldown_days`) | Control | `14.0` | no | Days a file is barred from **cloud** backends after a cloud chain burns out its budget. The three per-chain budgets above all live on the `cloud_job` sidecar, which the awaiting-row reaper deletes at every analyze terminal — so a file that spilled to local and then failed there used to come back with `attempts = 0` and a whole fresh budget (`713a368e`'s 8 pods are **two chains of four**, four days apart). This is the durable, cross-chain bound. A cooldown rather than a ban because it is **self-clearing**: a file grounded by one bad node flies again with no operator action. Default 14 — comfortably above the 4-day re-chain gap observed in the incident. `0` disables it. Bounded `ge=0, le=3650`. |
+| `cloud_budget_cooldown_days` | `PHAZE_CLOUD_BUDGET_COOLDOWN_DAYS` (or `cloud_budget_cooldown_days`) | Control | `14.0` | no | Days a file is barred from **cloud** backends after a cloud chain burns out its budget. The three per-chain budgets above all live on the `cloud_job` sidecar, which the awaiting-row reaper deletes at every analyze terminal — so a file that spilled to local and then failed there used to come back with `attempts = 0` and a whole fresh budget (`<set-01>`'s 8 pods are **two chains of four**, four days apart). This is the durable, cross-chain bound. A cooldown rather than a ban because it is **self-clearing**: a file grounded by one bad node flies again with no operator action. Default 14 — comfortably above the 4-day re-chain gap observed in the incident. `0` disables it. Bounded `ge=0, le=3650`. |
 | `cloud_budget_max_chains` | `PHAZE_CLOUD_BUDGET_MAX_CHAINS` (or `cloud_budget_max_chains`) | Control | `3` | no | Lifetime ceiling on how many cloud chains **one file** may burn out before it stops being offered cloud at all. The intrinsic-cause backstop behind the cooldown: ~6 weeks of evidence at the default cooldown. Persistent but **not permanent** — raising this knob (or setting it to `0`) re-admits the file with no row edited and no migration, which is how the policy changes once the runaway-memory investigation explains the >8 GiB growth. Local is never excluded, so this can ground a file but never strand it. Bounded `ge=0, lt=100`. |
 | `cloud_budget_max_node_loss` | `PHAZE_CLOUD_BUDGET_MAX_NODE_LOSS` (or `cloud_budget_max_node_loss`) | Control | `3` | no | Lifetime ceiling on **node-loss** re-drives charged to one file across all its cloud chains. Deliberately separate from `cloud_budget_max_chains` — the same discipline `cloud_node_loss_max_redrives` applies per chain — so "kept failing analysis" and "kept taking nodes down" stay legible as different situations, one level up. Looser than its per-chain sibling because ADR-0005 (analyze job memory limits)'s pod memory limit turns a runaway into a pod-scoped OOMKill rather than a node crash. `0` disables it. Bounded `ge=0, lt=100`. |
 | `kube_api_url` | `[backends.kube]` `api_url` | Control | `None` | no | Kubernetes API server URL the control plane submits/watches Jobs against. **Required on a `kind="kueue"` backend** (its `[backends.kube]` submodel validates it at startup). |
@@ -445,25 +423,25 @@ Kubernetes burst (v6.0 Kubernetes Burst) adds Kueue-cluster analysis: the contro
 
 ### S3 object-staging settings (v6.0)
 
-S3 staging (v6.0) adds the **S3 object-staging leg** a Kueue backend needs: an ephemeral Kueue Job pod has no persistent local disk, so the control plane presigns a multipart **PUT** (the file-server agent uploads the long file's bytes over the presigned URL — it never sees bucket credentials) and a just-in-time **GET** (the pod downloads at startup), then deletes the staged object on every terminal outcome with a bucket-lifecycle TTL backstop. Works against **any** S3-compatible backend (MinIO / Backblaze / AWS / …) via an explicit `endpoint`. The control plane is the **only** holder of bucket credentials (the agent and pod are credential-free;  / ), so both credential fields honor the `_FILE` convention.
+S3 staging (v6.0) adds the **S3 object-staging leg** a Kueue backend needs: an ephemeral Kueue Job pod has no persistent local disk, so the control plane presigns a multipart **PUT** (the file-server agent uploads the long file's bytes over the presigned URL — it never sees bucket credentials) and a just-in-time **GET** (the pod downloads at startup), then deletes the staged object on every terminal outcome with a bucket-lifecycle TTL backstop. Works against **any** S3-compatible backend (MinIO / Backblaze / AWS / …) via an explicit `endpoint`. The control plane is the **only** holder of bucket credentials (the agent and pod never receive bucket credentials), so both credential fields honor the `_FILE` convention.
 
-> **Superseded in 2026.7.1.** In v6.0 these were flat `PHAZE_S3_*` env vars gated by `PHAZE_CLOUD_TARGET=k8s` (with the `_enforce_s3_config_when_k8s` validator). That selector, the flat `s3_*` knobs, and the single-shared-bucket assumption were **removed with no shim**. Staging buckets now live in the **[`[[buckets]]` registry](#backend-registry-backendstoml)**  — one or more S3-compatible buckets a Kueue backend references by `id`, each with its own inline `*_file` credential pointers. The rows below are retained as a **historical field reference** for the per-bucket fields.
+> **Superseded in 2026.7.1.** In v6.0 the endpoint, bucket identity and credentials were flat environment inputs gated by `PHAZE_CLOUD_TARGET=k8s` (with the `_enforce_s3_config_when_k8s` validator). That selector, the global resource/credential fields, and the single-shared-bucket assumption were **removed with no shim**. Staging buckets now live in the **[`[[buckets]]` registry](#backend-registry-backendstoml)**  — one or more S3-compatible buckets a Kueue backend references by `id`, each with its own inline `*_file` credential pointers. The rows below are retained as a **historical field reference** for the per-bucket fields.
 
 All bounded knobs (`gt`/`ge`/`lt`) reject an out-of-range operator value at startup so a misconfig never reaches the presign/upload code path .
 
 | Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
 |------|-----------------|-------|---------|----------|-------------|
-| `endpoint` | `[[buckets]]` `endpoint_url` | Control | `None` | no | S3-compatible endpoint URL (e.g. `https://s3.us-west-1.amazonaws.com` or a MinIO/Backblaze URL). Must be a well-formed **http(s)** URL with a host — a scheme-less or non-http value is rejected at registry validation ( SSRF surface). **Required on each `[[buckets]]` entry** — the current TOML key is `endpoint_url`. |
+| `endpoint` | `[[buckets]]` `endpoint_url` | Control | `None` | no | S3-compatible endpoint URL (e.g. `https://s3.us-west-1.amazonaws.com` or a MinIO/Backblaze URL). Must be a well-formed **http(s)** URL with a host — a scheme-less or non-http value is rejected at registry validation (the outbound endpoint boundary). **Required on each `[[buckets]]` entry** — the current TOML key is `endpoint_url`. |
 | `id` (bucket name) | `[[buckets]]` `id` + `bucket` | Control | `None` | no | The old flat `s3_bucket` splits into two required `[[buckets]]` keys: `id` (the **registry key** a Kueue backend's `buckets` list references) and `bucket` (the **actual S3 bucket name** staging objects are written to). Both required on each `[[buckets]]` entry. |
 | `s3_region` | `[[buckets]]` `region` | Control | `None` | no | S3 region (e.g. `us-west-1`). Optional for many S3-compatible backends. |
 | `s3_addressing_style` | `[[buckets]]` `addressing_style` | Control | `path` | no | S3 addressing style. `path` (default) maximizes S3-compatible-backend support; `virtual` for AWS virtual-hosted-style. |
-| `s3_access_key_id` | `[[buckets]]` `access_key_id` (inline `access_key_id_file` pointer) | Control | `None` | no (TOML `*_file`) | Per-bucket S3 access key id (`SecretStr`, control-plane only), loaded via the inline `access_key_id_file` secret pointer in `backends.toml` — no env var.  / . Never logged. |
-| `s3_secret_access_key` | `[[buckets]]` `secret_access_key` (inline `secret_access_key_file` pointer) | Control | `None` | no (TOML `*_file`) | Per-bucket S3 secret access key (`SecretStr`, control-plane only), loaded via the inline `secret_access_key_file` secret pointer in `backends.toml` — no env var.  / . Never logged. |
+| `s3_access_key_id` | `[[buckets]]` `access_key_id` (inline `access_key_id_file` pointer) | Control | `None` | no (TOML `*_file`) | Per-bucket S3 access key id (`SecretStr`, control-plane only), loaded via the inline `access_key_id_file` secret pointer in `backends.toml` — no env var. Never logged. |
+| `s3_secret_access_key` | `[[buckets]]` `secret_access_key` (inline `secret_access_key_file` pointer) | Control | `None` | no (TOML `*_file`) | Per-bucket S3 secret access key (`SecretStr`, control-plane only), loaded via the inline `secret_access_key_file` secret pointer in `backends.toml` — no env var. Never logged. |
 | `s3_presign_put_ttl_sec` | `PHAZE_S3_PRESIGN_PUT_TTL_SEC` (or `s3_presign_put_ttl_sec`) | Control | `3600` | no | TTL (seconds) for the presigned multipart PUT/part URLs minted for the upload leg. Bounded `gt=0, lt=86400`. |
 | `s3_presign_get_ttl_sec` | `PHAZE_S3_PRESIGN_GET_TTL_SEC` (or `s3_presign_get_ttl_sec`) | Control | `900` | no | TTL (seconds) for the just-in-time presigned GET URL minted at pod startup. Default 900 (short — minted post-admission so it never expires during a Kueue wait). Bounded `gt=0, lt=86400`. |
 | `s3_lifecycle_ttl_days` | `PHAZE_S3_LIFECYCLE_TTL_DAYS` (or `s3_lifecycle_ttl_days`) | Control | `2` | no | Bucket lifecycle TTL (days) — the backstop that deletes any staged object the inline callback delete missed. Bounded `gt=0, lt=30`. |
 | `s3_multipart_part_size_bytes` | `PHAZE_S3_MULTIPART_PART_SIZE_BYTES` (or `s3_multipart_part_size_bytes`) | Control | `67108864` | no | Multipart upload part size (bytes) the agent streams over presigned part URLs. Default 67108864 (64 MiB); bounded to the S3 `[5 MiB, 5 GiB)` part-size range (`ge=5242880, lt=5368709120`). |
-| `s3_client_timeout_sec` | `PHAZE_S3_CLIENT_TIMEOUT_SEC` (or `s3_client_timeout_sec`) | Control | `30` | no | **Live.** Explicit connect + read timeout (seconds) bounding every control-side S3 SDK call (complete/abort/delete multipart). Without it botocore's minute-scale defaults + retries let a wedged/blackholed S3 endpoint pin the calling connection for minutes. Bounded `gt=0, lt=600`. |
+| `s3_client_timeout_sec` | `PHAZE_S3_CLIENT_TIMEOUT_SEC` (or `s3_client_timeout_sec`) | Control | `30` | no | **Live for newly constructed clients.** Connect and read timeouts (seconds) for control-side S3 SDK calls (complete/abort/delete multipart), not a task wall-clock cap. The pre-existing `AioConfig(max_attempts=1)` permits an initial request plus one SDK retry; this is separate from the agent's captured multipart HTTP timeouts. Bounded `gt=0, lt=600`. |
 
 ### Fail-fast startup validators vs. the non-fatal runtime LocalQueue probe
 
@@ -494,7 +472,7 @@ Every cloud-burst parameter above is a [pydantic-settings](https://docs.pydantic
 
 There is **no migration runbook and no removal date** — the flat knobs are already gone; this table exists only to read an old config at a glance.
 
-**Reverting all routing to local (incident response).** This no longer means editing a selector and restarting. The pipeline header carries a **force-local** master toggle  that writes a durable `route_control` row and gates both the drain and the duration router **live** — reversible, no redeploy. Files already held `AWAITING_CLOUD` when force-local engages **stay held** (the drain no-ops); new long files route local. See [runbook.md → Force-local incident revert](runbook.md#force-local-incident-revert).
+**Reverting all routing to local (incident response).** This no longer means editing a selector and restarting. The Config pane carries the **force-local** control; the header displays its read-only warning. The control writes a durable `route_control` row and gates both the drain and the duration router **live** — reversible, no redeploy. Files already held `AWAITING_CLOUD` when force-local engages **stay held** (the drain no-ops); new long files route local. See [runbook.md → Force-local incident revert](runbook.md#force-local-incident-revert).
 
 ## Logging / observability (all roles)
 
@@ -505,7 +483,7 @@ workers (control + agent), the watcher, and the CLI/scripts.
 
 | Variable          | Required | Default                          | Description                                                                                          |
 |-------------------|----------|----------------------------------|------------------------------------------------------------------------------------------------------|
-| `PHAZE_LOG_LEVEL` | No       | `INFO`                           | Root log level: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. Set `DEBUG` for verbose per-file / intermediate detail. |
+| `PHAZE_LOG_LEVEL` | No       | `INFO`                           | Root log level: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL`. Set `DEBUG` for verbose per-file / intermediate detail. |
 | `PHAZE_LOG_JSON`  | No       | auto (JSON when stdout is not a TTY) | `true` = one JSON object per line (production / Docker); `false` = human-friendly console; unset = auto. |
 
 INFO proves work is happening — model downloads, scans (`scan started` / `scan progress` /
@@ -584,15 +562,15 @@ LLM itself doesn't return a usable date.
 
 ## Remote tracklist providers
 
-One generic pattern governs every remote tracklist provider (the proposal origin boundary, remote provider implementation);
-there is no per-provider settings block. A provider declares a `RemoteProviderSpec` (its id and the
-*names* of its credentials) and `src/phaze/config_remote_providers.py` reads `PHAZE_PROVIDER_<ID>_*`
-for it, where `<ID>` is the provider id upper-cased. `disabled_provider_ids()` turns the result into
-the `disabled` set passed to `ProviderRegistry`: a remote provider that is not enabled stays **listed**
-by `descriptors()`, and `discover`/`load` return `unavailable` with code `disabled_provider` without
-calling the provider or any effect (see
-[`design/tracklist-provider-contract.md`](design/tracklist-provider-contract.md)). A remote provider
-with no settings at all is disabled too. Enabling one provider never enables another.
+Registered providers declare a `RemoteProviderSpec` (provider ID and credential names).
+`src/phaze/config_remote_providers.py` reads `PHAZE_PROVIDER_<ID>_*` startup defaults,
+where `<ID>` is the upper-cased provider ID. Providers remain listed even when disabled.
+The registry does not freeze a disabled-provider snapshot: effective enablement, pacing and
+request budget are resolved through the live provider-policy service before outbound requests.
+A provider with no configuration defaults to disabled; enabling one never enables another.
+See [Global tracklist providers](global-tracklist-providers.md) for queueing, blocked work,
+continuation and stop controls. Merely listing providers or rendering Settings performs no
+provider traffic.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -602,9 +580,15 @@ with no settings at all is disabled too. Enabling one provider never enables ano
 | `PHAZE_PROVIDER_<ID>_MIN_INTERVAL_SECONDS` | No | unset | Override of the minimum delay between requests. Must be `> 0`. Unset means the transport's own conservative default, never unlimited. |
 | `PHAZE_PROVIDER_<ID>_MAX_REQUESTS_PER_RUN` | No | unset | Override of the per-run request budget. Integer `> 0`. Unset means the transport's default. |
 
-These are **restart-only** (ADR-0019 (runtime config hot-reload)): none is in `RELOADABLE_KEYS`, so
-setting one through `runtime.toml` or the admin API is rejected by name. Credential names may not be
-`enabled`, `min_interval_seconds`, `max_requests_per_run`, or end in `_file`.
+The environment values above are **startup defaults**. Credentials remain deployment secrets
+and require restart. Enablement, minimum interval and request budget also have a separate
+live-policy path: Settings persists typed JSON under `provider_<id>_policy` in the shared
+`runtime_config_override` table. This is separate from the 42 scalar `RELOADABLE_KEYS` and
+`runtime.toml`; it uses the provider-policy API rather than admitting arbitrary environment
+names into the scalar admin endpoint. Policy edits preserve charged usage, reservations,
+Retry-After and persistent stops; only an explicit reviewed stop-clear action clears a stop.
+Credential names may not be `enabled`, `min_interval_seconds`, `max_requests_per_run`, or end
+in `_file`.
 `test_documented_defaults_match_the_code` in
 [`tests/shared/core/test_docs_ia_current.py`](../tests/shared/core/test_docs_ia_current.py)
 pins the defaults in this table to the loader.
@@ -617,7 +601,7 @@ is TrackId's own Authorization format, `<client id>:<client secret>`, for exampl
 `tkid_EXAMPLE:example-not-a-real-secret` (a placeholder; never paste a real value into a tracked file). The
 transport adds the `Bearer ` prefix and sends it as the `Authorization` header. A value that is not exactly
 one id and one secret separated by a colon is rejected at startup by naming the setting, never the value. If
-the provider is enabled without the credential it is disabled (fail closed), never sent unauthenticated.
+the provider is enabled without the credential, its configured enabled state is preserved but it is unavailable with `credential_missing`; no unauthenticated request is sent.
 
 The profile's own pacing is conservative and is a **floor**: a 6 s gap between requests, 16 requests per
 run, 60 per rolling hour, and a 262144-byte response bound. `MIN_INTERVAL_SECONDS` can only raise the gap
@@ -635,18 +619,18 @@ These fields exist only on `AgentSettings()` (the file server). When `PHAZE_ROLE
 |-----------------------------------------------|----------|---------|-----------------------------------------------------------------------------|
 | `PHAZE_AGENT_API_URL` (or `AGENT_API_URL`)    | **Yes**  | (empty) | Base URL of the application server (e.g., `http://api:8000` in Compose). In `production` mode this must be `https://`. |
 | `PHAZE_AGENT_TOKEN` (or `AGENT_TOKEN`)        | **Yes**  | (empty) | Bearer token (`SecretStr`) issued at agent registration. Must match the stored hash in the `agents` table. Format: `phaze_agent_<32 urlsafe-base64 bytes>`. |
-| `PHAZE_AGENT_SCAN_ROOTS` (or `SCAN_ROOTS`)    | **Yes**  | (empty) | Comma-separated list of absolute paths the agent may read/write, used for path-traversal containment (e.g., `/data/music,/data/concerts`). |
+| `PHAZE_AGENT_SCAN_ROOTS` (or `SCAN_ROOTS`)    | **Yes, fileserver**  | (empty) | Comma-separated list of absolute paths the agent may read/write, used for path-traversal containment (e.g., `/data/music,/data/concerts`). |
 | `PHAZE_AGENT_QUEUE` (no alias)                | **Yes**  | (empty) | SAQ queue the agent worker consumes. ⚠️ Not a pydantic-settings field — a raw `os.environ` read at SAQ import time, so no bare-name alias and no `_FILE` support (see the cloud-burst section's structural-exception note). By convention it MUST equal `phaze-agent-<PHAZE_AGENT_ID>`. There is **no queue column** on the `agents` table: both the control plane and the agent worker derive the queue name from the agent_id. At startup `phaze.tasks.agent_worker` resolves the agent_id from the token via `/whoami` and asserts `PHAZE_AGENT_QUEUE == f"phaze-agent-{agent_id}"`, exiting non-zero on mismatch. Use the exact value printed by `phaze agents add` (see [deployment.md](deployment.md) Step 3). |
 
 ### Optional agent fields
 
 | Variable                                          | Required | Default              | Description                                                                 |
 |---------------------------------------------------|----------|----------------------|-----------------------------------------------------------------------------|
-| `PHAZE_AGENT_KIND` (or `kind`)                    | No       | `fileserver`         | Agent capability marker: `fileserver` (owns media + scan roots) or `compute` (cloud agent — owns no media/scan roots, which relaxes the empty-`scan_roots` required-field gate). compute agents; middle layer of the 3-layer kind defense (CLI `choices=` + DB CHECK bracket it). |
+| `PHAZE_AGENT_KIND` (or `kind`)                    | No       | `fileserver`         | Agent capability marker: `fileserver` (owns media + scan roots) or `compute` (cloud agent — owns no media/scan roots, which relaxes the empty-`scan_roots` required-field gate). The config constraint is the middle layer of the 3-layer kind defense (CLI `choices=` + DB CHECK bracket it). |
 | `PHAZE_AGENT_ENV` (or `AGENT_ENV`)                | No       | `dev`                | Deployment mode: `dev` or `production`. `production` enforces `https://` agent URL and a passworded Redis URL. |
 | `PHAZE_AGENT_CA_FILE` (or `AGENT_CA_FILE`)        | No       | `/certs/phaze-ca.crt`| Path to the operator-distributed CA cert the agent's HTTP client uses to verify the app-server TLS endpoint. |
 | `PHAZE_WATCHER_SETTLE_SECONDS` (or `WATCHER_SETTLE_SECONDS`) | No | `10` | Seconds a file's mtime must be stable before the watcher posts it.          |
-| `PHAZE_WATCHER_MAX_PENDING_SECONDS` (or `WATCHER_MAX_PENDING_SECONDS`) | No | `3600` | Stuck-file cap; pending entries older than this are evicted without posting.|
+| `PHAZE_WATCHER_MAX_PENDING_SECONDS` (or `WATCHER_MAX_PENDING_SECONDS`) | No | `3600` | Pending-age cap captured for each new path. One grace extension precedes eviction on the second unsettled crossing.|
 | `PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS` (or `WATCHER_SWEEP_INTERVAL_SECONDS`) | No | `2` | How often the watcher's sweep task checks for settled files.               |
 | `PHAZE_WATCHER_POLLING_MODE` (or `WATCHER_POLLING_MODE`) | No | `false` | Use watchdog's `PollingObserver` instead of native inotify. Required for macOS Docker bind mounts where inotify events do not propagate. |
 | `PHAZE_SCAN_CHUNK_SIZE` (or `SCAN_CHUNK_SIZE`)    | No       | `500`                | Number of file-upsert rows per chunk in `scan_directory`. Clamped to `AGENT_FILE_CHUNK_MAX` (above) -- values above the cap are silently capped, never rejected. |
@@ -722,6 +706,7 @@ These are consumed by the Compose stack (`docker-compose.yml`, `docker-compose.a
 
 | Variable           | Required | Default       | Description                                                                 |
 |--------------------|----------|---------------|-----------------------------------------------------------------------------|
+| `API_PORT` | No | `8000` | Host port mapped to the API container's fixed port 8000; not a Settings field. |
 | `POSTGRES_USER`    | No       | `phaze`       | PostgreSQL superuser for the `postgres` service.                            |
 | `POSTGRES_PASSWORD`| **Yes**  | (none)        | PostgreSQL password for the `postgres` service. Compose fails at parse time if unset (`${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}` in the service environment) — there is **no** default. |
 | `POSTGRES_DB`      | No       | `phaze`       | PostgreSQL database name created on first boot.                            |
@@ -733,12 +718,13 @@ These are consumed by the Compose stack (`docker-compose.yml`, `docker-compose.a
 
 ## Config file format
 
-Phaze has no JSON/YAML/TOML application config file. All runtime configuration flows through environment variables (loaded from a `.env` file via pydantic-settings, `env_file=".env"`). Unknown env vars are ignored (`extra="ignore"`).
+Startup Settings load environment variables and `.env` via pydantic-settings (`env_file=".env"`). Live policy uses `runtime.toml` and validated database overrides; resource registries use `backends.toml`. These have separate validation and activation boundaries, described above. Unknown env vars are ignored (`extra="ignore"`).
 
 A minimal `.env` for a single-host dev bring-up:
 
 ```bash
-# Database + queue broker + Redis cache (Docker service names)
+# Database + queue broker + Redis cache (synthetic development credentials)
+POSTGRES_PASSWORD=phaze
 DATABASE_URL=postgresql+asyncpg://phaze:phaze@postgres:5432/phaze
 PHAZE_QUEUE_URL=postgresql://phaze:phaze@postgres:5432/phaze   # libpq form, NOT +asyncpg
 REDIS_URL=redis://redis:6379/0
@@ -759,7 +745,7 @@ PHAZE_AGENT_SCAN_ROOTS=/data/music
 
 Almost every field has a safe default so a fresh clone runs with `docker compose up`. The settings that cause a **fail-fast at startup** if missing or misconfigured:
 
-- **Agent role (`PHAZE_ROLE=agent`)** — `PHAZE_AGENT_API_URL`, `PHAZE_AGENT_TOKEN`, and `PHAZE_AGENT_SCAN_ROOTS` are all required. The `_enforce_required_agent_fields` model validator raises `ValueError` at construction if any is empty.
+- **Agent role (`PHAZE_ROLE=agent`)** — `PHAZE_AGENT_API_URL` and `PHAZE_AGENT_TOKEN` are required; file-server agents also require `PHAZE_AGENT_SCAN_ROOTS`. `kind=compute` deliberately permits empty scan roots. The `_enforce_required_agent_fields` model validator raises `ValueError` at construction if any is empty.
 - **Redis password (Compose)** — `REDIS_PASSWORD` must be set or `docker compose` aborts at parse time (`${REDIS_PASSWORD:?REDIS_PASSWORD required}`).
 - **Postgres password (Compose)** — `POSTGRES_PASSWORD` must be set or `docker compose` aborts at parse time (`${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}` in `docker-compose.yml`'s `postgres` service).
 - **Scan path (agent Compose)** — `SCAN_PATH` must be set or `docker compose -f docker-compose.agent.yml` aborts at parse time. It is enforced on **all five** agent services with `${SCAN_PATH:?SCAN_PATH required}`, mounted `rw` on the meta and drain workers and `ro` everywhere else.
