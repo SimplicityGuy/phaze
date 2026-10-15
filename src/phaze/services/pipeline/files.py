@@ -50,9 +50,10 @@ logger = structlog.get_logger(__name__)
 # anti-feature table and BOTH are honoured here: (1) "rendering raw internal status strings" -- every
 # per-stage cell is the DERIVED stage_status_case bucket, never FileRecord.state; (2) "a stats poll
 # that scans the whole corpus" -- the query is LIMIT-bounded, keyset/offset-paginated, and NEVER emits
-# an unbounded whole-corpus COUNT (the +1 sentinel below computes has_next instead). The five correlated
-# stage_status_case CASE columns evaluate for the N page rows ONLY (they correlate to FileRecord), so
-# the per-page derivation cost is O(page_size), never O(corpus) -- the T-87-11 DoS mitigation.
+# an unbounded whole-corpus COUNT (the +1 sentinel below computes has_next instead). Membership is
+# materialized before output derivation: an outer LIMIT alone lets PostgreSQL plan full-table hashed
+# subplans and expensive JIT compilation for otherwise page-local badges/history. Stage predicates
+# needed for filtering or ordering still evaluate across the matching corpus.
 
 # The stage columns the Files table shows, in column order. `.value` keys the row dict so the template
 # reads buckets.review for the "Review" column and buckets.apply for "Execute". phaze-o71bf added
@@ -176,12 +177,13 @@ def _files_page_stmt(
 ) -> Select[Any]:
     """Build the bounded per-page derivation SELECT (extracted so the EXPLAIN test can probe it directly).
 
-    ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by
-    ``sort`` (phaze-a6hm.3) -- or, absent a resolved sort, the ``FileRecord.id`` PK index -- and LIMITed
-    to ``page_size + 1`` (the sentinel that yields ``has_next`` with NO COUNT). Each ``stage_status_case``
-    is a correlated CASE over the stage-status partial indexes (``ix_metadata_failed`` / ``ix_analysis_completed``
-    / ``ix_analysis_failed``), so the derivation touches only the page rows. The
-    optional ``stage``+``bucket`` filter is applied as ``stage_status_case(stage) == bucket`` -- a pure
+    A materialized ID-only CTE owns filtering, ordering and the ``page_size + 1`` sentinel LIMIT.
+    The outer SELECT derives badges/history and loads owner/root facts for only those IDs. Both
+    halves share one statement snapshot: no delete, rename or status change can move membership
+    between separate READ COMMITTED reads. Stage-dependent membership/order expressions remain
+    inside the CTE; the outer order repeats the same sort and unique ID tiebreaker for the bounded
+    result, since CTE scan order is not guaranteed. The optional ``stage``+``bucket`` filter is
+    applied as ``display_status_case(stage) == bucket`` -- a pure
     ORM bound-param comparison (never f-string SQL, T-87-14); the caller validates ``stage``/``bucket``
     against the ``Stage``/``Status`` allowlists (plus :data:`ORPHANED_BUCKET`, below).
 
@@ -206,18 +208,7 @@ def _files_page_stmt(
     and a single ineligible stage yields the empty set via ``false()`` rather than a 500 into the
     SAVEPOINT degrade path.
     """
-    cols: list[ColumnElement[Any]] = [display_status_case(s) for s in _FILES_PAGE_STAGES]
-    # phaze-x1qr3.9: ONE extra `SELECT ... WHERE set_profile.file_id IN (...)` for the whole
-    # bounded page (selectinload, not a join on the correlated derivation above) -- never one
-    # query per row. `FileRecord.set_profile` is `lazy="noload"` (models/file.py), so without this
-    # every `row.file.set_profile` the template reads would raise, not silently N+1.
-    stmt = cast(
-        "Select[Any]",
-        select(FileRecord, *cols, *_stage_history_columns(), Agent.scan_roots, ScanBatch.configured_root)
-        .outerjoin(Agent, Agent.id == FileRecord.agent_id)
-        .outerjoin(ScanBatch, ScanBatch.id == FileRecord.batch_id)
-        .options(selectinload(FileRecord.set_profile)),
-    )
+    stmt = select(FileRecord.id)
     # Summary stage counts cover music/video, while the general Files history includes every category.
     if media_only:
         stmt = stmt.where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
@@ -240,12 +231,28 @@ def _files_page_stmt(
     # (never a whole-corpus COUNT -- T-87-11). FileRecord.id is the mandatory unique tiebreaker
     # (paging contract rule 4) regardless of `sort` -- an operator-chosen column ties far more often
     # than the PK does (column_sort contract, SortState.order_by docstring).
-    return paged_stmt(
-        stmt,
-        page=page,
-        page_size=page_size,
-        order_by=sort.order_by() if sort is not None else (),
-        tiebreaker=(FileRecord.id,),
+    order_by = sort.order_by() if sort is not None else ()
+    members = (
+        paged_stmt(
+            stmt,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            tiebreaker=(FileRecord.id,),
+        )
+        .cte("files_page_members")
+        .prefix_with("MATERIALIZED", dialect="postgresql")
+    )
+    cols: list[ColumnElement[Any]] = [display_status_case(s) for s in _FILES_PAGE_STAGES]
+    # Exactly one additional selectinload for the bounded page, including its sentinel; never N+1.
+    return cast(
+        "Select[Any]",
+        select(FileRecord, *cols, *_stage_history_columns(), Agent.scan_roots, ScanBatch.configured_root)
+        .join(members, members.c.id == FileRecord.id)
+        .outerjoin(Agent, Agent.id == FileRecord.agent_id)
+        .outerjoin(ScanBatch, ScanBatch.id == FileRecord.batch_id)
+        .options(selectinload(FileRecord.set_profile))
+        .order_by(*order_by, FileRecord.id),
     )
 
 
