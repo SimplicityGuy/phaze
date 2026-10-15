@@ -1,15 +1,15 @@
 # Current-design documentation review
 
 This review reconciles maintained documentation with the merged implementation at
-`517c56be7299166b50deaa52877cfd8b0c62668a`. It is a source review, not a claim that the
+`51707485909dfd1c8ec88da760f4b548e84c403c`. It is a source review, not a claim that the
 personal archive, production services, old measurements or cluster manifests were exercised.
 No production/archive probe or destructive remediation was run. Historical quantities,
 commands, callable examples and machine-instruction paths retain their meaning.
 
-The ledger covers 90 guide/module records: 86 preflight/current dependency-guide records and four added developer/authoring records. “Full text” means the guide was read; it does not turn every
+The ledger covers 92 guide/module and evidence records: 86 preflight/current dependency-guide records, four added developer/authoring records and two landed performance guides/records. “Full text” means the guide was read; it does not turn every
 dated table into a fresh benchmark. Explicit partial/provenance-focused dispositions remain
 partial. Source line references describe the reviewed baseline and may move after editing.
-The final sidebar behavior must be reconciled after its separate implementation lands.
+The landed sidebar and performance changes are reconciled against the final source revision above.
 
 ## Current design findings
 
@@ -43,12 +43,12 @@ The final sidebar behavior must be reconciled after its separate implementation 
 ## Per-guide evidence and scope
 
 The [structured evidence ledger](current-design-ledger.json) consolidates the original 86 guide
-records plus four added developer/authoring records against the integrated implementation.
+records plus four added developer/authoring records and two landed performance guides/records against the integrated implementation.
 The original preflight was read-only at an earlier revision; this ledger records implementation
 review at the revision above. Source traces carried forward apply where implementation is
 unchanged. “Partial” remains explicit for long dated evidence tables and reports: these rows
 are provenance reviews, not fresh measurements or a full current-design certification.
-Final sidebar reconciliation is called out on the affected current guides until its branch lands.
+Sidebar inventory policy and first-paint/OOB behavior are source-traced on all five affected current guides.
 
 | Guide | Review scope | Disposition |
 |---|---|---|
@@ -63,16 +63,16 @@ Final sidebar reconciliation is called out on the affected current guides until 
 | `docs/telemetry/exporter.md` | current guide: source-traced review | updated against current source |
 | `docs/telemetry/alerting.md` | current guide: source-traced review | updated against current source |
 | `docs/runbook.md` | current guide: source-traced review | updated against current source |
-| `docs/architecture.md` | current guide: source-traced review | updated against current source · sidebar followup pending |
+| `docs/architecture.md` | current guide: source-traced review | updated against current source |
 | `docs/gates-and-isolation.md` | dated evidence: provenance-focused/partial tables | updated against current source |
 | `docs/telemetry/metric-catalogue.md` | current guide: source-traced review | reviewed; retained current contract or dated evidence |
-| `README.md` | current guide: source-traced review | updated against current source · sidebar followup pending |
+| `README.md` | current guide: source-traced review | updated against current source |
 | `docs/quick-start.md` | current guide: source-traced review | updated against current source |
 | `docs/arm64-agent-image.md` | current guide: source-traced review | updated against current source |
 | `docs/multi-compute.md` | current guide: source-traced review | updated against current source |
-| `docs/project-structure.md` | current guide: source-traced review | updated against current source · sidebar followup pending |
+| `docs/project-structure.md` | current guide: source-traced review | updated against current source |
 | `docs/just-recipe-contract.md` | current guide: source-traced review | updated against current source |
-| `docs/api.md` | current guide: source-traced review | updated against current source · sidebar followup pending |
+| `docs/api.md` | current guide: source-traced review | updated against current source |
 | `docs/pipeline-stats-performance.md` | dated evidence: provenance-focused/partial tables | reviewed; retained current contract or dated evidence |
 | `docs/postgres-jit.md` | dated evidence: provenance-focused/partial tables | reviewed; retained current contract or dated evidence |
 | `docs/deployment.md` | current guide: source-traced review | updated against current source |
@@ -96,7 +96,7 @@ Final sidebar reconciliation is called out on the affected current guides until 
 | `docs/quality-implementation/tag-partial-save-undo.md` | current guide: source-traced review | reviewed; retained current contract or dated evidence |
 | `docs/quality-implementation/tag-reviewed-revision.md` | current guide: source-traced review | reviewed; retained current contract or dated evidence |
 | `docs/AGF.md` | current guide: source-traced review | updated against current source |
-| `docs/ui-design-reference.md` | current guide: source-traced review | updated against current source · sidebar followup pending |
+| `docs/ui-design-reference.md` | current guide: source-traced review | updated against current source |
 | `design/DESIGN_SYSTEM.md` | current guide: source-traced review | reviewed; retained current contract or dated evidence |
 | `design/resonant-precision.md` | current guide: source-traced review | reviewed; retained current contract or dated evidence |
 | `CONVENTIONS.md` | current guide: source-traced review | reviewed; retained current contract or dated evidence |
@@ -142,6 +142,8 @@ Final sidebar reconciliation is called out on the affected current guides until 
 | `docs/diagram-authoring.md` | current developer guide: source-traced review | reviewed current implementation/provenance |
 | `docs/audits/current-design-review.md` | current developer guide: source-traced review | reviewed current implementation/provenance |
 | `scripts/vendor/diagram_design/skills/diagram-design/references/style-guide.md` | current developer guide: source-traced review | reviewed current implementation/provenance |
+| `docs/performance/files-workspace.md` | current contract source-traced; dated measurements provenance only | reviewed landed source contract; retained dated evidence |
+| `docs/spikes/dashboard-polling-latency.md` | dated evidence: provenance-focused/partial tables | reviewed landed source contract; retained dated evidence |
 
 ## Inventory boundaries
 
@@ -181,6 +183,5 @@ one page and mobile pages retained diagram scrolling. The pinned upstream geomet
 self-check and contrast helpers passed through the documented font adapter.
 
 The focused documentation, operator-copy, Kubernetes runbook and recipe batch passed 195
-tests on an exclusive test seat. The subsequent current-guide inventory assertions passed
-all 13 tests in that module. All repository pre-commit hooks passed. These bounded checks
-do not replace the final lifecycle-owned full validation after sidebar integration.
+tests on an exclusive test seat. All repository pre-commit hooks passed. These bounded checks
+do not replace the final lifecycle-owned full validation.

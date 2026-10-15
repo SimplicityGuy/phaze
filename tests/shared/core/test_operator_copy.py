@@ -73,10 +73,8 @@ EVIDENCE_TARGET = re.compile(r"\]\([^\n)]*\)|(?:docs/)?(?:spikes|design)/[^\s)`]
 WIRE_TOKEN = re.compile(r"(?<![\w-])X-Phaze-Config-Version(?![\w-])")
 # Exact historical record markers, each scoped to its paragraph rather than exempting a guide.
 HISTORICAL_RECORDS = {
-    "docs/k8s-burst.md": ("Operator decision 2026-09-27 (`AskUserQuestion`)",),
     "docs/telemetry/alerting.md": ("Question as put, with host identifiers replaced by role descriptions",),
     "docs/telemetry/overhead.md": ("Question as put, 2026-08-26",),
-    "docs/api.md": ("dispatch session, AskUserQuestion",),
     "docs/degenerate-audio.md": ("> For phaze-nkucu",),
     "docs/analysis-evaluation.md": ("Question as put",),
 }

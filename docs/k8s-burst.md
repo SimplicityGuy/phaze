@@ -184,7 +184,7 @@ control-plane pieces own this:
   `phaze-analyze-<file_id>`), upserts the `cloud_job` row to `SUBMITTED`, and returns in
   seconds. It never awaits analysis.
 - **`reconcile_cloud_jobs`** (the safety net, `phaze.tasks.reconcile_cloud_jobs`) — a
-  **cron-only** `*/5 * * * *` CronJob registered on the controller. There is **no live kube
+  **cron-only** `* * * * *` CronJob (every minute) registered on the controller. There is **no live kube
   watch**: each tick it re-reads the in-flight Jobs/Workloads and reconciles them.
 
 **The callback is the only result channel.** The one-shot pod `PUT`s its analysis
@@ -204,14 +204,15 @@ dropped/expired watch never loses or duplicates a result" true.
 - **S3 cleanup on a no-callback terminal** — a `Failed`/`Evicted`/lost Job (no callback landed)
   triggers `s3_staging.delete_staged_object(file_id)` before the Job delete. The **success**
   path does NOT delete S3 — the callback already deleted it inline.
-- **Bounded re-drive then spill to local (SCHED-03)** — a no-callback terminal under
+- **Bounded re-drive then spill to local** — a no-callback terminal under
   `cloud_submit_max_attempts` (default 3) increments `cloud_job.attempts` and re-drives a fresh
   `submit_cloud_job`. **At the cap the file is NOT hard-failed.** The sidecar is re-stamped
   `status='awaiting'` with `attempts` already equal to the cap, so the next drain tick's
   `select_backend` excludes every cloud backend (`attempts >= cap`) and routes the file to the
-  local safety net. A *local* failure — never cloud flakiness — is the only path into
-  `ANALYSIS_FAILED` (D-04).
-- **A node-loss re-drive has its OWN, tighter ceiling (phaze-1q4g)** — when the pod died *with its
+  local safety net. Submission or infrastructure exhaustion does not itself mark analysis terminally failed.
+  An actual analysis-class failure, including one reported by a one-shot cloud pod, records
+  `analysis.failed_at` through the authenticated failure callback.
+- **A node-loss re-drive has its OWN, tighter ceiling** — when the pod died *with its
   node* (`status.reason` of `NodeShutdown`/`NodeLost`/`Evicted`/…, or a `DisruptionTarget` pod
   condition) the re-drive charges `cloud_job.node_loss_redrives` against
   `cloud_node_loss_max_redrives` (default **1**) instead of `attempts`. The two causes stay
@@ -221,14 +222,13 @@ dropped/expired watch never loses or duplicates a result" true.
   the node-loss ceiling the row takes the **same** terminal as the attempts cap (spill to `'awaiting'`
   with `attempts` stamped to the cap → local). Before this, node loss charged nothing at all: one
   pathological file re-drove **8 times over 5 days**, crashing the burst node on every pod, while its
-  `attempts` never left 3 (spike `phaze-wcrb` §5). The other half of that defect was in the Job
+  `attempts` never left 3 ([the node-loss forensics](spikes/phaze-wcrb-oom-multiplier-forensics.md) §5). The other half of that defect was in the Job
   manifest — `backoffLimit: 0` bounds *counted failures*, not *pod creations*, so the default
   `podReplacementPolicy: TerminatingOrFailed` silently minted replacement pods for a pod stuck
   Terminating on a dead node; phaze now submits `podReplacementPolicy: Failed`, which makes
   "one Job ⇒ one pod" actually true.
-- **Why the pod failed is recorded on the row (phaze-1xngw)** — reconcile deletes the Job on every
-  re-drive and spill, so the pod's exit status used to be gone within about a minute; spike
-  `phaze-79mu7` could read the burst's exit `10` (`EXIT_DOWNLOAD`) only from the node's containerd
+- **Why the pod failed is recorded on the row** — reconcile deletes the Job on every
+  re-drive and spill, so the pod's exit status used to be gone within about a minute; the incident investigation could read the burst's exit `10` (`EXIT_DOWNLOAD`) only from the node's containerd
   journal. Before that delete, reconcile now reads the analyze container's `state.terminated` and
   writes `cloud_job.last_exit_code` / `last_failure_reason` (the pod's `exitCode` / `reason`) and
   `last_failed_at`. With no terminated container the exit code is NULL and the reason says why:
@@ -236,12 +236,12 @@ dropped/expired watch never loses or duplicates a result" true.
   stamped within the pending-submit bound), `pod_not_found` (the Job read Failed/Evicted but listed no
   pod), or the pod-state summary (a wedged or node-lost pod). The `re-driving submit_cloud_job` and
   `submit cap reached` log lines carry the same `exit_code` and `reason`. The columns live on the
-  sidecar row, so the D-14 reaper below removes them with it once the spilled file's local analysis
+  sidecar row, so the analysis-terminal reaper below removes them with it once the spilled file's local analysis
   finishes.
-- **An unreachable control plane charges nothing, and holds the backend (phaze-j0ixx)** — exit `10`
+- **An unreachable control plane charges nothing, and holds the backend** — exit `10`
   used to cover both a presign request that never reached the control plane and a failed object GET,
   and reconcile charged both to `attempts`; two infrastructure faults on 2026-09-26/27 spent 302
-  healthy files' whole budget that way (spike `phaze-79mu7`). The pod now exits `14`
+  healthy files' whole budget that way. The pod now exits `14`
   (`EXIT_CONTROL_PLANE_UNREACHABLE`) when its presign request could not open a connection at all
   (DNS failure, refused, TLS/connect error, connect timeout); a request that reached the control plane
   and was refused, and every object GET failure, stay `10`. Reconcile charges neither `attempts` nor
@@ -252,14 +252,14 @@ dropped/expired watch never loses or duplicates a result" true.
   backend's `14` rows back to `'awaiting'` with `attempts` unchanged, and the Analyze lane card shows
   **HELD** with the reason. Every 15 minutes the drain grants the backend **one** probe slot; the
   breaker **closes** the first time the presign endpoint mints a URL for a pod on that backend. No
-  running pod is killed. Operator decision 2026-09-27 (`AskUserQuestion`): *"phaze-j0ixx: when cloud
-  pods fail because the control plane is unreachable (the 09-26 outage and the host-prod DNS loss), files
-  currently use up their 3 attempts. How should phaze respond instead?"* — answer as given: *"Both:
-  exit code + breaker (Recommended)"*; durable record: the bead `phaze-j0ixx` comment. The thresholds
-  and the probe are the implementer's choice, reasoned in `services/backend_breaker.py`.
-- **A charged re-drive waits out a backoff, holding its slot (phaze-d28sn)** — reconcile used to
+  running pod is killed. On 2026-09-27, after the 09-26 outage and control-plane DNS loss had consumed
+  files' 3 attempts, the operator chose both a distinct unreachable-control-plane exit code and a
+  backend breaker. The thresholds and probe policy are implemented in
+  [`services/backend_breaker.py`](../src/phaze/services/backend_breaker.py); reconciliation uses
+  [`tasks/reconcile_cloud_jobs.py`](../src/phaze/tasks/reconcile_cloud_jobs.py).
+- **A charged re-drive waits out a backoff, holding its slot** — reconcile used to
   enqueue the fresh submit on the tick that saw the failure, so a file spent one submit and three
-  re-drives in about three minutes (spike `phaze-79mu7`). A re-drive that charges `attempts` or
+  re-drives in about three minutes. A re-drive that charges `attempts` or
   `node_loss_redrives` now deletes the Job and charges the counter as before, then stamps
   `cloud_job.redrive_after` = `last_failed_at` + the `cloud_redrive_backoff_sec` entry for that
   re-drive (default 2 / 10 / 30 minutes) and enqueues nothing; the first tick past that instant
@@ -271,16 +271,15 @@ dropped/expired watch never loses or duplicates a result" true.
   row from a pending-confirmation one, so no schedule entry can age a row into the charged
   vanished-submit terminal. An exit `14` re-drive does not wait: it charges nothing, and the breaker
   above bounds it. No pod runs while a row waits, so nothing bounds a running analysis.
-- **The budget now OUTLIVES the sidecar row (phaze-2mwyo)** — every budget above lives on the
-  `cloud_job` row, and `routers/agent_analysis`'s D-14 reaper *deletes* that row
+- **The budget now OUTLIVES the sidecar row** — every budget above lives on the
+  `cloud_job` row, and `routers/agent_analysis`'s analysis-terminal reaper *deletes* that row
   (`DELETE FROM cloud_job WHERE file_id = … AND status = 'awaiting'`) at **both** analyze-terminal
   seams. So a file that spent its whole cloud budget, spilled to local, and then failed *locally* lost
   its entire history: the next re-analysis started a fresh chain at `attempts = 0` and could spend the
   whole budget again. That is what the forensics actually show — `<set-01>`'s eight pods are **two
   chains of four** (07-24…07-25, then 07-29 after a four-day gap), not one runaway chain, while the
   other three affected files show exactly one chain each. The reaper is **unchanged** (retaining
-  budget-spent rows re-creates the growing dead set `ix_cloud_job_awaiting` scans — the `phaze-9sqa`
-  head-of-line poison it exists to prevent); the *budget* moved instead, to a durable per-file
+  budget-spent rows re-creates the growing dead set `ix_cloud_job_awaiting` scans — the head-of-line blocking it exists to prevent); the *budget* moved instead, to a durable per-file
   `cloud_budget` row the reaper cannot reach. `hold_awaiting_cloud` folds a chain into it exactly once,
   on the edge where `attempts` first crosses the cap, accumulating `attempts_spent` and
   `node_loss_spent` **separately** so the two causes stay legible across chains too. `select_backend`
@@ -290,9 +289,9 @@ dropped/expired watch never loses or duplicates a result" true.
   `cloud_budget_cooldown_days` (default **14**) bars cloud for a while after a burnout and is
   **self-clearing**, so a file grounded by one bad node is re-admitted on its own;
   `cloud_budget_max_chains` / `cloud_budget_max_node_loss` (default **3** each, `0` disables) are the
-  intrinsic-cause backstop behind it. `phaze-6ck1` has not yet established whether the ~4 runaway files
-  are intrinsically pathological or the victims of one bad node — when it does, the answer changes a
-  **default**, not the schema. Local (rank-99) is never excluded by any of these, so a budget-grounded
+  intrinsic-cause backstop behind it. The earlier ~4-file incident did not establish whether the files were intrinsically
+  pathological or victims of one bad node. That distinction informs policy **defaults**, not the
+  evidence schema; this guide does not claim a new diagnosis. Local (rank-99) is never excluded by any of these, so a budget-grounded
   file is still routed every tick and still reaches a terminal analyze outcome.
 - **Inadmissible vs Pending** — a Workload `Inadmissible` (operator misconfig — e.g. a
   missing/mis-sized LocalQueue) sets the `cloud_job.inadmissible` alert flag + a WARNING log and

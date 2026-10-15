@@ -122,7 +122,7 @@ These size the SQLAlchemy engine pool shared by the api and control-worker engin
 | `PHAZE_DB_POOL_TIMEOUT` (or `db_pool_timeout`) | No | `10` | Seconds to wait for a pooled connection before failing fast. |
 | `PHAZE_DB_POOL_RECYCLE` (or `db_pool_recycle`) | No | `1800` | Recycle a pooled connection after this many seconds (30 min) so idle server slots are freed rather than pinned indefinitely. |
 | `PHAZE_DB_POOL_PRE_PING` (or `db_pool_pre_ping`) | No | `true` | Validate a pooled connection before checkout, dropping dead server connections instead of handing one out. |
-| `PHAZE_DISPATCH_QUEUE_MIN_SIZE` (or `dispatch_queue_min_size`) | No | `0` | psycopg3 `min_size` for each control-side per-(agent,lane) dispatch queue. `0` keeps zero idle server connections pinned. |
+| `PHAZE_DISPATCH_QUEUE_MIN_SIZE` (or `dispatch_queue_min_size`) | No | `0` | psycopg3 `min_size` for each control-side per-(agent,lane) dispatch queue. `0` avoids minimum-pool prewarming; used connections may remain idle until `max_idle` shrink maintenance. It does not force immediate eviction. |
 | `PHAZE_DISPATCH_QUEUE_MAX_SIZE` (or `dispatch_queue_max_size`) | No | `2` | psycopg3 `max_size` for each control-side per-(agent,lane) dispatch queue, capping the enqueue burst. |
 
 ## Runtime config hot-reload
@@ -251,7 +251,7 @@ The following policy controls also reload through the same validated path. Their
 | `scan_stall_seconds` | `PHAZE_SCAN_STALL_SECONDS` | No-progress seconds before the next scan reap considers a running scan stalled. Progress timestamps are retained. |
 | `worker_job_timeout` | `WORKER_JOB_TIMEOUT` | Default timeout for newly enqueued finite-duration jobs. Existing job limits remain serialized; exhaustive analysis always retains its zero wall-clock timeout. |
 | `worker_keep_result` | `WORKER_KEEP_RESULT` | Retention seconds on newly enqueued jobs; zero retains results indefinitely and negative values delete them immediately. Existing jobs retain their serialized retention. |
-| `worker_max_retries` | `WORKER_MAX_RETRIES` | Default retry budget on newly enqueued jobs. Explicit job limits and the analysis retry ceiling remain in force. |
+| `worker_max_retries` | `WORKER_MAX_RETRIES` | Default total-attempt budget on newly enqueued jobs, including the initial execution. Explicit job limits and the analysis attempt ceiling remain in force. |
 | `analysis_tf_batch_size` | `PHAZE_ANALYSIS_TF_BATCH_SIZE` | TensorFlow inference patches per batch in new analysis children. Smaller batches trade throughput for lower inference memory demand; measured peak RSS is flat below the default 32. Running children keep their original batch. Fixed-batch graphs retain their required size. An agent rejects live values above its deployment baseline (32 when unset); raising that ceiling requires deployment configuration and restart. The API host does not judge agent memory ceilings. |
 | `watcher_settle_seconds` | `PHAZE_WATCHER_SETTLE_SECONDS` | Quiet seconds required before a newly discovered path is posted. The standalone watcher adopts policy on its next bounded poll; existing pending files keep their captured settle/grace policy and lineage. |
 | `watcher_max_pending_seconds` | `PHAZE_WATCHER_MAX_PENDING_SECONDS` | Maximum pending age before a newly discovered path receives its one grace extension. The standalone watcher adopts policy on its next bounded poll; existing pending entries retain their captured cap and grace state. |

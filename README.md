@@ -59,6 +59,10 @@ navigation groups:
 navigation into in-place workspace swaps. The command palette and record drawer provide global
 search and per-file context without creating alternate approval paths.
 
+The Agents & Clusters navigation subtitle shows shared inventory counts, including offline agents
+and idle configured clusters. It uses the same policy as the workspace heading; unavailable reads
+are named explicitly rather than shown as zero. Activity and online counts remain separate signals.
+
 The usual flow is:
 
 ![The operator workflow](docs/diagrams/overview-1.png)

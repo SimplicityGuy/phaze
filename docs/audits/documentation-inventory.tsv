@@ -1480,6 +1480,7 @@ docs/operations/companion-availability.md	maintained	operator/developer	Phaze ma
 docs/operations/companion-capture.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current guide: source-traced review
 docs/operations/companion-viewing.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current guide: source-traced review
 docs/operator-copy-inventory.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current developer guide: source-traced review
+docs/performance/files-workspace.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current contract source-traced; dated measurements provenance only
 docs/pipeline-stats-performance.md	maintained	operator/developer	Phaze maintainers	maintain against current source	dated evidence: provenance-focused/partial tables
 docs/postgres-jit.md	maintained	operator/developer	Phaze maintainers	maintain against current source	dated evidence: provenance-focused/partial tables
 docs/project-structure.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current guide: source-traced review
@@ -1512,6 +1513,7 @@ docs/runbook.md	maintained	operator/developer	Phaze maintainers	maintain against
 docs/runtime-config-settings-audit.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current guide: source-traced review
 docs/spikes/2026-08-analyze-overhaul-summary.md	historical-evidence	maintainer	evidence author	retain dated provenance and exact quantities	inventory/provenance only
 docs/spikes/README.md	maintained	operator/developer	Phaze maintainers	maintain against current source	current guide: source-traced review
+docs/spikes/dashboard-polling-latency.md	historical-evidence	maintainer	evidence author	retain dated provenance and exact quantities	dated evidence: provenance-focused/partial tables
 docs/spikes/phaze-0ni3v-easyloader-seek.md	historical-evidence	maintainer	evidence author	retain dated provenance and exact quantities	inventory/provenance only
 docs/spikes/phaze-0ni3v/bench_easyloader.py	historical-evidence	maintainer	evidence author	retain dated provenance and exact quantities	inventory/provenance only
 docs/spikes/phaze-0ni3v/compare.py	historical-evidence	maintainer	evidence author	retain dated provenance and exact quantities	inventory/provenance only

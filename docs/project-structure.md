@@ -54,6 +54,7 @@ and validation tools, and `tests/` is organized into the buckets documented in
 | ------- | ------------ |
 | Shell routing | `routers/shell/__init__.py`, `stage_maps.py`, `stage_context.py`, `summary.py` |
 | Pipeline routing | `routers/pipeline/` package plus `pipeline_scans.py`, `pipeline_stages.py`, and `scan.py` |
+| Worker inventory | `services/worker_inventory.py` shares visibility and configured-backend counts between the Agents table, heading and shell seeds |
 | Pipeline reads | `services/pipeline/` package; stage status remains centralized in `services/stage_status.py` |
 | Backend lanes | `services/backends/`, `backend_selection.py`, `cloud_staging.py`, `kube_staging.py`, `s3_staging.py` |
 | Queue policy | `tasks/_shared/queue_factory.py`, `queue_defaults.py`, `deterministic_key.py`, `stage_control.py`, `resilient_queue.py`; `live_worker.py` makes SAQ worker concurrency live-resizable |

@@ -34,7 +34,7 @@ Run the collector on **each Docker host**, from that host's Phaze Compose direct
 uv run python scripts/report-deployments.py --api-url https://<control-host>:8000 --ca-file certs/phaze-ca.crt
 ```
 
-The collector uses Docker Compose's `com.docker.compose.project.working_dir` label to select only containers belonging to the directory where it runs. A stopped container disappears after the next successful host report. If reporting stops, its last observation remains visible as stale. Inventory reporting is independent of agent heartbeats, so mixed application versions continue to exchange the existing liveness protocol during a rolling deploy.
+The collector uses Docker Compose's `com.docker.compose.project.working_dir` label to select only containers belonging to the directory where it runs. The stock collector accepts only `api`, `worker`, `worker-analyze`, `worker-meta`, `worker-io`, `worker-drain` and `watcher` service labels. For customized Compose names, the deployment must provide an explicit allowlist and role/lane mapping adaptation before scheduling the collector; there is no service-mapping CLI flag. Installing the script alone does not install a timer, and repository support does not mean host automation has been deployed. Verify both scheduling and label compatibility on each host as separate operator prerequisites. A stopped container disappears after the next successful host report. If reporting stops, its last observation remains visible as stale. Inventory reporting is independent of agent heartbeats, so mixed application versions continue to exchange the existing liveness protocol during a rolling deploy.
 
 ### Application-server services (`docker-compose.yml`)
 

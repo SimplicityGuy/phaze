@@ -73,6 +73,13 @@ write application state through `/api/internal/agent/*`, while the worker separa
 the SAQ broker through `PHAZE_QUEUE_URL` and SAQ's psycopg-backed `PostgresQueue`. The subprocess
 guards in `tests/shared/core/test_task_split.py` enforce the ORM-free import surface.
 
+Queue construction supplies psycopg with the configured pool bounds and `open=False` before
+SAQ can open connections; SAQ owns the normal pool lifecycle. Factory defaults are one to four
+connections, while control-side dispatch queues normally use configured zero-to-two bounds.
+These are per-pool limits: cached agent/lane handles, controller and SQLAlchemy pools, and each
+application process contribute separately to deployment connection demand. The router closes
+its cached handles at shutdown; it does not evict distinct agent identities during normal use.
+
 ## 🔄 File-Processing Pipeline
 
 There is **no single `state` column** on `files` and **no file-level state enum** — both were
@@ -248,6 +255,46 @@ lost work: `scanned` sums each agent's LATEST completed batch (re-scan-safe via 
 subtitle and each Recent Scans row a per-agent `→ N unique · M deduped` annotation, both shown only
 when `deduped > 0` and degrade-safe (None / `{}` → hidden).
 
+### Request-scoped display reads
+
+A healthy Summary request supplies its current stage-progress snapshot to the full-document
+rail seed, so its overview and rail use the same read. The seed still reads its other DAG inputs.
+A degraded Summary source leaves the seed free to retry independently; there is no snapshot
+cache across requests, and the five-second poll remains a fresh read. Analyze continues to
+reuse the stats and DAG context it already builds. `routers/shell/summary.py` and
+`routers/shell/store_seed.py` own these request boundaries.
+
+The reporting orphan aggregate guards its existing predicate with a SQL `CASE` on the required
+scheduling intent. Unscheduled files avoid the expensive retry/completion/broker checks;
+eligibility, recovery and displayed bucket definitions retain their existing predicates and
+SAVEPOINT degradation (`services/pipeline/buckets.py`). The
+[dated dashboard experiment](spikes/dashboard-polling-latency.md) records the measured effect
+and remaining shared-count cost; it is not a deployment latency guarantee.
+
+The Files query materializes a bounded ID-only membership CTE before deriving badges and
+history. Membership filters, sorting, offset and the page-plus-sentinel limit share one SQL
+statement and snapshot with the outer derivation. The outer query repeats ordering, and one
+additional bulk profile load remains bounded to those IDs. Stage filters and stage sorting
+still require corpus-wide predicate work; this is not a persisted status cache or a promise
+that every read is proportional only to page size. See the
+[Files workspace contract and dated measurements](performance/files-workspace.md).
+
+### Worker inventory in the shell
+
+The Agents rail subtitle and Agents & Clusters heading share inventory policy from
+`services/worker_inventory.py`: non-revoked agents are visible, including offline ones, except
+compute callback identities that have never heartbeaten. Configured clusters are every non-local
+backend, including idle/offline entries; the legacy unattributed cloud row is not a configured
+cluster. `laneCount` includes local backends. This inventory is separate from `agentOnline` and
+`computeLanesActive`, which describe liveness and activity rather than registration.
+
+Full-document SSR seeds the same values that Alpine renders and the existing five-second
+`/pipeline/stats` poll refreshes through `dag-seed-<storeKey>` OOB targets. The keys
+`visibleAgentCount`/`visibleAgentCountKnown` and `clusterCount`/`clusterCountKnown` distinguish a
+measured zero from an unavailable source; global `seedKnown` also gates first paint. A failed
+source renders “Agents unavailable” or “Clusters unavailable”, never a fabricated inventory zero.
+Rail swaps preserve the shared store and pre-mounted poll targets; no second timer is added.
+
 ### DAG rail & stage workspaces
 
 `_build_dag_context` (`routers/pipeline/dashboard_stats.py`) reconciles three sources per node:
@@ -259,7 +306,7 @@ counters (a degrade backstop via `_reconciled_done`, capped at the node total), 
 is the **left rail** (`templates/shell/partials/rail.html`) — the navigation spine — where
 each node shows its live count (bound to `$store.pipeline`) and clicking a node swaps its
 workspace into `#stage-workspace` over HTMX (`GET /s/<stage>`). The standalone pipeline
-dashboard page and its single-partial DAG canvas were removed in; the
+dashboard page and its single-partial DAG canvas were removed; the
 underlying stage-progress services (`get_stage_progress`, `get_queue_activity`,
 `build_dashboard_context`) are unchanged and now back the Analyze workspace instead, and
 `/pipeline/` is a pure 302 redirect into the shell root `/`, which now renders the actionable
@@ -330,9 +377,9 @@ lifespan as `app.state.task_router`.
   retired the earlier pebble process pool), and launches the liveness heartbeat as an
   asyncio background task.
 
-### Registration, heartbeat, and liveness
+### Startup identity, heartbeat, and liveness
 
-![Registration, heartbeat, and liveness](diagrams/architecture-3.png)
+![Startup identity and heartbeat](diagrams/architecture-3.png)
 
 [Open the interactive-size HTML](diagrams/architecture-3.html) · [Download SVG](diagrams/architecture-3.svg)
 
@@ -343,8 +390,9 @@ lifespan as `app.state.task_router`.
   row at API startup (gated by `dev_seed_agent`).
 - **HTTP client.** `services/agent_client.py` (`PhazeAgentClient`) wraps a single
   `httpx.AsyncClient` and funnels every call through a tenacity retry loop: 5xx and
-  transient network errors retry three times with exponential jitter, while **4xx is never
-  retried** (auth/validation failures surface immediately). It exposes a 4-class exception
+  transient network errors receive up to three total attempts with exponential jitter, while
+  **4xx is never retried** (auth/validation failures surface immediately). Config polls deliberately
+  use one short-timeout attempt so a failed fetch does not consume the heartbeat budget. It exposes a 4-class exception
   hierarchy (`AgentApiError` base, plus auth / client / server subclasses).
 - **Heartbeat.** `tasks/heartbeat._heartbeat_loop` is an in-process asyncio background task
   (launched in the agent worker `startup` hook, cancelled on `shutdown`) that calls

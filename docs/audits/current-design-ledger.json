@@ -1,5 +1,38 @@
 {
-  "guide_records": 90,
+  "final_prose_numeric_proof": {
+    "docs/AGF.md": {
+      "added": {},
+      "removed_after_evidence_and_planning_ID_normalization": {}
+    },
+    "docs/configuration-inventory.md": {
+      "added": {
+        "0": 1
+      },
+      "removed_after_evidence_and_planning_ID_normalization": {}
+    },
+    "docs/k8s-burst.md": {
+      "added": {},
+      "explicit_runtime_claim_correction": {
+        "evidence": "eafc362464abaadb72833dd370393e0e245cf12a:src/phaze/tasks/controller.py:556",
+        "new": "* * * * *",
+        "old": "*/5 * * * *",
+        "reason": "Correct stale declared cron cadence, not a measured incident quantity.",
+        "removed_token": "5"
+      },
+      "removed_after_evidence_and_planning_ID_normalization": {
+        "5": 1
+      }
+    },
+    "verified_dependency_semantics": {
+      "interpretation": "four total attempts including initial execution",
+      "pool_minimum": "minimum/prewarming policy; idle shrink is not immediate",
+      "psycopg-pool": "3.3.3",
+      "runtime_unchanged": true,
+      "saq": "0.26.4",
+      "worker_max_retries_default": 4
+    }
+  },
+  "guide_records": 92,
   "numeric_preservation": [
     {
       "added_numeric_tokens": {
@@ -40,7 +73,7 @@
       "removed_numeric_tokens": {}
     }
   ],
-  "phase": "implementation review; final sidebar integration pending",
+  "phase": "final integrated source review",
   "preflight_source_revision": "ac7b3b6cabc334d7097d7352cd6d2a9d3c67b3dd",
   "records": [
     {
@@ -60,7 +93,8 @@
         "tests/analyze/services/pipeline/test_analysis_long_file.py",
         "tests/analyze/services/backends/test_analysis_model_major.py"
       ],
-      "findings": [
+      "path": "docs/essentia-analysis.md",
+      "preflight_review_notes": [
         {
           "claim": "Entire essentia compute surface is one module; everything else only plumbing",
           "replacement": "analysis.py coordinates; analysis_decoder.py owns streaming decode; analysis_windows.py owns geometry/reductions; analysis_derive.py owns output derivation. Preserve analysis.py public re-exports."
@@ -90,11 +124,10 @@
           "replacement": "No semantic correction; retain. Distinguish any-output watchdog activity from per-window UI progress."
         }
       ],
-      "path": "docs/essentia-analysis.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Full guide read, historical-vs-current boundary reviewed",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -109,7 +142,8 @@
         "src/phaze/services/analysis_windows.py:aggregate_bpm",
         "tests/analyze/services/pipeline/test_analysis_degenerate.py"
       ],
-      "findings": [
+      "path": "docs/degenerate-audio.md",
+      "preflight_review_notes": [
         {
           "claim": "Current sentinel paths says derive_style returns unknown and derive_mood empty string",
           "replacement": "Those are pre-fix paths. Current analysis_derive returns None for empty predictions/no mood. Rename section to pre-fix sentinel paths or replace current description while preserving experiment."
@@ -123,11 +157,10 @@
           "replacement": "Keep exact counts and date; do not present as tests re-run during documentation migration."
         }
       ],
-      "path": "docs/degenerate-audio.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections; dated experiment vs current behavior",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -143,7 +176,8 @@
         "src/phaze/cli",
         "tests/analyze/recovery_cloud"
       ],
-      "findings": [
+      "path": "docs/stranded-analysis-recovery.md",
+      "preflight_review_notes": [
         {
           "claim": "Derived file state remains discovered",
           "replacement": "Current vocabulary has derived per-stage status, no file state enum. Incomplete analysis with no in-flight ledger resolution must be described through current resolver, not discovered as a stored file state."
@@ -161,11 +195,10 @@
           "replacement": "No semantic correction. Selector requires incomplete/unfailed, completed fine tier, ledger key, no cloud/live job/executed proposal; recovery accepts only_keys and preserves owner affinity."
         }
       ],
-      "path": "docs/stranded-analysis-recovery.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -185,7 +218,8 @@
         "tests/agents/tasks/test_agent_worker_lanes.py",
         "tests/integration/test_agent_heartbeat_lane_merge_concurrency.py"
       ],
-      "findings": [
+      "path": "docs/agent-queue-lanes.md",
+      "preflight_review_notes": [
         {
           "claim": "Meta lane table lists six functions",
           "replacement": "Canonical LANE_TASKS meta also has capture_companion_source, extract_companion_features, quarantine_companion. Refresh table from final source."
@@ -207,11 +241,10 @@
           "replacement": "Retain source-proven distinction; transitional drain must not double-dispatch active legacy queue jobs."
         }
       ],
-      "path": "docs/agent-queue-lanes.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections read; lane map/concurrency checked",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -229,7 +262,8 @@
         "tests/discovery/test_watcher_moves_end_to_end.py",
         "tests/shared/core/test_task_split.py"
       ],
-      "findings": [
+      "path": "src/phaze/agent_watcher/README.md",
+      "preflight_review_notes": [
         {
           "claim": "Watcher endpoint, debounce and no startup catchup",
           "replacement": "Retain, source-check observer/debouncer/poster/main and tests; manual Discover scan fills downtime gaps."
@@ -251,11 +285,10 @@
           "replacement": "Current Debouncer gives one grace extension at first cap crossing and evicts only after two consecutive max_pending windows without settling; touch never resets grace flag. Do not promise a single-window hard eviction."
         }
       ],
-      "path": "src/phaze/agent_watcher/README.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections read; provider/config fields not finalized",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -272,7 +305,8 @@
         "tests/shared/telemetry/test_trace_context_across_exec.py",
         "tests/shared/telemetry/test_span_budget.py"
       ],
-      "findings": [
+      "path": "docs/telemetry/traces.md",
+      "preflight_review_notes": [
         {
           "claim": "Current model_sweep row states 34 per coarse chunk",
           "replacement": "State one per active model per coarse chunk: default 12, rollback 34. Preserve 45-span 2026-08-27 trace as a real 34-model observation."
@@ -286,11 +320,10 @@
           "replacement": "No semantic correction. Preserve bounded slot identities and trace-only identifiers."
         }
       ],
-      "path": "docs/telemetry/traces.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections read; current generic emission versus dated trace",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -305,7 +338,8 @@
         "tests/shared/telemetry/test_telemetry_slots.py",
         "tests/analyze/services/test_burst_telemetry_slots.py"
       ],
-      "findings": [
+      "path": "docs/telemetry/concurrent-identity.md",
+      "preflight_review_notes": [
         {
           "claim": "Shared identity counter corruption; bounded per-slot identity fix; rejected delta configuration",
           "replacement": "No rewrite to experiment; preserve all schedules, exact counts, percentages, SDK/collector versions and negative results."
@@ -315,11 +349,10 @@
           "replacement": "Source supports bounded slots and burst namespace. Current settings reload detail pending config integration; historical experiment does not become proof of every new lifecycle path."
         }
       ],
-      "path": "docs/telemetry/concurrent-identity.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Dated collector experiment and current follow-up sections",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -334,7 +367,8 @@
         "scripts/telemetry_overhead.py",
         "docs/spikes/phaze-u1n7j-host-compute-fix-verification.md"
       ],
-      "findings": [
+      "path": "docs/telemetry/overhead.md",
+      "preflight_review_notes": [
         {
           "claim": "Multi-hour pair is running and outstanding, indefinitely",
           "replacement": "This is a dated 2026-08-26 evidence state, not current running work. Retain exact 59m39s measurement and state no later result established by this review; investigate repository evidence before marking criterion complete."
@@ -352,11 +386,10 @@
           "replacement": "Current geometry drops trailing fine remainder shorter than15s except first window; coarse emits every audio-bearing window. Preserve old recorded count tables as measurement evidence; current formula must express this natural-window rule."
         }
       ],
-      "path": "docs/telemetry/overhead.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Dated measurement provenance and current/pending claims",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -374,7 +407,8 @@
         "tests/shared/telemetry/test_export_timeout_units.py",
         "tests/shared/telemetry/test_telemetry_never_breaks_analysis.py"
       ],
-      "findings": [
+      "path": "docs/telemetry/exporter.md",
+      "preflight_review_notes": [
         {
           "claim": "Three alert rules",
           "replacement": "Four rules currently in alerts/phaze-alerts.yml, including PhazeJunkReviewExecutionStuck; distinguish three analysis rules from total."
@@ -392,11 +426,10 @@
           "replacement": "No semantic correction, supported by bootstrap/slots. Preserve multi-host requirement and inability of force_flush success to prove collector delivery."
         }
       ],
-      "path": "docs/telemetry/exporter.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections read",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -413,7 +446,8 @@
         "tests/shared/telemetry/test_alert_rules.py",
         "alerts/phaze-alerts.test.yml"
       ],
-      "findings": [
+      "path": "docs/telemetry/alerting.md",
+      "preflight_review_notes": [
         {
           "claim": "Opening says three survive though title and added junk section total four",
           "replacement": "Three measured analysis rules plus one explicitly chosen junk-review triage rule: four total. Preserve origin of every threshold."
@@ -431,11 +465,10 @@
           "replacement": "Keep real consumer validation commands and operator-owned deployment boundary; no production alert provisioning performed."
         }
       ],
-      "path": "docs/telemetry/alerting.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections read",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -458,7 +491,8 @@
         "src/phaze/database.py",
         "src/phaze/main.py:177"
       ],
-      "findings": [
+      "path": "docs/runbook.md",
+      "preflight_review_notes": [
         {
           "claim": "SAQ active-key manual DELETE can run based on stale row status alone",
           "replacement": "Require proving no worker can still execute/report, quiesce owning consumer/recovery/dispatch and inspect state before vacating active key; preserve ledger row. Status/age alone is not safe to authorize duplicate filesystem work."
@@ -480,15 +514,14 @@
           "replacement": "Retain distinction: force only bypasses empty-queue detection, only_keys scopes exact ledger set; preserve owner affinity and executed-move exclusion."
         }
       ],
-      "path": "docs/runbook.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All text read; force-local/spill defaults require final config source",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
-      "disposition": "updated against current source",
+      "disposition": "updated against final integrated source",
       "evidence": [
         "src/phaze/tasks/execution_filesystem.py:move",
         "src/phaze/tasks/execution_filesystem.py:_move_across_filesystem",
@@ -509,7 +542,17 @@
         "src/phaze/services/companion_view.py",
         "src/phaze/tasks/release_awaiting_cloud.py"
       ],
-      "findings": [
+      "final_integration_evidence": [
+        "src/phaze/services/worker_inventory.py",
+        "src/phaze/routers/pipeline/dashboard_stats.py",
+        "src/phaze/routers/shell/store_seed.py",
+        "src/phaze/templates/shell/partials/rail.html",
+        "src/phaze/templates/pipeline/partials/_workspace_poll_seeds.html",
+        "src/phaze/templates/admin/agents.html"
+      ],
+      "final_review": "Shared visible-agent/configured-cluster policy; SSR, Alpine and OOB seeds; explicit unknown flags; inventory distinct from activity. Current guide reread against final main.",
+      "path": "docs/architecture.md",
+      "preflight_review_notes": [
         {
           "claim": "Universal copy then source-verify then delete",
           "replacement": "Separate same-filesystem atomic publication from cross-filesystem bounded staged copy. Verify original identity; verify published cross-FS destination; durable proposal marker/fsync before unlink; replay requires corroboration."
@@ -567,12 +610,10 @@
           "replacement": "Retain widthvswork distinction explicitly; companioncapture path/text cap is intentionalbounded work even mappedText, as source contract explains."
         }
       ],
-      "path": "docs/architecture.md",
-      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All837lines read; source-traced routing/queue/UI/counters/bounds/execution; not an assertion everyclaimverified",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -586,7 +627,8 @@
         "justfile",
         "tests/shared/scripts/test_caller_seat_lanes.py"
       ],
-      "findings": [
+      "path": "docs/gates-and-isolation.md",
+      "preflight_review_notes": [
         {
           "claim": "One Postgres DB per pytest process, Postgres+Redis seat isolation and lock-header evidence",
           "replacement": "Retain; db_guard uses session lock and fails loudly, collect-only exception distinct; tests ports distinguish developer5432 from harness5433 with explicit override behavior."
@@ -596,11 +638,10 @@
           "replacement": "Protect machine instruction paths and now()/desc()/all() examples; identifiers in user-provided instruction paths are not archive identifiers. Keep exact log/pytest/coverage evidence distinctions."
         }
       ],
-      "path": "docs/gates-and-isolation.md",
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Instruction summaries and matching DB/seat source inspected; 1785-line guide not fully reviewed",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -617,7 +658,8 @@
         "deploy/telemetry/otel-collector.example.yaml:43",
         "src/phaze/telemetry/slots.py"
       ],
-      "findings": [
+      "path": "docs/telemetry/metric-catalogue.md",
+      "preflight_review_notes": [
         {
           "claim": "Catalogue current table has28 metrics and8612 series ceiling",
           "replacement": "No semantic correction at baseline: importing pure catalogue module computes28 and8612, table kinds/combinations/counts match. Keep ceiling as supported registry budget, distinct from observed default12-model series."
@@ -643,11 +685,10 @@
           "replacement": "No semantic correction. Preserve catalogue ownership, strict instrumentation policy and separate trace identity; do not remove hard metric-ceiling guard while removing unrelated fixed diagram-count guard."
         }
       ],
-      "path": "docs/telemetry/metric-catalogue.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections; runtime contract vs dated collector experiment",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -657,7 +698,7 @@
         "curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health",
         "just repowise-coverage my-seat"
       ],
-      "disposition": "updated against current source",
+      "disposition": "updated against final integrated source",
       "evidence": [
         "justfile:168",
         "justfile:196",
@@ -668,7 +709,17 @@
         "src/phaze/services/pipeline/proposals.py",
         "src/phaze/services/companion_autolink.py"
       ],
-      "findings": [
+      "final_integration_evidence": [
+        "src/phaze/services/worker_inventory.py",
+        "src/phaze/routers/pipeline/dashboard_stats.py",
+        "src/phaze/routers/shell/store_seed.py",
+        "src/phaze/templates/shell/partials/rail.html",
+        "src/phaze/templates/pipeline/partials/_workspace_poll_seeds.html",
+        "src/phaze/templates/admin/agents.html"
+      ],
+      "final_review": "Shared visible-agent/configured-cluster policy; SSR, Alpine and OOB seeds; explicit unknown flags; inventory distinct from activity. Current guide reread against final main.",
+      "path": "README.md",
+      "preflight_review_notes": [
         {
           "claim": "Core authorization boundary, exact hashes vs retired acoustic fingerprinting",
           "replacement": "Retain human approve then explicit apply boundary, tag-write separation, exact-SHA dedupe. Audio fingerprints removed; chromaprint retained permanently by operator decision, not an active feature or cleanup candidate."
@@ -690,12 +741,10 @@
           "replacement": "Check wording against automatic companion association/import triggers and drain; constrain to stage advancement policy, not every background action. Provider-related refinement pending final branch."
         }
       ],
-      "path": "README.md",
-      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All text and both diagrams",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -721,7 +770,8 @@
         "tests/db_guard.py",
         "tests/shared/core/test_env_example_watcher_defaults.py"
       ],
-      "findings": [
+      "path": "docs/quick-start.md",
+      "preflight_review_notes": [
         {
           "claim": "just install runs tailwind before uv sync",
           "replacement": "Actual install: setup tailwind, setup runs uv sync. Correct sequencing without altering recipe."
@@ -751,11 +801,10 @@
           "replacement": "Retain. Name/hash agreement caveat is outdated: appended hash exists for every name, not only hyphen names; safest guidance always copy exact printed exports."
         }
       ],
-      "path": "docs/quick-start.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -779,7 +828,8 @@
         "tests/agents/deployment/test_sccache.py",
         "tests/agents/deployment/test_ffmpeg_pin.py"
       ],
-      "findings": [
+      "path": "docs/arm64-agent-image.md",
+      "preflight_review_notes": [
         {
           "claim": "Python3.13 exception, system interpreter launch, TF2.20 and pinned essentia SHA",
           "replacement": "Committed Dockerfile.agent-arm64 uses exactly this scoped existing exception. Do not rewrite to3.14 or uv run merely to satisfy generic runtime prose; source would no longer match. Report scoped architectural exception and retain python3 inside-image launch."
@@ -801,11 +851,10 @@
           "replacement": "Pending final config merge: cite explicit environment ceiling behavior and leave implementation prose unchanged until final source reviewed."
         }
       ],
-      "path": "docs/arm64-agent-image.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -826,7 +875,8 @@
         "src/phaze/tasks/agent_worker.py",
         "src/phaze/telemetry/slots.py"
       ],
-      "findings": [
+      "path": "docs/multi-compute.md",
+      "preflight_review_notes": [
         {
           "claim": "Registry is startup-read; restart API and control worker to apply",
           "replacement": "Potentially stale already: baseline main starts runtime_config_backends_watcher and registered backend watcher; final config branch explicitly owns reload policy. Defer exact activation contract to merged implementation."
@@ -848,11 +898,10 @@
           "replacement": "Retain exact file custody warning and per-host stable telemetry identity requirement; multi-host agent telemetry setting now deserves cross-link."
         }
       ],
-      "path": "docs/multi-compute.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -860,7 +909,7 @@
         "wc -l",
         "src/phaze/routers/shell/"
       ],
-      "disposition": "updated against current source",
+      "disposition": "updated against final integrated source",
       "evidence": [
         "src/phaze/models/analysis.py:11",
         "src/phaze/services/set_projection.py",
@@ -871,7 +920,17 @@
         "src/phaze/tasks/reenqueue.py",
         "src/phaze/tasks/reconcile_cloud_jobs.py"
       ],
-      "findings": [
+      "final_integration_evidence": [
+        "src/phaze/services/worker_inventory.py",
+        "src/phaze/routers/pipeline/dashboard_stats.py",
+        "src/phaze/routers/shell/store_seed.py",
+        "src/phaze/templates/shell/partials/rail.html",
+        "src/phaze/templates/pipeline/partials/_workspace_poll_seeds.html",
+        "src/phaze/templates/admin/agents.html"
+      ],
+      "final_review": "Shared visible-agent/configured-cluster policy; SSR, Alpine and OOB seeds; explicit unknown flags; inventory distinct from activity. Current guide reread against final main.",
+      "path": "docs/project-structure.md",
+      "preflight_review_notes": [
         {
           "claim": "Fourteen Python modules directly under package",
           "replacement": "Baseline actual glob finds24, not14. Recompute final integration counts with documented script. Nested package counts match baseline; top-level count currently unguarded."
@@ -893,12 +952,10 @@
           "replacement": "Retain correct boundary; verify source refs for each edge. No enum/queue import simplification."
         }
       ],
-      "path": "docs/project-structure.md",
-      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All text and diagrams",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -915,7 +972,8 @@
         "scripts/check_documentation_integrity.py",
         ".github/workflows/code-quality.yml"
       ],
-      "findings": [
+      "path": "docs/just-recipe-contract.md",
+      "preflight_review_notes": [
         {
           "claim": "docs-check described Mermaid-rendering gate",
           "replacement": "Replace maintained diagram source/export/render validation wording while retaining existing recipe name and public contract; historical Mermaid checks remain separate."
@@ -929,11 +987,10 @@
           "replacement": "Preserve categories and external callers. docs tooling may add command only if needed, update inventory/test in same change."
         }
       ],
-      "path": "docs/just-recipe-contract.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Full public recipe table reviewed and names checked against just --summary; docs-check description reconciled with current asset gate.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -943,7 +1000,7 @@
         "/s/tagwrite",
         "/s/move"
       ],
-      "disposition": "updated against current source",
+      "disposition": "updated against final integrated source",
       "evidence": [
         "src/phaze/services/pipeline/proposals.py:42",
         "src/phaze/routers/agent_analysis.py:487",
@@ -954,7 +1011,17 @@
         "docker-compose.cloud-agent.yml",
         "src/phaze/services/backend_selection.py"
       ],
-      "findings": [
+      "final_integration_evidence": [
+        "src/phaze/services/worker_inventory.py",
+        "src/phaze/routers/pipeline/dashboard_stats.py",
+        "src/phaze/routers/shell/store_seed.py",
+        "src/phaze/templates/shell/partials/rail.html",
+        "src/phaze/templates/pipeline/partials/_workspace_poll_seeds.html",
+        "src/phaze/templates/admin/agents.html"
+      ],
+      "final_review": "Shared visible-agent/configured-cluster policy; SSR, Alpine and OOB seeds; explicit unknown flags; inventory distinct from activity. Current guide reread against final main.",
+      "path": "docs/api.md",
+      "preflight_review_notes": [
         {
           "claim": "Proposal gate only requires FileMetadata+AnalysisResult row existence",
           "replacement": "Source requires satisfied metadata/analyze (done or explicit skip), no existing proposal and no enrich work in flight. Failed-only or partial rows do not qualify. Document no-data skip context correctly."
@@ -988,12 +1055,10 @@
           "replacement": "Pending provider implementation; preserve accepted historical retirement scope and describe current enabled registry after branch lands."
         }
       ],
-      "path": "docs/api.md",
-      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Fulltext read; route table exhaustive verification still pending",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1003,7 +1068,8 @@
         "src/phaze/services/pipeline",
         "src/phaze/routers/shell/stage_context.py"
       ],
-      "findings": [
+      "path": "docs/pipeline-stats-performance.md",
+      "preflight_review_notes": [
         {
           "claim": "Current corpus and implementation reviewable now, endpoint acceptance pending deployment",
           "replacement": "Date all this as2026-09-21 snapshot. Do not turn578.3ms or6394.3/5938.1 scans into current SLA. Find later measured evidence before replacing pending outcome; none established during this review."
@@ -1013,11 +1079,10 @@
           "replacement": "Keep historical rationale; current counts implementation may evolve and provider dependencies change stats. Source trace get_awaiting_cloud_count before treating optimization as present contract."
         }
       ],
-      "path": "docs/pipeline-stats-performance.md",
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "All38lines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1027,7 +1092,8 @@
         "docs/design/0012-verification-fidelity-and-operator-attribution.md",
         "src/phaze/database.py"
       ],
-      "findings": [
+      "path": "docs/postgres-jit.md",
+      "preflight_review_notes": [
         {
           "claim": "JIT staysON decision supersedes prior recommendation",
           "replacement": "Preserve accepted operator decision and original contradictory proposal as history with explicit final decision. No runtime/connection setting changes."
@@ -1041,11 +1107,10 @@
           "replacement": "Source contains no JIT force setting: application inherits server setting. Dated server on/threshold observations remain dated, not current deployment proof. Preserve superseding leave-on decision and its rationale distinctly from contrary measured performance findings."
         }
       ],
-      "path": "docs/postgres-jit.md",
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Current decision and PgBouncer evidence boundary read; appendix inspected programmatically for EXPLAIN SELECT/DELETE safety and read-only transaction. Long historical SQL operands not all re-read; no query executed.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1071,7 +1136,11 @@
         "src/phaze/routers/admin_agents.py",
         "scripts/report-deployments.py"
       ],
-      "findings": [
+      "implementation_notes": [
+        "Reporter scheduling, Compose working-directory and explicit service-label/role mapping are operator prerequisites; repository support does not imply deployed host automation."
+      ],
+      "path": "docs/deployment.md",
+      "preflight_review_notes": [
         {
           "claim": "No music/model/output file mounts on control plane",
           "replacement": "Preserve no archive/model/output mounts. Qualify that certs and optional configuration/secrets are legitimate mounts; table claiming only certs conflicts with runtime directory examples."
@@ -1113,11 +1182,10 @@
           "replacement": "Keep operator-only nature and impact; ensure new directory exists with correct ownership and containermount visibility before regeneration, distribute publicCA only, then restart clients. Do not execute during docs work or invent automatic rotation."
         }
       ],
-      "path": "docs/deployment.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All sections read with one short truncated build-diagram excerpt; source-traced topology, image pins, model startup, publish triggers, projection and TLS",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1140,7 +1208,8 @@
         "src/phaze/enums/stage.py",
         "alembic/versions/066_drop_analysis_window_camelot.py"
       ],
-      "findings": [
+      "path": "docs/database.md",
+      "preflight_review_notes": [
         {
           "claim": "All models inherit TimestampMixin",
           "replacement": "False: immutable provider observations/events, transport rows, deployments and other specialized entities inherit Base directly. State common convention only for models that actually use mixin; immutable evidence uses explicit timestamp/ordinal fields."
@@ -1174,11 +1243,10 @@
           "replacement": "Correct existing pending-only unique upsert and migration066 read-time Camelot; retain. Migration019 reference is preflatten history, not extant currentmigration filename."
         }
       ],
-      "path": "docs/database.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All349lines plus first schema/ER section read earlier; enum, tables, cardinalities and migration shape compared",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1197,7 +1265,8 @@
         "tests/discovery/services/test_stale_rows.py",
         "tests/discovery/cli/test_stale_rows_cli.py"
       ],
-      "findings": [
+      "path": "docs/operations/companion-availability.md",
+      "preflight_review_notes": [
         {
           "claim": "Unavailable is not extracted coverage; unknown-unmarked not verifiedreadable",
           "replacement": "No semantic correction; available_companion_clause requires bothmarkers NULL, counts missing first then ambiguous. Preserve totals and kept-links scope."
@@ -1211,11 +1280,10 @@
           "replacement": "Keep exact bound and no-absence-on-incomplete-search requirement; end-to-end locate/reconcile path needs final source reading before any runnable example edits."
         }
       ],
-      "path": "docs/operations/companion-availability.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Entire57line operating sequence",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1232,7 +1300,8 @@
         "tests/discovery/routers/test_agent_companion_capture.py",
         "tests/integration/test_companion_capture_broker_seam.py"
       ],
-      "findings": [
+      "path": "docs/operations/companion-capture.md",
+      "preflight_review_notes": [
         {
           "claim": "Capture bytes/chars/lines/wire/deadline defaults andmaxima",
           "replacement": "No semantic correction: DiscoveryBudget/CaptureBudget source matches262144/131072/4096/1048576/30 defaults and1048576/262144/16384/2097152/120 maxima. Keep quantities exact."
@@ -1250,11 +1319,10 @@
           "replacement": "Current functional guide should use useful lastreview metadata and refer decisionhistory by link, not irrelevant epic labels. Preserve dated decisions elsewhere."
         }
       ],
-      "path": "docs/operations/companion-capture.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Entire44lines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1273,7 +1341,8 @@
         "tests/integration/test_companion_viewing.py",
         "tests/integration/test_local_source_import.py"
       ],
-      "findings": [
+      "path": "docs/operations/companion-viewing.md",
+      "preflight_review_notes": [
         {
           "claim": "Current localpreview and storedtext browsing",
           "replacement": "Retain acquisition-free rendering, escaped/paged text, preview-vs-fullhistory distinction. Pending content cannot authorize tag/path changes or tracklistdone."
@@ -1291,11 +1360,10 @@
           "replacement": "Update current operator framing after providerintegration; preserve dated end-to-end verification claims, no production archive access implied."
         }
       ],
-      "path": "docs/operations/companion-viewing.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All90lines; source/read snippets inspected, full routebehavior audit pending",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1303,31 +1371,9 @@
       "evidence": [
         "scripts/maintenance_inventory.py:documentation_class",
         "scripts/audit_historical_evidence.py"
-      ],
-      "findings": [
-        {
-          "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
-          "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
-        },
-        {
-          "claim": "Current guidance links vs frozen evidence",
-          "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
-        }
       ],
       "path": ".planning/README.md",
-      "review_level": "current guide: source-traced review",
-      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
-      "review_scope": "Archive landingpage and auditboundary",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
-    },
-    {
-      "command_preservation": [],
-      "disposition": "reviewed; retained current contract or dated evidence",
-      "evidence": [
-        "scripts/maintenance_inventory.py:documentation_class",
-        "scripts/audit_historical_evidence.py"
-      ],
-      "findings": [
+      "preflight_review_notes": [
         {
           "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
           "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
@@ -1336,21 +1382,21 @@
           "claim": "Current guidance links vs frozen evidence",
           "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
         }
+      ],
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Archive landingpage and auditboundary",
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/maintenance_inventory.py:documentation_class",
+        "scripts/audit_historical_evidence.py"
       ],
       "path": "docs/spikes/README.md",
-      "review_level": "current guide: source-traced review",
-      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
-      "review_scope": "Archive landingpage and auditboundary",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
-    },
-    {
-      "command_preservation": [],
-      "disposition": "reviewed; retained current contract or dated evidence",
-      "evidence": [
-        "scripts/maintenance_inventory.py:documentation_class",
-        "scripts/audit_historical_evidence.py"
-      ],
-      "findings": [
+      "preflight_review_notes": [
         {
           "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
           "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
@@ -1359,21 +1405,21 @@
           "claim": "Current guidance links vs frozen evidence",
           "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
         }
+      ],
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Archive landingpage and auditboundary",
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/maintenance_inventory.py:documentation_class",
+        "scripts/audit_historical_evidence.py"
       ],
       "path": "docs/superpowers/specs/README.md",
-      "review_level": "current guide: source-traced review",
-      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
-      "review_scope": "Archive landingpage and auditboundary",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
-    },
-    {
-      "command_preservation": [],
-      "disposition": "reviewed; retained current contract or dated evidence",
-      "evidence": [
-        "scripts/maintenance_inventory.py:documentation_class",
-        "scripts/audit_historical_evidence.py"
-      ],
-      "findings": [
+      "preflight_review_notes": [
         {
           "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
           "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
@@ -1383,11 +1429,33 @@
           "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
         }
       ],
-      "path": "docs/telemetry/measurements/README.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Archive landingpage and auditboundary",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
+    },
+    {
+      "command_preservation": [],
+      "disposition": "reviewed; retained current contract or dated evidence",
+      "evidence": [
+        "scripts/maintenance_inventory.py:documentation_class",
+        "scripts/audit_historical_evidence.py"
+      ],
+      "path": "docs/telemetry/measurements/README.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Historical records preserve oldrepo shape and source-era Mermaid",
+          "replacement": "No correction: retain historical Mermaid and historical_by_boundary missingtargets; current maintained migration must not blanketexclude archives or pretend oldnavigationcurrent."
+        },
+        {
+          "claim": "Current guidance links vs frozen evidence",
+          "replacement": "Keep current index/accepteddecision navigation; update only currentdiagram authoring wording where genuinelycurrent. Telemetry analysis-run.json intentionallyempty remains truthful."
+        }
+      ],
+      "review_level": "current guide: source-traced review",
+      "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
+      "review_scope": "Archive landingpage and auditboundary",
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1400,7 +1468,8 @@
         "docs/design/0024-tracklist-source-retirement.md",
         "docs/design/0025-remote-provider-sources.md"
       ],
-      "findings": [
+      "path": "docs/tracklist-retirement.md",
+      "preflight_review_notes": [
         {
           "claim": "External acquisition removed blanketopening",
           "replacement": "Scope retired scraping/scheduledacquisition explicitly; later official-API operatorlookups already present inbaseline, finalglobalproviders branch expands configuration. Do not revive retired pathway or present oldretirement as banon every currentprovider."
@@ -1410,11 +1479,10 @@
           "replacement": "Dockerfile contains nobrowser install; playwright remains browsergroup. Preserve productvsdevtool distinction and migration082 dropfacts."
         }
       ],
-      "path": "docs/tracklist-retirement.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Retirement and operatorlookup exception",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1428,7 +1496,8 @@
         "scripts/analysis_eval_candidate_one_variant.py",
         "scripts/analysis_eval_stage_one_variant_models.py"
       ],
-      "findings": [
+      "path": "docs/analysis-evaluation-one-variant-candidate.md",
+      "preflight_review_notes": [
         {
           "claim": "Current coarse tier34; adoptionseparate pendingbead",
           "replacement": "Baseline analysis_models selects12default/34rollback; candidate adopted in source. Reframe as2026-09-30 experiment and linkcurrentcontract, preserving96.4/92.7/2.025/2.108/65of208exact."
@@ -1442,11 +1511,10 @@
           "replacement": "Retain. Do not turnagreeing incumbent predictions into independentaccuracy."
         }
       ],
-      "path": "docs/analysis-evaluation-one-variant-candidate.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Datedperformance candidate record",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1460,7 +1528,8 @@
         "scripts/analysis_eval_score.py",
         "docs/analysis-evaluation.md"
       ],
-      "findings": [
+      "path": "docs/analysis-evaluation-report-template.md",
+      "preflight_review_notes": [
         {
           "claim": "StatusPENDING and samplefive/eightgenrelabels",
           "replacement": "Template is intentionallyblank; distinguish generictemplate placeholders from dated8filesample context. Never markpass or fillmetricswithoutreal pairedrun."
@@ -1474,11 +1543,10 @@
           "replacement": "Retain independentlabel boundary, predeclaredtolerances and replayfriendly matchedconditions."
         }
       ],
-      "path": "docs/analysis-evaluation-report-template.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Reusableblank template vs specificsample references",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1499,7 +1567,11 @@
         "scripts/analysis_eval.py",
         "scripts/analysis_eval_export_reference.py"
       ],
-      "findings": [
+      "implementation_notes": [
+        "Replaced the real control-plane host name with its role; exact evaluation commands, staged paths, filenames and measurements remain unchanged."
+      ],
+      "path": "docs/analysis-evaluation.md",
+      "preflight_review_notes": [
         {
           "claim": "UpCloud baselinecomplete no replacementmeasured and localbranchstate",
           "replacement": "Staleagainst completedcandidate siblingguide and current12model default. Reframe version2evaluation contract/history, distinguish noindependentreplacement from measuredEssentiaablation."
@@ -1517,14 +1589,10 @@
           "replacement": "Do not duplicate identities innewledger/prose/diagrams. Anyreviewof existingtrackedmanifest must honorarchiveprivacy and exactquantitypreservation; coordinate root rather than silentlychanging scripts or filenames."
         }
       ],
-      "implementation_notes": [
-        "Replaced the real control-plane host name with its role; exact evaluation commands, staged paths, filenames and measurements remain unchanged."
-      ],
-      "path": "docs/analysis-evaluation.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All54longparagraphlines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1540,7 +1608,8 @@
         "scripts/analysis_eval_repeat_host.sh",
         "scripts/analysis_eval_finalize.py"
       ],
-      "findings": [
+      "path": "docs/analysis-evaluation-upcloud-runbook.md",
+      "preflight_review_notes": [
         {
           "claim": "Completedcandidatepass andoneuse launchers",
           "replacement": "Preserve exactdated results and refusal to overwrite, mark historicalhoststate not currentlyverified deployment."
@@ -1554,11 +1623,10 @@
           "replacement": "No correction: keepaccuracyunverified for lackindependent labels; candidateadoption source is separate fromqualityproof."
         }
       ],
-      "path": "docs/analysis-evaluation-upcloud-runbook.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All64lines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1569,7 +1637,8 @@
         "tests/analyze/recovery_cloud/scenario_node_map.tsv",
         "scripts/maintenance_inventory.py"
       ],
-      "findings": [
+      "path": "tests/analyze/recovery_cloud/README.md",
+      "preflight_review_notes": [
         {
           "claim": "Scenario map retainedcount",
           "replacement": "No correction: accompanying scenario_node_map.tsv has241datarows atbaseline. This records preservedmigrationscenarios, not invariant livepytestcollectioncount."
@@ -1579,11 +1648,10 @@
           "replacement": "Keep explicitproducer/consumer families and assertionfreefixture helper rule; refresh onlyif fileownershipchanges, not formatforcosmeticuniformity."
         }
       ],
-      "path": "tests/analyze/recovery_cloud/README.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Modulecapabilityownership andpreserved mapcount",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1594,7 +1662,8 @@
         "tests/review/capabilities/scenario_node_map.tsv",
         "scripts/maintenance_inventory.py"
       ],
-      "findings": [
+      "path": "tests/review/capabilities/README.md",
+      "preflight_review_notes": [
         {
           "claim": "Scenario map retainedcount",
           "replacement": "No correction: accompanying scenario_node_map.tsv has236datarows atbaseline. This records preservedmigrationscenarios, not invariant livepytestcollectioncount."
@@ -1604,11 +1673,10 @@
           "replacement": "Keep explicitproducer/consumer families and assertionfreefixture helper rule; refresh onlyif fileownershipchanges, not formatforcosmeticuniformity."
         }
       ],
-      "path": "tests/review/capabilities/README.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Modulecapabilityownership andpreserved mapcount",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1623,7 +1691,8 @@
         "scripts/bead_feedback.py:129",
         "scripts/bead_feedback.py:203"
       ],
-      "findings": [
+      "path": "docs/bead-feedback-readback.md",
+      "preflight_review_notes": [
         {
           "claim": "Readerread-onlyuses/runs andacceptanceevidence",
           "replacement": "Source scansruns/uses separately andaccepted velocityNone; retained lifecycleunknowns matchguide. No correction incheckedcontract."
@@ -1633,11 +1702,10 @@
           "replacement": "Keep exactAPIsand perbeadscratch. Do not run againstgloballifecyclelogs merelyfor docsreview or infercurrentvelocity."
         }
       ],
-      "path": "docs/bead-feedback-readback.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Completeoperatingguide",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1653,7 +1721,8 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/gates-and-isolation.md"
       ],
-      "findings": [
+      "path": "docs/bead-feedback-measurement.md",
+      "preflight_review_notes": [
         {
           "claim": "Currentcohortcosts reportedas evidence andnotachievablesaving",
           "replacement": "No numericrewrite. Preserve232attempts/289uses andallpopulation/latencyboundaries exactly; snapshotwindow doesnotcharacterizecurrentselector afterlaterimplementation."
@@ -1663,11 +1732,10 @@
           "replacement": "Markproposalsasdatedassessment; linkacceptedimplementationoutcome/currentreadbackguide rather thanimply unstartedtoday. Do not retroactivelycall repeatedgreens waste."
         }
       ],
-      "path": "docs/bead-feedback-measurement.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Complete241lines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1677,7 +1745,8 @@
         "src/phaze/enums/tag_write.py",
         "src/phaze/tasks/tag_write.py"
       ],
-      "findings": [
+      "path": "docs/quality-implementation/tag-partial-save-undo.md",
+      "preflight_review_notes": [
         {
           "claim": "Partialsave uncertainty anddurablerevisioncheck",
           "replacement": "Current source supportsdocumentedbehavior. Retain controller-firstcompatibility, snapshotUndoanchor, authorizationtime fencevsworkerfreshness distinction and independentconnection evidence claims."
@@ -1687,11 +1756,10 @@
           "replacement": "Current maintainguide should functionalname/crosslinks; datedimplementation evidence retainsattribution. Never reinterpret fixturetransaction proofasproductiondelivery."
         }
       ],
-      "path": "docs/quality-implementation/tag-partial-save-undo.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Implementationoutcomeandverificationboundary",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1700,7 +1768,8 @@
         "src/phaze/services/tag_comparison.py:231",
         "src/phaze/services/tag_writer.py:152"
       ],
-      "findings": [
+      "path": "docs/quality-implementation/tag-reviewed-revision.md",
+      "preflight_review_notes": [
         {
           "claim": "Partialsave uncertainty anddurablerevisioncheck",
           "replacement": "Current source supportsdocumentedbehavior. Retain controller-firstcompatibility, snapshotUndoanchor, authorizationtime fencevsworkerfreshness distinction and independentconnection evidence claims."
@@ -1710,11 +1779,10 @@
           "replacement": "Current maintainguide should functionalname/crosslinks; datedimplementation evidence retainsattribution. Never reinterpret fixturetransaction proofasproductiondelivery."
         }
       ],
-      "path": "docs/quality-implementation/tag-reviewed-revision.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Implementationoutcomeandverificationboundary",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1734,7 +1802,11 @@
         "docs/just-recipe-contract.md",
         "docs/AGF.md:49"
       ],
-      "findings": [
+      "implementation_notes": [
+        "Removed orphan option labels and internal measurement identity; retained exact dated values and upstream issue evidence. Merger coordinates supported retry and routes genuine conflicts to developer rework."
+      ],
+      "path": "docs/AGF.md",
+      "preflight_review_notes": [
         {
           "claim": "Neverpushmain boundary",
           "replacement": "Repository CLAUDE currently distinguishes code directpush anddocsPR; guideblanketneverpush alignsdeveloperrole but canmisleadmerger. State rolespecific policy anddocsPRrequirement without changinguserauthorization."
@@ -1752,15 +1824,14 @@
           "replacement": "Per-hive work.landing=pr overrides global default local; root config finish opened PR760 and main remains unchanged pending CI/external merge. Document effective hive policy and bh land verification; other hives may differ. Preserve developer versus reviewer/merger separation."
         }
       ],
-      "path": "docs/AGF.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All135lines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
-      "disposition": "updated against current source",
+      "disposition": "updated against final integrated source",
       "evidence": [
         "assets/src/app.css:567",
         "src/phaze/templates/shell/shell.html:36",
@@ -1768,7 +1839,17 @@
         "src/phaze/templates/shell/partials/header.html",
         "src/phaze/templates/shell/partials/record_dock.html"
       ],
-      "findings": [
+      "final_integration_evidence": [
+        "src/phaze/services/worker_inventory.py",
+        "src/phaze/routers/pipeline/dashboard_stats.py",
+        "src/phaze/routers/shell/store_seed.py",
+        "src/phaze/templates/shell/partials/rail.html",
+        "src/phaze/templates/pipeline/partials/_workspace_poll_seeds.html",
+        "src/phaze/templates/admin/agents.html"
+      ],
+      "final_review": "Shared visible-agent/configured-cluster policy; SSR, Alpine and OOB seeds; explicit unknown flags; inventory distinct from activity. Current guide reread against final main.",
+      "path": "docs/ui-design-reference.md",
+      "preflight_review_notes": [
         {
           "claim": "Utilitynodes neutralgray activefill vs allsameactive treatment",
           "replacement": "Current nav_link macro uses samecyanwash/insetbar for pipeline/review/utility; earlier surfacebullet stale and conflicts Quietrail section. Correct toactualsharedtreatment."
@@ -1790,12 +1871,10 @@
           "replacement": "Use existingtokens/source, diagram-designlayout; do not interpret editorialvariant aspermission tochangeproductidentity or ambientmotion."
         }
       ],
-      "path": "docs/ui-design-reference.md",
-      "pending_final_integration": "Reconcile sidebar SSR/OOB inventory counters after its separate implementation lands.",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All311lines; source-critical identity andinteractionclaims checked",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1806,7 +1885,8 @@
         "src/phaze/templates/ui/primitives.html",
         "tests/shared/test_table_header_guard.py"
       ],
-      "findings": [
+      "path": "design/DESIGN_SYSTEM.md",
+      "preflight_review_notes": [
         {
           "claim": "Phaze semanticlight/dark colors andInter/Jura roles",
           "replacement": "Matches assets/src/app.css andservedfontloader. Use asprojectprofile source, preserve5.5:1producttext target; newdiagram fills/connectors still requireactualcontrast checks."
@@ -1824,11 +1904,10 @@
           "replacement": "Existing42PNG/SVGasset dimensions/viewboxes collected inprivateartifact. Preserve brandassets; no regenerationorvisualvalidationclaimed. Need comparealldeclaredsizes atimplementationtime."
         }
       ],
-      "path": "design/DESIGN_SYSTEM.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All321lines; tokenvalues, headercomponent andmanifestmetadata",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1837,7 +1916,8 @@
         "design/DESIGN_SYSTEM.md",
         "assets/src/app.css"
       ],
-      "findings": [
+      "path": "design/resonant-precision.md",
+      "preflight_review_notes": [
         {
           "claim": "Designphilosophy asliteral technicalrule",
           "replacement": "Treat asbrandorigin/philosophy, notruntimecontract orproofgeometryusesgoldenratio. Existingpalette/type/source takeprecedence forcurrentdiagrams."
@@ -1847,11 +1927,10 @@
           "replacement": "Compatiblewithdiagram-design editorialrestraint; no substantivechange needed. Do not rewrite prose into inventedcurrentmeasurements."
         }
       ],
-      "path": "design/resonant-precision.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All15longparagraphlines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1870,7 +1949,8 @@
         "tests/shared/test_adr_citation_resolution.py",
         "pyproject.toml"
       ],
-      "findings": [
+      "path": "CONVENTIONS.md",
+      "preflight_review_notes": [
         {
           "claim": "Noarchive identifiers, exactquantities, codevsprose distinction",
           "replacement": "Keep. Newdiagramlabels syntheticfunctionalnames; do not groupdigits inports/version/commands/JSONorCSS. Broadmechanicalcleanup is explicitlyforbidden."
@@ -1888,11 +1968,10 @@
           "replacement": "Honor explicitoperatorcopy requirement: executablemachineinstruction paths/filenames and now()/desc()/all() remainvalid; no blanketsubstitution basedonbeadlikepaths."
         }
       ],
-      "path": "CONVENTIONS.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All263lines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [],
@@ -1903,7 +1982,8 @@
         "docs/essentia-analysis.md",
         "src/phaze/services/analysis_models.py"
       ],
-      "findings": [
+      "path": "docs/README.md",
+      "preflight_review_notes": [
         {
           "claim": "Entirelistedcorpus currentproduct anddevelopercontract",
           "replacement": "Manydatedqualityassessments/audits andmeasurements arepointintimeevidence despite maintainedclassification. Group explicitcurrentmanual/decision/evidencesections; donotretireusefulhistory silently."
@@ -1921,11 +2001,10 @@
           "replacement": "Integrity_index_errors requires everymaintainedMarkdownpath linked, including moduleREADMEs andarchiveslandingpages. Newprofile/auditdocs/diagramauthoring guide must beindexed, no blanketexclusion."
         }
       ],
-      "path": "docs/README.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All147lines; referencedmaintainedguides andclassboundary",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1941,7 +2020,8 @@
         "scripts/audit_historical_evidence.py",
         "scripts/compare_python_ast.py"
       ],
-      "findings": [
+      "path": "docs/repository-maintenance-contract.md",
+      "preflight_review_notes": [
         {
           "claim": "Fixedbaselinecounts andhistoricalprecedence",
           "replacement": "Keepimmutablebaseline/sourcecounts, donotreplacewithcurrent128. Laterauditneedsownexecutionrevision ascurrentpreflightdoes."
@@ -1959,11 +2039,10 @@
           "replacement": "Clarify contextonlyifneeded: noarchive/liveidentifiers, preservevalidlocalinstructionpaths peroperatorcopydecision; neverusebroadscrubthatcorruptscommands."
         }
       ],
-      "path": "docs/repository-maintenance-contract.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "All212lines",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -1976,22 +2055,22 @@
         "scripts/audit_historical_evidence.py",
         "scripts/maintenance_inventory.py",
         "scripts/check_documentation_integrity.py"
-      ],
-      "findings": [
-        {
-          "claim": "Fixedauditpopulations/oldMermaidCLI/counts",
-          "replacement": "Accuratedatedauditdescriptions mustremainasrecorded; do notupdate24rendercount/oldCLIasifnewmigrationranthen. Addcurrentcontractcrosslink onlyifreaderneedsnavigation."
-        },
-        {
-          "claim": "Gateproofandlimitations",
-          "replacement": "Keepownsource/revision/runlimitation andincompletebrowsercleanup classification. Newmigrationvalidatesnewpipeline separately, no claim historicalauditprovesnewassets."
-        }
       ],
       "path": "docs/historical-evidence-audit-2026-09-11.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Fixedauditpopulations/oldMermaidCLI/counts",
+          "replacement": "Accuratedatedauditdescriptions mustremainasrecorded; do notupdate24rendercount/oldCLIasifnewmigrationranthen. Addcurrentcontractcrosslink onlyifreaderneedsnavigation."
+        },
+        {
+          "claim": "Gateproofandlimitations",
+          "replacement": "Keepownsource/revision/runlimitation andincompletebrowsercleanup classification. Newmigrationvalidatesnewpipeline separately, no claim historicalauditprovesnewassets."
+        }
+      ],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Completereporttables,commands,limitations",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": [
@@ -2005,7 +2084,8 @@
         "scripts/maintenance_inventory.py",
         "scripts/check_documentation_integrity.py"
       ],
-      "findings": [
+      "path": "docs/maintenance-audit-2026-09-10.md",
+      "preflight_review_notes": [
         {
           "claim": "Fixedauditpopulations/oldMermaidCLI/counts",
           "replacement": "Accuratedatedauditdescriptions mustremainasrecorded; do notupdate24rendercount/oldCLIasifnewmigrationranthen. Addcurrentcontractcrosslink onlyifreaderneedsnavigation."
@@ -2015,11 +2095,10 @@
           "replacement": "Keepownsource/revision/runlimitation andincompletebrowsercleanup classification. Newmigrationvalidatesnewpipeline separately, no claim historicalauditprovesnewassets."
         }
       ],
-      "path": "docs/maintenance-audit-2026-09-10.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Completereporttables,commands,limitations",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve executable syntax, real instruction paths and JSON filenames; no commands executed against deployment.",
@@ -2030,7 +2109,8 @@
         "src/phaze/cli/__init__.py:272",
         "src/phaze/services/analysis_sizing.py"
       ],
-      "findings": [
+      "path": "docs/cloud-burst.md",
+      "preflight_review_notes": [
         {
           "claim": "WORKER_MAX_JOBS does not cap concurrency",
           "replacement": "A lower legacy ceiling still clamps derived concurrency; document min behavior."
@@ -2056,11 +2136,10 @@
           "replacement": "Retain dated June2026 external capacity context; no current cloud quota claim from this source-only review."
         }
       ],
-      "path": "docs/cloud-burst.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Full guide read and compute dispatch/cleanup/registration source traced",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve executable syntax, real instruction paths and JSON filenames; no commands executed against deployment.",
@@ -2075,7 +2154,11 @@
         "src/phaze/cli/__init__.py:272",
         "Dockerfile.job"
       ],
-      "findings": [
+      "implementation_notes": [
+        "Replaced the real host name in the dated operator quotation with host-prod; incident date, attempt count, thresholds and quoted decision remain exact."
+      ],
+      "path": "docs/k8s-burst.md",
+      "preflight_review_notes": [
         {
           "claim": "Role covers actual Kubernetes call graph",
           "replacement": "Live list_pods_for_job calls core Pod.list but Role and test REQUIRED_RBAC omit pods/list. Update docs example and static guard scope after release. Job.list is intentionally reserved and unused; do not falsely require jobs/list for current scheduler."
@@ -2117,14 +2200,10 @@
           "replacement": "Defer activation wording to final config; distinguish envFrom token Secret example from supported _FILE alternative and retain public-CA-only custody."
         }
       ],
-      "implementation_notes": [
-        "Replaced the real host name in the dated operator quotation with host-prod; incident date, attempt count, thresholds and quoted decision remain exact."
-      ],
-      "path": "docs/k8s-burst.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "1379-line guide read in chunks; runtime operator examples, sizing claims and graph relationships compared with committed source",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2134,12 +2213,12 @@
         "scripts/check_documentation_integrity.py",
         "tests/shared/telemetry/test_analysis_instrumentation.py"
       ],
-      "findings": [],
       "path": "docs/quality-implementation/consumer-mapping-disposition.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2149,17 +2228,17 @@
         "scripts/check_documentation_integrity.py",
         "tests/shared/telemetry/test_analysis_instrumentation.py"
       ],
-      "findings": [
+      "path": "docs/quality-implementation/immutable-parse-disposition.md",
+      "preflight_review_notes": [
         {
           "claim": "Source inspection mentions fixed25 Mermaid blocks and CLI11.12.0",
           "replacement": "Retain as explicit inspected-source snapshot at cf7b4cad; point current owners to replacement artifact manifest and rendered consumer. Do not rewrite this into a claim the excluded pilot was executed."
         }
       ],
-      "path": "docs/quality-implementation/immutable-parse-disposition.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2169,12 +2248,12 @@
         "scripts/check_documentation_integrity.py",
         "tests/shared/telemetry/test_analysis_instrumentation.py"
       ],
-      "findings": [],
       "path": "docs/quality-implementation/mixed-validation-disposition.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2184,12 +2263,12 @@
         "scripts/check_documentation_integrity.py",
         "tests/shared/telemetry/test_analysis_instrumentation.py"
       ],
-      "findings": [],
       "path": "docs/quality-implementation/selector-equivalence-disposition.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2199,12 +2278,12 @@
         "scripts/check_documentation_integrity.py",
         "tests/shared/telemetry/test_analysis_instrumentation.py"
       ],
-      "findings": [],
       "path": "docs/quality-implementation/coverage-generation-disposition.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2214,12 +2293,12 @@
         "scripts/check_documentation_integrity.py",
         "tests/shared/telemetry/test_analysis_instrumentation.py"
       ],
-      "findings": [],
       "path": "docs/quality-implementation/telemetry-capture-disposition.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read exclusion, source inspection, prerequisites and downstream authority; selected current selector/renderer/telemetry source checked",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2228,12 +2307,12 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/final-union-verification.md"
       ],
-      "findings": [],
       "path": "docs/quality-implementation/accepted-increment.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read all scope, frozen-source and validation claim boundaries",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2242,17 +2321,17 @@
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "docs/quality-implementation/final-union-verification.md"
       ],
-      "findings": [
+      "path": "docs/quality-implementation/implementation-outcome.md",
+      "preflight_review_notes": [
         {
           "claim": "Final assembled gate pending / this batch not yet main",
           "replacement": "Treat as dated pre-landing report. Resolve any current-status summary only with existing landing PR/bead evidence, never with this dispatch gate or by inferring old measurements from current tree."
         }
       ],
-      "path": "docs/quality-implementation/implementation-outcome.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read decisions, canonical repairs, task outcomes, populations, timing, final gate and limitations",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2262,12 +2341,12 @@
         "scripts/select_impacted_tests.py",
         "docs/bead-feedback-readback.md"
       ],
-      "findings": [],
       "path": "docs/quality-implementation/pilot-disposition-manifest.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read all8pilot rows, cohort, R4 metrics/context loss, interpretation boundary and deferred nodes",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2276,12 +2355,12 @@
         "src/phaze/templates",
         "tests/browser"
       ],
-      "findings": [],
       "path": "docs/zero-selection-review-release-verification.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read deployed evidence, zero-row limitations and pending read-only release follow-up",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2292,17 +2371,17 @@
         "src/phaze/config_agent.py",
         "src/phaze/runtime_config_triggers.py"
       ],
-      "findings": [
+      "path": "docs/runtime-config-settings-audit.md",
+      "preflight_review_notes": [
         {
           "claim": "First textual field reader proves read-at-startup semantics",
           "replacement": "A textual reference inventory does not establish lifecycle activation. Reclassify each retained field against merged runtime config catalog, safe boundary and actual captured resource behavior; multipart snapshots/timeout/retry details pending final source."
         }
       ],
-      "path": "docs/runtime-config-settings-audit.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Full final-ref and integrated summary read; 42-key table source-matched, critical consumers traced, validation narrative explicitly separated from current implementation summary.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2311,12 +2390,12 @@
         "src/phaze/services/proposal_parsing.py:13",
         "pyproject.toml"
       ],
-      "findings": [],
       "path": "docs/ideas/decision-model-opportunities.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read all127lines; source response fields verified present",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2326,7 +2405,8 @@
         "scripts/select_impacted_tests.py",
         "justfile"
       ],
-      "findings": [
+      "path": "docs/git-topology-and-verification.md",
+      "preflight_review_notes": [
         {
           "claim": "Every ad-hoc submit generally uses selected code as current supported path",
           "replacement": "Keep dated gate history distinct from supported strict selector/refusal/full fallback. Current authority remains actual justfile and bh configuration; final docs implementation mixed renderer/tooling changes must receive required full closure."
@@ -2336,11 +2416,10 @@
           "replacement": "CLAUDE currently repeats that guidance, while supplied session AGENTS/user instructs never push main/everyfeaturePR. Follow session instruction; do not silently resolve governance conflict by rewriting historical incident record."
         }
       ],
-      "path": "docs/git-topology-and-verification.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read348lines in chunks; current claims versus dated extraction boundaries",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve quoted decisions, exact dated measurements, executable commands and JSON manifest filenames.",
@@ -2350,17 +2429,17 @@
         "tests/ci_shards.json",
         ".github/workflows/tests.yml"
       ],
-      "findings": [
+      "path": "tests/BUCKETS.md",
+      "preflight_review_notes": [
         {
           "claim": "Eight buckets still complete and unchanged",
           "replacement": "tests/buckets.json now9 including browser; seven CI shard entries separately cover nonbrowser suite, dedicated browser job separately. Keep Phase63 counts and removed fingerprint/services history dated rather than treating file counts as current."
         }
       ],
-      "path": "tests/BUCKETS.md",
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read current prose and most300line reorg table; current bucket/shard JSON read completely",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2369,18 +2448,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/coverage-baseline.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2389,18 +2468,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/runtime-profile.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2409,18 +2488,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/testing-risk-inventory.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2429,18 +2508,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/analysis-hunt.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2449,18 +2528,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/mutation-hunt.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2469,18 +2548,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/companion-hunt.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2489,18 +2568,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/assertion-proposal.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2509,18 +2588,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/coverage-proposal.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2529,18 +2608,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/selector-proposal.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2549,18 +2628,18 @@
         "docs/quality-implementation/implementation-outcome.md",
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
-      ],
-      "findings": [
-        {
-          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
-          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
-        }
       ],
       "path": "docs/quality-assessment/runtime-optimization-proposal.md",
+      "preflight_review_notes": [
+        {
+          "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
+          "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
+        }
+      ],
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Retain executable commands, actual scratch instruction path syntax, now()/desc()/all(), artifact names and exact quantities.",
@@ -2570,17 +2649,17 @@
         "docs/quality-implementation/pilot-disposition-manifest.md",
         "scripts/select_impacted_tests.py"
       ],
-      "findings": [
+      "path": "docs/quality-assessment/implementation-plan.md",
+      "preflight_review_notes": [
         {
           "claim": "Current/pending/proposed wording can read as present authority beyond the dated assessed revision",
           "replacement": "Retain exact dated measurements, issue IDs, scope/approval limits and proposed test names. Add a dated assessment label and current-state links to implemented outcome/dispositions and current guides. Six canonical repairs are implemented in baseline; this does not turn old observations into current measurements."
         }
       ],
-      "path": "docs/quality-assessment/implementation-plan.md",
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read named source revision, current-vs-assessed claim framing, approval/proposal boundary and conclusions. Some broader tool output truncated; no full-review claim.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve commands, paths and manifest filenames.",
@@ -2590,17 +2669,17 @@
         "docs/quality-implementation/implementation-outcome.md",
         "scripts/maintenance_inventory.py"
       ],
-      "findings": [
+      "path": "docs/coverage-baseline-refresh.md",
+      "preflight_review_notes": [
         {
           "claim": "Dated evidence and pending-at-writing lifecycle status may be read as current source results",
           "replacement": "Retain source SHA, exact measured counts, failures, unsupported claims and unchanged evidence rows. Clarify date/scope and current owner links; never replace old figures with this dispatch results or infer deployment."
         }
       ],
-      "path": "docs/coverage-baseline-refresh.md",
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read all prose and portions of216-row measured-module table; table not exhaustively independently rederived.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve commands, paths and manifest filenames.",
@@ -2610,17 +2689,17 @@
         "docs/quality-implementation/implementation-outcome.md",
         "scripts/maintenance_inventory.py"
       ],
-      "findings": [
+      "path": "docs/structural-maintenance-audit-2026-09-12.md",
+      "preflight_review_notes": [
         {
           "claim": "Dated evidence and pending-at-writing lifecycle status may be read as current source results",
           "replacement": "Retain source SHA, exact measured counts, failures, unsupported claims and unchanged evidence rows. Clarify date/scope and current owner links; never replace old figures with this dispatch results or infer deployment."
         }
       ],
-      "path": "docs/structural-maintenance-audit-2026-09-12.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read90line dated audit completely; actual current facade boundaries were traced in projectstructure/core reviews.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve commands, paths and manifest filenames.",
@@ -2630,17 +2709,17 @@
         "docs/quality-implementation/implementation-outcome.md",
         "scripts/maintenance_inventory.py"
       ],
-      "findings": [
+      "path": "docs/structural-maintenance-rebaseline-2026-09-11.md",
+      "preflight_review_notes": [
         {
           "claim": "Dated evidence and pending-at-writing lifecycle status may be read as current source results",
           "replacement": "Retain source SHA, exact measured counts, failures, unsupported claims and unchanged evidence rows. Clarify date/scope and current owner links; never replace old figures with this dispatch results or infer deployment."
         }
       ],
-      "path": "docs/structural-maintenance-rebaseline-2026-09-11.md",
       "review_level": "dated evidence: provenance-focused/partial tables",
       "review_method": "Provenance/current-boundary review; exact dated measurements and original operator records retained. Middle historical tables/receipts not claimed as independently rederived or exhaustively reread.",
       "review_scope": "Read135line provenance/commands/common invariants; remaining stored-health tables not fully reread.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve commands, paths and manifest filenames.",
@@ -2650,17 +2729,17 @@
         "docs/quality-implementation/implementation-outcome.md",
         "scripts/maintenance_inventory.py"
       ],
-      "findings": [
+      "path": "docs/quality-implementation/final-union-verification.md",
+      "preflight_review_notes": [
         {
           "claim": "Dated evidence and pending-at-writing lifecycle status may be read as current source results",
           "replacement": "Retain source SHA, exact measured counts, failures, unsupported claims and unchanged evidence rows. Clarify date/scope and current owner links; never replace old figures with this dispatch results or infer deployment."
         }
       ],
-      "path": "docs/quality-implementation/final-union-verification.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read all288lines including all6 fault hashes/receipt outcomes, later unreached oracles, timeout harness amendments,4oracle-gap controls and final gate limitations. Existing current consumer node paths verified in source inventory; no experiment rerun.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve now()/desc()/all(), real machine instruction paths, JSON manifest names and exact measurements.",
@@ -2671,7 +2750,11 @@
         "src/phaze/runtime_config.py",
         "src/phaze/runtime_config_catalog.py"
       ],
-      "findings": [
+      "implementation_notes": [
+        "Verified pinned SAQ 0.26.4 total-attempt semantics and psycopg-pool 3.3.3 minimum/prewarming versus delayed idle-shrink semantics; defaults, aliases and constraints unchanged."
+      ],
+      "path": "docs/configuration.md",
+      "preflight_review_notes": [
         {
           "claim": "All config via env; only10 reloadable keys and everything else restart-only",
           "replacement": "Final merged catalog and activation contract govern env/file/DB layer policy and operation-safe capture. Do not infer pending implementation from baseline."
@@ -2725,11 +2808,10 @@
           "replacement": "Retired global endpoint/bucket/credential fields moved into TOML, while S3 scalar policy aliases (timeouts, presign lifetimes, part size and lifecycle) remain supported. Do not tell operators those live policy inputs are ignored."
         }
       ],
-      "path": "docs/configuration.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Merged startup/live/registry/provider lifecycle and complete field-reference reconciliation; 42 live keys and 88 Settings fields independently source-matched. Retired fields, client/broker boundaries, snapshot timing and executable examples reviewed.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve exact header/environment names, commands, paths and literal JSON manifest names.",
@@ -2742,7 +2824,11 @@
         "src/phaze/config_agent.py",
         "src/phaze/config_redis.py"
       ],
-      "findings": [
+      "implementation_notes": [
+        "Verified pinned SAQ 0.26.4 total-attempt semantics and psycopg-pool 3.3.3 minimum/prewarming versus delayed idle-shrink semantics; defaults, aliases and constraints unchanged."
+      ],
+      "path": "docs/configuration-inventory.md",
+      "preflight_review_notes": [
         {
           "claim": "LLMmodel purpose says changing model after restart while live column says next batch",
           "replacement": "Make purpose consistent with captured next-batch live semantics. Clarify roles column means declaring Settings roles versus actual consumer owners."
@@ -2752,11 +2838,10 @@
           "replacement": "Include new public operator configuration reference in CURRENT_DOCS; preserve exact X-Phaze-Config-Version protocol header exemption."
         }
       ],
-      "path": "docs/configuration-inventory.md",
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Settings/nestedregistry/provider/directdeployment/control categories read; count/default-kind contract examined;42livekeys reconciled.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "command_preservation": "Preserve exact header/environment names, commands, paths and literal JSON manifest names.",
@@ -2768,58 +2853,90 @@
         "src/phaze/services/remote_transport.py",
         "src/phaze/tasks/controller.py"
       ],
-      "findings": [],
       "path": "docs/global-tracklist-providers.md",
+      "preflight_review_notes": [],
       "review_level": "current guide: source-traced review",
       "review_method": "Preflight text/source review plus integrated-source delta reconciliation; dated measurements were not rerun.",
       "review_scope": "Read all operator instructions; exactref policy/storage/bounded expansion/recovery/selection boundaries reviewed. Source checks:CHUNK100 keyset expansion bounded by upperUUID; active pair partial unique index; eligibility excludes explicit tracklist selection;120s lease, five transient failures,50display-only row limit,minute recovery. Preserve scope as bounded expansion, not a promised immutable point-in-time snapshot.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "disposition": "reviewed current implementation/provenance",
       "evidence": [
         "tests/shared/core/test_operator_copy.py"
       ],
-      "findings": [],
       "path": "docs/operator-copy-inventory.md",
+      "preflight_review_notes": [],
       "review_level": "current developer guide: source-traced review",
       "review_scope": "Full developer record reviewed; scoped wire/path/RIGHTS_EVIDENCE exemptions and executable command preservation checked.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "disposition": "reviewed current implementation/provenance",
       "evidence": [
         "scripts/render_documentation_diagrams.py"
       ],
-      "findings": [],
       "path": "docs/diagram-authoring.md",
+      "preflight_review_notes": [],
       "review_level": "current developer guide: source-traced review",
       "review_scope": "Full authoring/tooling guide checked against actual renderer, pinned helper paths/options, local font licenses and browser verifier.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "disposition": "reviewed current implementation/provenance",
       "evidence": [
         "docs/audits/current-design-ledger.json"
       ],
-      "findings": [],
       "path": "docs/audits/current-design-review.md",
+      "preflight_review_notes": [],
       "review_level": "current developer guide: source-traced review",
       "review_scope": "Review summary and inventory scopes reconciled with this ledger; pending sidebar followup remains explicit.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     },
     {
       "disposition": "reviewed current implementation/provenance",
       "evidence": [
         "docs/diagrams/profile.json"
       ],
-      "findings": [],
       "path": "scripts/vendor/diagram_design/skills/diagram-design/references/style-guide.md",
+      "preflight_review_notes": [],
       "review_level": "current developer guide: source-traced review",
       "review_scope": "Full adapted Phaze profile reviewed; upstream contrast/skin checks exercise this profile.",
-      "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
+    },
+    {
+      "classification": "maintained",
+      "disposition": "reviewed landed source contract and retained dated evidence",
+      "evidence": [
+        "src/phaze/services/pipeline/files.py:_files_page_stmt",
+        "scripts/perf_files.py:validate_targets",
+        "tests/integration/test_files_page.py"
+      ],
+      "limitation": "Direct ordinary medians meet the 250 ms target; rendered fragments and stage-dependent work remain slower. Separate dashboard/sidebar improvements were not measured in this pair.",
+      "path": "docs/performance/files-workspace.md",
+      "preservation": "Retain every baseline/candidate metric, corpus count, artifact digest and reproduction command. Preserve incoming docs index link and CURRENT_DOCS membership.",
+      "review_level": "current contract source-traced; dated measurements provenance only",
+      "review_scope": "Read all 176 lines at landed source a5df0662; current query/probe contract source-traced, dated benchmark tables reviewed for provenance and limitations without rerunning measurements.",
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
+    },
+    {
+      "classification": "historical-evidence",
+      "disposition": "reviewed landed source contract and retained dated evidence",
+      "evidence": [
+        "src/phaze/tasks/_shared/queue_factory.py:build_pipeline_queue",
+        "src/phaze/routers/shell/summary.py:_read_summary_context",
+        "src/phaze/routers/shell/store_seed.py:build_pipeline_store_seed",
+        "src/phaze/services/pipeline/buckets.py:_safe_orphan_split"
+      ],
+      "limitation": "Small synthetic samples, overlapping spans, per-process pool observations and retained live-count work remain explicit.",
+      "path": "docs/spikes/dashboard-polling-latency.md",
+      "preservation": "Do not rewrite the dated spike into a current universal latency or deployment connection guarantee.",
+      "review_level": "dated evidence: provenance-focused/partial tables",
+      "review_scope": "Read all 134 lines at landed dashboard source a80a2241; preserve the 2026-10-15 synthetic experiment and exact tables. Source mechanisms reviewed separately; no fresh benchmark or production certification.",
+      "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
     }
   ],
+  "review_notes_scope": "Preflight notes retain the original claim/replacement reasoning; final dispositions and integration evidence below describe the current source. Historical table reviews do not certify fresh measurements.",
   "runtime_ast_proof": {
     "baseline": "517c56be",
     "unchanged_runtime_ast_excluding_docstrings": {
@@ -2828,6 +2945,16 @@
       "src/phaze/tasks/_shared/agent_bootstrap.py": true
     }
   },
+  "runtime_behavior_preservation": {
+    "baseline": "51707485909dfd1c8ec88da760f4b548e84c403c",
+    "documentation_expression_filter": "standalone string expressions including attribute documentation",
+    "unchanged_runtime_ast": {
+      "src/phaze/services/remote_lookup.py": true,
+      "src/phaze/services/s3_staging.py": true,
+      "src/phaze/tasks/_shared/agent_bootstrap.py": true
+    },
+    "uv_lock_unchanged": true
+  },
   "scope_note": "Full/current source traces are distinguished from partial dated-evidence dispositions. No production/archive probes or fresh historical benchmarks. Original scratch preflight remains unchanged.",
-  "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+  "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
 }

@@ -6086,7 +6086,7 @@
               "configuration-2-edge-001"
             ],
             "id": "configuration-2-original-001",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "1917d005d65f4c1d5a139a7006885e92a5241538fad6d2f9a269789559169c49"
           },
           {
@@ -6095,7 +6095,7 @@
               "configuration-2-edge-002"
             ],
             "id": "configuration-2-original-002",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "ed46a2cfd99c8f4bf0825c673c0ef887f010fa1bb6dce4ca65f5be5e9d19a954"
           },
           {
@@ -6104,7 +6104,7 @@
               "configuration-2-edge-003"
             ],
             "id": "configuration-2-original-003",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "56f41bbd3208f627493def237037647e333e3a291e7481306b9ea7dc8dad660e"
           },
           {
@@ -6113,7 +6113,7 @@
               "configuration-2-edge-004"
             ],
             "id": "configuration-2-original-004",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "1e07c80c366a0c28feda926007073cf3b78fb6d7d96fa2d254d972127b8ce11b"
           },
           {
@@ -6122,7 +6122,7 @@
               "configuration-2-edge-005"
             ],
             "id": "configuration-2-original-005",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "c721d97fa39a4b59616d78a65544f5c6e6672f3ac1c88cfe4ef7a297de34b165"
           },
           {
@@ -6131,7 +6131,7 @@
               "configuration-2-edge-006"
             ],
             "id": "configuration-2-original-006",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "5d6b1d177864ec50e9038d2e7d9f6d61c664015d41ce110b5b06423c9ace99d1"
           },
           {
@@ -6140,7 +6140,7 @@
               "configuration-2-edge-007"
             ],
             "id": "configuration-2-original-007",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "f64b3da87690caf82d2a434e394b70ff00fcabcc231ccee4a4041ecf9b2c6665"
           },
           {
@@ -6149,7 +6149,7 @@
               "configuration-2-edge-008"
             ],
             "id": "configuration-2-original-008",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "ac60581bde05e1b773649244dce9b61b1045a3b2de7fab3b5a9bf550063d64f5"
           },
           {
@@ -6158,7 +6158,7 @@
               "configuration-2-edge-009"
             ],
             "id": "configuration-2-original-009",
-            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Reread final dependency before committing fallback defaults or activation claims; initial boot and live snapshot publication are distinct.",
+            "rationale": "Preserve missing-registry fallback, authoritative TOML parsing, empty-registry refusal and variant/global validation. Verified against the merged registry loader and validators: initial boot and live snapshot publication are distinct; absent configuration supplies the implicit host-derived local backend, while an explicitly empty registry fails validation.",
             "statement_sha256": "b8f806ed33377a96b902bf562b2fccddc30493cd7f37c9f21616677e02e2e475"
           }
         ],
@@ -6168,7 +6168,7 @@
       "png_sha256": "f2d417fe426b492186acb46786c6e5651467594cbbc3cb77b81857814c6e2d62",
       "preview_source_sha256": "d788d128b153ac4bb61b854f571b628e05b96347fe11ce9b96e04001ceccb7a7",
       "preview_svg_sha256": "b1a47a6b9b94d83f74b34a97023d30fbfb489934db105bebffdf044298c7a79d",
-      "render_input_sha256": "63633c364d9e5d8ccabe4fbfa0d492e8b28d3b468c9d625a82181ecdc4377030",
+      "render_input_sha256": "9560e0a66a0d40b14a26e263e9a0ff1374372b4d65034833351493eac292e197",
       "slug": "configuration-2",
       "source_sha256": "d788d128b153ac4bb61b854f571b628e05b96347fe11ce9b96e04001ceccb7a7",
       "summary": "Phaze current implementation: components, ownership and guarded transitions.",
@@ -12705,7 +12705,7 @@
               "runbook-2-edge-001"
             ],
             "id": "runbook-2-original-001",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "32f114536ad3cd5edb6e8a1423d2271901689ff3fd8842a67a7a74db5efe92fb"
           },
           {
@@ -12714,7 +12714,7 @@
               "runbook-2-edge-002"
             ],
             "id": "runbook-2-original-002",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "beb30760c40d6f10b9bd82f158f684fac755a26c87c35a6abd64796c325def26"
           },
           {
@@ -12723,7 +12723,7 @@
               "runbook-2-edge-003"
             ],
             "id": "runbook-2-original-003",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "908f13fb75f5a76d4f55299ddb990cb08878365a173040f8a8655743b358330f"
           },
           {
@@ -12732,7 +12732,7 @@
               "runbook-2-edge-004"
             ],
             "id": "runbook-2-original-004",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "df47a7313e880593527954919158a03da8911e57f0ca64460723a9ace16ebd5b"
           },
           {
@@ -12741,7 +12741,7 @@
               "runbook-2-edge-005"
             ],
             "id": "runbook-2-original-005",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "b2f6085eb277a99b9ee2ca30c4e6f37f704889184e50cda20f466eb12848df5f"
           },
           {
@@ -12750,7 +12750,7 @@
               "runbook-2-edge-006"
             ],
             "id": "runbook-2-original-006",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "63665f267b27978bd34a9edcb757ed8849454bc113d63b0255a9fc58c0eee8f2"
           },
           {
@@ -12759,7 +12759,7 @@
               "runbook-2-edge-007"
             ],
             "id": "runbook-2-original-007",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "9f65cae21c1e99fa668b33b0a6423eb73aa43b008571f7960478b0db93f2ce74"
           },
           {
@@ -12768,7 +12768,7 @@
               "runbook-2-edge-008"
             ],
             "id": "runbook-2-original-008",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "687e66db7df80ca4b5f32ef0ced845e27194145822de8478819743f0d6068f56"
           },
           {
@@ -12777,7 +12777,7 @@
               "runbook-2-edge-009"
             ],
             "id": "runbook-2-original-009",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "03758982cfd612e1f1d79d1d94c332318797f22108cc26508d1cdf84ef7e4644"
           },
           {
@@ -12786,7 +12786,7 @@
               "runbook-2-edge-010"
             ],
             "id": "runbook-2-original-010",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "4ad58939f3334fad6f89dba2d9a4edebcb61dc6e6b68f2e93dfdf4e154e85219"
           },
           {
@@ -12795,7 +12795,7 @@
               "runbook-2-edge-011"
             ],
             "id": "runbook-2-original-011",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "cb0b825d3b08707774b90bab2393a809e01f11f6b8aa323c0a2886a1196a7a57"
           },
           {
@@ -12804,7 +12804,7 @@
               "runbook-2-edge-012"
             ],
             "id": "runbook-2-original-012",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "2c0b2e83e33417f0dfca6044ead9d102f6cbe42f6c6e1b875bac6eeba50fbd12"
           },
           {
@@ -12813,7 +12813,7 @@
               "runbook-2-edge-013"
             ],
             "id": "runbook-2-original-013",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "051acfcbde9c6a4b1fcd7567fe3b14c52f4c7a6870e4732588281468945be294"
           },
           {
@@ -12822,7 +12822,7 @@
               "runbook-2-edge-014"
             ],
             "id": "runbook-2-original-014",
-            "rationale": "Preserve every rank/availability/slot/local-spill branch and held outcome; add explicit budget-forced local and local-capacity outcomes, not unconditional local availability. Threshold value deferred to merged config.",
+            "rationale": "Preserve every shown rank, availability, slot, local-spill and held branch. The configured spill wait defaults to 900 seconds in the merged settings; budget-forced local routing and finite local capacity remain documented surrounding context, not additional branches invented in this simplified view.",
             "statement_sha256": "85f78c908422cf93cc5bf138b411177a44c3ebd916eff678469d4cc38de61242"
           }
         ],
@@ -12832,7 +12832,7 @@
       "png_sha256": "b2e84b63f6a216b2c0cb4d1d335b9c08aa5a517c46b76a461c5752a6e7d3ecd4",
       "preview_source_sha256": "76a2019de6a95b08496291d5f9bb3111e795d30ab3cfd0dc1e9c8110086ac0b8",
       "preview_svg_sha256": "4b594a4a3111464259c879102227d453ab5f98679b2a14dc06cd86e43fc0f172",
-      "render_input_sha256": "9989d2df1326aebe02b094237dab64f599c9f3d0a0389f86c824786773969b51",
+      "render_input_sha256": "7ff858a174c69cd4243a15fbc652ff422c7e1b34329082837d8e6d1cb57bb6e8",
       "slug": "runbook-2",
       "source_sha256": "76a2019de6a95b08496291d5f9bb3111e795d30ab3cfd0dc1e9c8110086ac0b8",
       "summary": "Phaze current implementation: components, ownership and guarded transitions.",
@@ -13187,7 +13187,7 @@
               "watcher-events-edge-001"
             ],
             "id": "watcher-events-original-001",
-            "rationale": "Preserve event/debounce/settle/post flow and add moved-destination/prior-path lineage behavior. Watchdog fs notification, sweep timing and HTTP report are distinct relationships; two max-pending grace windows are not one absolute eviction bound.",
+            "rationale": "Preserve the event, debounce, settle and HTTP-post flow. Watchdog notification, sweep timing and API report are distinct relationships. The handler also supports moved-destination/prior-path lineage in source; this simplified view does not enumerate each callback. Two pending-age grace windows are not one absolute eviction bound.",
             "statement_sha256": "97c56e843dc2a82839b8fa7c0fe57945870b9e4ba252b8bb50caf06c63c309a6"
           },
           {
@@ -13196,7 +13196,7 @@
               "watcher-events-edge-002"
             ],
             "id": "watcher-events-original-002",
-            "rationale": "Preserve event/debounce/settle/post flow and add moved-destination/prior-path lineage behavior. Watchdog fs notification, sweep timing and HTTP report are distinct relationships; two max-pending grace windows are not one absolute eviction bound.",
+            "rationale": "Preserve the event, debounce, settle and HTTP-post flow. Watchdog notification, sweep timing and API report are distinct relationships. The handler also supports moved-destination/prior-path lineage in source; this simplified view does not enumerate each callback. Two pending-age grace windows are not one absolute eviction bound.",
             "statement_sha256": "41b5b031b5e9e06524746101d2d317c3d7f1dd7d6c127524c5c42ceec9b35d6a"
           },
           {
@@ -13205,7 +13205,7 @@
               "watcher-events-edge-003"
             ],
             "id": "watcher-events-original-003",
-            "rationale": "Preserve event/debounce/settle/post flow and add moved-destination/prior-path lineage behavior. Watchdog fs notification, sweep timing and HTTP report are distinct relationships; two max-pending grace windows are not one absolute eviction bound.",
+            "rationale": "Preserve the event, debounce, settle and HTTP-post flow. Watchdog notification, sweep timing and API report are distinct relationships. The handler also supports moved-destination/prior-path lineage in source; this simplified view does not enumerate each callback. Two pending-age grace windows are not one absolute eviction bound.",
             "statement_sha256": "96450d35712d55a859205a65def50e51e5622896f81c470873ba01d7666d1efd"
           },
           {
@@ -13214,7 +13214,7 @@
               "watcher-events-edge-004"
             ],
             "id": "watcher-events-original-004",
-            "rationale": "Preserve event/debounce/settle/post flow and add moved-destination/prior-path lineage behavior. Watchdog fs notification, sweep timing and HTTP report are distinct relationships; two max-pending grace windows are not one absolute eviction bound.",
+            "rationale": "Preserve the event, debounce, settle and HTTP-post flow. Watchdog notification, sweep timing and API report are distinct relationships. The handler also supports moved-destination/prior-path lineage in source; this simplified view does not enumerate each callback. Two pending-age grace windows are not one absolute eviction bound.",
             "statement_sha256": "e05fdb32b7e377855cee7b3f891c1b35d60e3b5f965f5dc72a47093c9dd489a6"
           },
           {
@@ -13223,7 +13223,7 @@
               "watcher-events-edge-005"
             ],
             "id": "watcher-events-original-005",
-            "rationale": "Preserve event/debounce/settle/post flow and add moved-destination/prior-path lineage behavior. Watchdog fs notification, sweep timing and HTTP report are distinct relationships; two max-pending grace windows are not one absolute eviction bound.",
+            "rationale": "Preserve the event, debounce, settle and HTTP-post flow. Watchdog notification, sweep timing and API report are distinct relationships. The handler also supports moved-destination/prior-path lineage in source; this simplified view does not enumerate each callback. Two pending-age grace windows are not one absolute eviction bound.",
             "statement_sha256": "87124219d20de0df9f1b55519a05f212a14460310675efd9d544fe01bb104fd8"
           },
           {
@@ -13232,7 +13232,7 @@
               "watcher-events-edge-006"
             ],
             "id": "watcher-events-original-006",
-            "rationale": "Preserve event/debounce/settle/post flow and add moved-destination/prior-path lineage behavior. Watchdog fs notification, sweep timing and HTTP report are distinct relationships; two max-pending grace windows are not one absolute eviction bound.",
+            "rationale": "Preserve the event, debounce, settle and HTTP-post flow. Watchdog notification, sweep timing and API report are distinct relationships. The handler also supports moved-destination/prior-path lineage in source; this simplified view does not enumerate each callback. Two pending-age grace windows are not one absolute eviction bound.",
             "statement_sha256": "f2a259263707c7bad1f352880c4f901a8d375858e98ad782ed8049cd403a11ec"
           },
           {
@@ -13241,7 +13241,7 @@
               "watcher-events-edge-007"
             ],
             "id": "watcher-events-original-007",
-            "rationale": "Preserve event/debounce/settle/post flow and add moved-destination/prior-path lineage behavior. Watchdog fs notification, sweep timing and HTTP report are distinct relationships; two max-pending grace windows are not one absolute eviction bound.",
+            "rationale": "Preserve the event, debounce, settle and HTTP-post flow. Watchdog notification, sweep timing and API report are distinct relationships. The handler also supports moved-destination/prior-path lineage in source; this simplified view does not enumerate each callback. Two pending-age grace windows are not one absolute eviction bound.",
             "statement_sha256": "21bf4e2bae633d7099404bccf9d35cf5fdcb4a4c41d4d50fdb1913a083d816a3"
           }
         ],
@@ -13251,7 +13251,7 @@
       "png_sha256": "d0b47c2648a83a2743c5161472132834135f711012f1e25001b2fe374b91bade",
       "preview_source_sha256": "2f3eb87caa6b6ad8303ff24a13c2f74162d0757029ce930268c687616f0a7dc3",
       "preview_svg_sha256": "a0395ae6d9e10e5c0383567087e2af2a9d30791f0d0021848ff853a877dd6d22",
-      "render_input_sha256": "f5e6881d72c93cf4702f53d873f188e830e7947881682e941ed39f264727a518",
+      "render_input_sha256": "68bd3fcde2bc9e50af583b8cc69f729908fefeb17629ccbf4b7d8002356d2500",
       "slug": "watcher-events",
       "source_sha256": "2f3eb87caa6b6ad8303ff24a13c2f74162d0757029ce930268c687616f0a7dc3",
       "summary": "Phaze current implementation: components, ownership and guarded transitions.",
@@ -15540,5 +15540,5 @@
   },
   "profile": "phaze",
   "schema": 1,
-  "source_revision": "517c56be7299166b50deaa52877cfd8b0c62668a"
+  "source_revision": "51707485909dfd1c8ec88da760f4b548e84c403c"
 }
