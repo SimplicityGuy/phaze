@@ -561,6 +561,13 @@ jobs:
       - name: 📦 Install dependencies
         run: just install
 
+      # Reuse the pinned, checksum-verified binary installed by `just install` above.
+      # Run before Chromium setup so browser infrastructure cannot hide a dead-class failure.
+      - name: 🎨 Verify template classes against the image CSS
+        env:
+          PHAZE_REQUIRE_TAILWIND: "1"
+        run: uv run pytest tests/shared/test_template_classes_resolve.py -v
+
       # phaze-ldvmy: Playwright is an exact uv lock input. Resolve that locked version for a cache
       # key that also distinguishes runner architecture and the smaller headless-shell payload.
       # The browser toolchain can now change only through a reviewed pyproject/uv.lock diff.

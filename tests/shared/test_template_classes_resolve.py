@@ -15,7 +15,8 @@ test does the same in a temporary directory.
 Only literal `class="..."` attributes are checked (the bead's "static" tokens); Alpine `:class` bindings are not.
 
 Needs the pinned standalone binary (``just tailwind`` leaves it at ``./bin/tailwindcss``). Absent, the test skips
-loudly, unless ``PHAZE_REQUIRE_TAILWIND=1``, which makes absence a failure.
+loudly, unless ``PHAZE_REQUIRE_TAILWIND=1``, which makes absence or a version mismatch a failure.
+CI's Browser contract job sets this flag and runs this module after its pinned binary installation.
 """
 
 from __future__ import annotations
@@ -121,8 +122,25 @@ def tailwind() -> Path:
     assert _PINNED is not None
     version = subprocess.run([str(binary), "--help"], capture_output=True, text=True, check=False).stdout  # noqa: S603
     if _PINNED.group(1).lstrip("v") not in version:
-        pytest.skip(f"Tailwind binary is not the pinned {_PINNED.group(1)}; the selector set would differ from the image's")
+        message = f"Tailwind binary is not the pinned {_PINNED.group(1)}; the selector set would differ from the image's"
+        if os.environ.get("PHAZE_REQUIRE_TAILWIND") == "1":
+            pytest.fail(message)
+        pytest.skip(message)
     return binary
+
+
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("available", [False, True], ids=["missing", "wrong-version"])
+def test_required_binary_errors_fail_instead_of_skipping(monkeypatch: pytest.MonkeyPatch, required: bool, available: bool) -> None:
+    from types import SimpleNamespace
+
+    import tests.shared.test_template_classes_resolve as guard
+
+    monkeypatch.setenv("PHAZE_REQUIRE_TAILWIND", "1" if required else "0")
+    monkeypatch.setattr(guard, "_find_tailwind", lambda: Path("tailwindcss") if available else None)
+    monkeypatch.setattr(guard.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(stdout="tailwindcss v0.0.0"))
+    with pytest.raises(pytest.fail.Exception if required else pytest.skip.Exception, match="Tailwind binary"):
+        tailwind.__wrapped__()
 
 
 @pytest.fixture(scope="module")
