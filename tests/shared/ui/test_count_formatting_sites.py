@@ -37,6 +37,16 @@ _STORE_READ = re.compile(r"\$store\.pipeline\.\w+")
 # a formatCount() argument; the optional ``?.<key>`` tail keeps that form from reading as an unformatted store read.
 _FORMATTED = re.compile(r"formatCount\(\s*\$store\.pipeline\.\w+(?:\?\.(?:\w+|\{\{\s*\w+\s*\}\}))?\s*\)")
 
+# A strict singular test selects a word; it does not render the count. Require
+# the immediate ternary condition so other raw reads remain subject to the guard.
+_SINGULAR_COMPARISON = re.compile(r"\$store\.pipeline\.\w+\s*===\s*1(?=\s*\?)")
+
+
+def _has_unformatted_count(expression: str) -> bool:
+    remainder = _NOT_COUNTS.sub("", _FORMATTED.sub("", expression))
+    remainder = _SINGULAR_COMPARISON.sub("", remainder)
+    return bool(_STORE_READ.search(remainder))
+
 
 def _template(relative: str) -> str:
     return (TEMPLATES_DIR / relative).read_text(encoding="utf-8")
@@ -59,8 +69,7 @@ def test_every_store_count_in_a_text_binding_goes_through_the_js_formatter() -> 
             if "$store.pipeline." not in expression:
                 continue
             bindings += 1
-            remainder = _NOT_COUNTS.sub("", _FORMATTED.sub("", expression))
-            if _STORE_READ.search(remainder):
+            if _has_unformatted_count(expression):
                 offenders.append(f"{path.relative_to(TEMPLATES_DIR)}:{text.count(chr(10), 0, match.start()) + 1}: {expression[:90]}")
     assert bindings > 20, f"the guard found only {bindings} store bindings, so it is not scanning what it thinks it is"
     assert not offenders, f"a live count is bound without formatCount(): {offenders}"
@@ -73,8 +82,26 @@ def test_the_guard_catches_a_raw_store_read() -> None:
     for source, expect_offender in ((raw, True), (fixed, False)):
         expression = _BINDING.search(source)
         assert expression is not None
-        remainder = _NOT_COUNTS.sub("", _FORMATTED.sub("", expression.group(1)))
-        assert bool(_STORE_READ.search(remainder)) is expect_offender
+        assert _has_unformatted_count(expression.group(1)) is expect_offender
+
+
+def test_guard_accepts_formatted_counts_with_strict_singular_word_selection() -> None:
+    for key in ("visibleAgentCount", "clusterCount", "discovered"):
+        value = f"$store.pipeline.{key}"
+        expression = f"formatCount({value}) + ({value} === 1 ? ' item' : ' items')"
+        assert not _has_unformatted_count(expression)
+        for comparison in ("== 1", "=== 11", "!== 1"):
+            assert _has_unformatted_count(expression.replace("=== 1", comparison))
+
+
+def test_guard_still_rejects_raw_counts_in_either_pluralization_branch() -> None:
+    for key in ("visibleAgentCount", "clusterCount", "discovered"):
+        value = f"$store.pipeline.{key}"
+        # A comparison is not a key-wide exemption: the same value must still
+        # be formatted wherever either branch actually displays it.
+        for singular, plural in ((value, f"formatCount({value})"), (f"formatCount({value})", value)):
+            assert _has_unformatted_count(f"{value} === 1 ? {singular} : {plural}")
+        assert _has_unformatted_count(f"{value} + ({value} === 1 ? ' item' : ' items')")
 
 
 def test_the_formatter_is_loaded_before_alpine() -> None:

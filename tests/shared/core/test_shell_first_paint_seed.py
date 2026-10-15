@@ -84,7 +84,7 @@ async def test_initial_html_carries_the_real_counts_not_zero(client: AsyncClient
     assert seed["notYetEnriched"] == _FILES
 
     # What the browser paints BEFORE Alpine boots: the static fallback text, not the old "0".
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.agentOnline\)[^>]*>([^<]*)</span>') == "2"
+    assert "3 agents · 0 clusters" in body  # Includes the fixture's never-seen fileserver inventory row.
     # Header uses the cached attention snapshot; an unmeasured cache paints unknown.
     assert 'aria-controls="attention-tray"' in body
     assert "attentionKnown: 0" in body
@@ -111,7 +111,7 @@ async def test_unmeasurable_seed_renders_em_dash_placeholders(client: AsyncClien
     body = resp.text
 
     assert _seed_in_html(body) == {}
-    assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.agentOnline\)[^>]*>([^<]*)</span>') == "—"
+    assert "Agents unavailable · Clusters unavailable" in body
     assert _text_of(body, r'x-text="\$store\.pipeline\.seedKnown \? formatCount\(\$store\.pipeline\.discovered\) : [^>]*>([^<]*)</span>') == "—"
     assert (
         _text_of(body, r"""x-text="\$store\.pipeline\.seedKnown \? `\$\{formatCount\(\$store\.pipeline\.analyzeDone\)\}[^>]*>([^<]*)</span>""")

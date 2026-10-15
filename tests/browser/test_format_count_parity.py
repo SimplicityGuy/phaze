@@ -56,7 +56,8 @@ async def test_live_store_counts_keep_their_separators_after_every_update(page: 
                 s.tracklistDone = 12345;
                 s.proposalsDone = 1000; s.proposalsTotal = 54321;
                 s.metadataStatusKnown = true; s.metadataStatusDone = 104156; s.metadataStatusTotal = n;
-                s.agentOnline = 1200; s.laneCount = 3400; s.clusterCount = 3399;
+                s.agentOnline = 99; s.visibleAgentCount = 1200; s.visibleAgentCountKnown = 1;
+                s.laneCount = 3400; s.clusterCount = 3399; s.clusterCountKnown = 1;
             }""",
             discovered,
         )
@@ -70,11 +71,9 @@ async def test_live_store_counts_keep_their_separators_after_every_update(page: 
     assert "94,772 / 103,338" in (analyze or "")
     proposals = await page.locator('[data-rail-stage="propose"]').text_content()
     assert "1,000 / 54,321" in (proposals or "")
-    # The header status strip ("Agents online" / "Lanes" / "Clusters") was replaced by the health pill
-    # (e961918d), so the online-agent count is now rendered by the Agents rail node. Lane and cluster
-    # inventory ride the store only and no longer have a visible surface to format-check.
+    # The Agents secondary line formats visible inventory independently of activity.
     agents = await page.locator('[data-rail-stage="agents"]').text_content()
-    assert "1,200" in (agents or "")
+    assert "1,200 agents · 3,399 clusters" in (agents or "")
     assert "1200" not in (agents or "").replace("1,200", ""), "the raw, unformatted agent count is also on the page"
 
 
