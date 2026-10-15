@@ -118,6 +118,12 @@ class ProviderStatus(BaseModel):
     display_name: str
     enabled: bool
     stopped: bool
+    available: bool = True
+    unavailable_reason: str | None = None
+    min_interval_seconds: float = 6.0
+    max_requests_per_run: int = 16
+    durable_budget: int = 60
+    durable_window_seconds: int = 3600
     stop_code: str | None = None
     stopped_at: datetime | None = None
     cleared_at: datetime | None = None

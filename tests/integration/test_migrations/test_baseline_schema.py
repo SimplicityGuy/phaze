@@ -87,6 +87,10 @@ _EXPECTED_TABLES = frozenset(
         # phaze-gan2z (migration 089): durable remote transport pacing, budget and stop.
         "remote_transport_ledgers",
         "remote_transport_attempts",
+        "remote_lookup_batches",
+        "remote_lookup_work",
+        "remote_lookup_memberships",
+        "remote_lookup_reads",
         "companion_import_runs",
         "companion_import_items",
         "agents",
@@ -375,6 +379,7 @@ def test_baseline_is_the_only_migration() -> None:
         "089_remote_transport_ledger.py",
         "090_provider_source_remote_channel.py",
         "091_provider_source_read_seq.py",
+        "092_remote_lookup_batches.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -406,7 +411,7 @@ async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
     """A bare ``upgrade head`` lands at the current head (091: provider source read sequence)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "091"
+    assert version == "092"
 
 
 @pytest.mark.asyncio
@@ -840,7 +845,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "091"
+        assert version == "092"
     finally:
         if engine is not None:
             await engine.dispose()

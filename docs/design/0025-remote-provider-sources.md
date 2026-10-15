@@ -308,3 +308,14 @@ unset value is invisible to every consumer that compares or validates the serial
 persisted digest and the agent wire are this repo's instances. Pydantic's default dump writes unset
 optional fields as `null`, so "optional with a default" is not enough. It is written here because this
 is where the next field added to a provider DTO will be designed.
+
+
+## Global remote provider policy amendment (2026-10-14)
+
+The approved design of phaze-psfkq makes remote enablement, minimum request interval and per-discovery request budget live, global overrides. Credentials remain secret and restart-only. The settings service stores one validated `provider_<id>_policy` JSON snapshot per registered remote provider in the existing runtime override table; the general process runtime configuration does not consume these snapshots.
+
+API and controller workers resolve the complete provider policy snapshot before lookup and before transport reservation/send boundaries. Invalid snapshots leave each process's last good snapshot in force. Database read failures refuse new work instead of reverting to defaults. Provider profile floors remain enforced: an operator may widen a gap or lower a request budget, and may later relax it only within the original profile constraints. Local sources are unaffected.
+
+Policy changes never mutate transport reservations, rolling attempt history, per-run usage, Retry-After or persistent stops. A request already sent finishes normally. A lowered budget can block a run whose usage is already charged; increasing the budget permits continuation without refunding previous requests. A stop requires a separate, reasoned operator clear.
+
+The Tracklist action persists batch intent before queue delivery. Expansion commits bounded keyset chunks, membership rows and the cursor atomically; recovery only resumes explicitly created batches. Each recording/provider pair has at most one active work row. Durable retries keep one run UUID and replay bounded successful transport responses, including robots, without reissuing page-one requests. Actual reservation attempts remain the authoritative conserved per-run budget. Metadata changes terminate that continuation explicitly rather than mixing searches based on different facts. Discovery never selects a source.

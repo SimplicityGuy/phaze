@@ -23,6 +23,7 @@
     <div class="px-4 pt-4 sm:px-6">
         {% include "shell/partials/_routing_override_section.html" %}
     </div>
+    <div class="p-4 sm:p-6" hx-get="/admin/remote-providers" hx-trigger="load" hx-swap="innerHTML"><p>Loading tracklist provider Settings…</p></div>
     <div class="p-4 sm:p-6">
         {% include "admin/partials/_runtime_config_table.html" %}
     </div>

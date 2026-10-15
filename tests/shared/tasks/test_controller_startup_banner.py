@@ -191,6 +191,26 @@ async def test_controller_shutdown_tolerates_missing_ctx_keys() -> None:
 
 
 @pytest.mark.asyncio
+async def test_controller_shutdown_closes_remote_lookup_before_shared_database() -> None:
+    """The provider service releases its transport resources before the shared database is disposed."""
+    from types import SimpleNamespace
+
+    from phaze.tasks import controller
+
+    closed: list[str] = []
+
+    async def close_lookup() -> None:
+        closed.append("remote_lookup")
+
+    async def dispose_engine() -> None:
+        assert closed == ["remote_lookup"]
+        closed.append("task_engine")
+
+    await controller.shutdown({"remote_lookup": SimpleNamespace(aclose=close_lookup), "task_engine": SimpleNamespace(dispose=dispose_engine)})
+    assert closed == ["remote_lookup", "task_engine"]
+
+
+@pytest.mark.asyncio
 async def test_controller_shutdown_closes_the_dedicated_cache_redis_and_task_router() -> None:
     """shutdown() must also aclose ctx['redis'] (Phase 36's dedicated cache-redis handle, distinct
     from the module-level queue's own cache_redis) and close ctx['task_router'] (Phase 32's

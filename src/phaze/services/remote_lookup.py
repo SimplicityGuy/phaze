@@ -72,6 +72,7 @@ from phaze.services.provider_persistence import (
     store_snapshot,
     store_source_read,
 )
+from phaze.services.remote_policy import RemotePolicy
 from phaze.services.remote_providers import REMOTE_PROVIDERS, RemoteProviderBinding
 from phaze.services.remote_transport import Clock, HttpxSocket, RemoteSocket, RemoteTransport, SystemClock, clear_stop
 from phaze.tracklist_providers.domain import (
@@ -122,6 +123,10 @@ def effective_profile(profile: RemoteHostProfile, settings: RemoteProviderSettin
 # Every code a lookup can surface, mapped to what the operator can do about it. None of them means "no tracklist".
 # ---------------------------------------------------------------------------------------------------------------
 _MESSAGES: dict[str, tuple[LookupStatus, str]] = {
+    "credential_missing": (
+        "unavailable",
+        "This provider is enabled but its required credential is missing. Configure its deployment secret and restart; nothing was sent.",
+    ),
     "disabled_provider": ("unavailable", "This provider is turned off in settings, so nothing was requested."),
     "no_usable_hint": (
         "unavailable",
@@ -214,7 +219,8 @@ def operator_outcome(status: OutcomeStatus, code: str, *, evidence: tuple[str, .
     if code in _MESSAGES:
         kind, message = _MESSAGES[code]
     elif code.startswith("robots_"):
-        kind, message = "unavailable", f"Fetching the provider's robots.txt failed ({code.removeprefix('robots_')}), so nothing else was sent."
+        kind = _MESSAGES.get(code.removeprefix("robots_"), (_STATUS_FALLBACK[status], ""))[0]
+        message = f"Fetching the provider's robots.txt failed ({code.removeprefix('robots_')}), so nothing else was sent."
     elif code.startswith("http_5"):
         kind, message = "retry", "The provider had a server error. Try again later."
     else:
@@ -353,7 +359,7 @@ class RemoteLookup:
         owns_engine: bool = False,
     ) -> None:
         bindings = tuple(bindings)
-        profiles = tuple(effective_profile(binding.profile, settings.get(binding.profile.provider_id)) for binding in bindings)
+        profiles = tuple(binding.profile for binding in bindings)
         providers = tuple(binding.provider for binding in bindings)
         descriptors = tuple(ProviderDescriptor.model_validate(provider.descriptor) for provider in providers)
         self._descriptors = {descriptor.id: descriptor for descriptor in descriptors}
@@ -362,7 +368,7 @@ class RemoteLookup:
         for binding in bindings:
             provider_id = binding.profile.provider_id
             provider_settings = settings.get(provider_id)
-            if binding.credential_name and provider_settings is not None and provider_settings.enabled:
+            if binding.credential_name and provider_settings is not None:
                 secret = provider_settings.credentials.get(binding.credential_name)
                 if secret is None:
                     # Enabled without its credential would send unauthenticated requests: fail closed.
@@ -373,9 +379,12 @@ class RemoteLookup:
                     binding.credential_check(secret.get_secret_value())
                 credentials[provider_id] = secret
         self._disabled = frozenset(disabled)
-        self.registry = ProviderRegistry(providers, disabled=self._disabled, remote_profiles=profiles)
+        self.policy = RemotePolicy(bindings, settings, sessions)
+        self.registry = ProviderRegistry(providers, remote_profiles=profiles)
         self._clock = clock or SystemClock()
-        self.transport = RemoteTransport(profiles=profiles, engine=engine, socket=socket, clock=self._clock, credentials=credentials)
+        self.transport = RemoteTransport(
+            profiles=profiles, engine=engine, socket=socket, clock=self._clock, credentials=credentials, policy=self.policy.resolve
+        )
         self._engine = engine
         self._owns_engine = owns_engine
         self._sessions = sessions
@@ -395,8 +404,9 @@ class RemoteLookup:
     def _rejection(self, provider_id: str) -> OperatorOutcome | None:
         if provider_id not in self._descriptors:
             return operator_outcome(OutcomeStatus.CONTRACT_ERROR, "unknown_provider")
-        if provider_id in self._disabled:
-            return operator_outcome(OutcomeStatus.UNAVAILABLE, "disabled_provider")
+        policy = self.policy.snapshot[provider_id]
+        if not policy.available:
+            return operator_outcome(OutcomeStatus.UNAVAILABLE, policy.unavailable_reason or "disabled_provider")
         return None
 
     @staticmethod
@@ -408,6 +418,7 @@ class RemoteLookup:
 
     async def provider_status(self) -> tuple[ProviderStatus, ...]:
         """Every registered remote provider, enabled or not, with its persistent stop state. Reads only."""
+        await self.policy.refresh()
         if not self._descriptors:
             return ()
         async with self._sessions() as session:
@@ -422,7 +433,13 @@ class RemoteLookup:
                 ProviderStatus(
                     provider_id=provider_id,
                     display_name=descriptor.display_name,
-                    enabled=provider_id not in self._disabled,
+                    enabled=self.policy.snapshot[provider_id].configured.enabled,
+                    available=self.policy.snapshot[provider_id].available,
+                    unavailable_reason=self.policy.snapshot[provider_id].unavailable_reason,
+                    min_interval_seconds=self.policy.snapshot[provider_id].profile.min_gap_seconds,
+                    max_requests_per_run=self.policy.snapshot[provider_id].profile.per_run_budget,
+                    durable_budget=self.policy.snapshot[provider_id].profile.durable_budget,
+                    durable_window_seconds=self.policy.snapshot[provider_id].profile.durable_window_seconds,
                     stopped=ledger is not None and ledger.stop_code is not None,
                     stop_code=ledger.stop_code if ledger else None,
                     stopped_at=ledger.stopped_at if ledger else None,
@@ -451,6 +468,10 @@ class RemoteLookup:
             task.add_done_callback(lambda _done: self._inflight.pop(key, None))
         return cast("_T", await asyncio.shield(task))
 
+    async def queued_lookup(self, command: LookupCommand, run_id: uuid.UUID) -> LookupResult:
+        """Resume a durable run with bounded successful-read replay and conserved usage."""
+        return await self._lookup(command, run_id=run_id)
+
     async def lookup(self, command: LookupCommand) -> LookupResult:
         """Discover candidates for one recording from one provider, and hold them for review.
 
@@ -460,8 +481,9 @@ class RemoteLookup:
         command = LookupCommand.model_validate(command)
         return await self._single_flight(("lookup", command.media_id, command.provider_id), lambda: self._lookup(command))
 
-    async def _lookup(self, command: LookupCommand) -> LookupResult:
+    async def _lookup(self, command: LookupCommand, *, run_id: uuid.UUID | None = None) -> LookupResult:
         media_id, provider_id = command.media_id, command.provider_id
+        await self.policy.refresh()
         if (refused := self._rejection(provider_id)) is not None:
             return LookupResult(media_id=media_id, provider_id=provider_id, outcome=refused)
         async with self._sessions() as session:
@@ -472,7 +494,7 @@ class RemoteLookup:
         if not _searchable(context):
             return LookupResult(media_id=media_id, provider_id=provider_id, outcome=operator_outcome(OutcomeStatus.UNAVAILABLE, "no_usable_hint"))
 
-        effects = _ObservedEffects(self.transport.run())
+        effects = _ObservedEffects(self.transport.run(run_id=run_id, durable=run_id is not None))
         outcome = await self.registry.discover(provider_id, context, command.budget, effects)
         failures = effects.failures()
         retrieved_at = self._clock.wall()
@@ -557,6 +579,7 @@ class RemoteLookup:
         return await self._single_flight(("load", command.candidate_id), lambda: self._load(command))
 
     async def _load(self, command: LoadCommand) -> LoadResult:
+        await self.policy.refresh()
         async with self._sessions() as session:
             row = await session.get(ProviderRecordingCandidate, command.candidate_id)
             observation = await session.get(ProviderSourceObservation, row.observation_id) if row else None
