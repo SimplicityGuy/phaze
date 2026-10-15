@@ -20,6 +20,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
+from phaze.runtime_config import effective_settings
 from phaze.services.backends.admission import (
     _build_push_file_enqueue_kwargs,
     _park_push_file_enqueue,
@@ -231,7 +232,7 @@ class ComputeAgentBackend(_BaseBackend):
         ``pg_advisory_xact_lock`` is taken at the top of each row's unit of work, each row commits on its
         own, and a per-row ``except`` rolls back so one bad row never aborts the tick.
         """
-        cfg = cast("ControlSettings", get_settings())
+        cfg = cast("ControlSettings", effective_settings(get_settings()))
         now = datetime.now(UTC)
         rows = (
             (

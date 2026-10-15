@@ -53,6 +53,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.runtime_config import effective_settings
 
 
 logger = structlog.get_logger(__name__)
@@ -64,7 +65,7 @@ async def reap_stalled_scans(ctx: dict[str, Any]) -> dict[str, int]:
     Returns ``{"reaped": N}`` where N is the number of batches transitioned to
     FAILED in this run (0 when nothing is stalled).
     """
-    cfg = get_settings()
+    cfg = effective_settings(get_settings())
     threshold = cfg.scan_stall_seconds
     now = datetime.now(UTC)
     cutoff = now - timedelta(seconds=threshold)

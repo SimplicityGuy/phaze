@@ -27,6 +27,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.runtime_config import effective_settings
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.cloud_budget import record_cloud_budget_spent
 from phaze.tasks.push import PUSH_FILE_SAQ_RETRIES, push_file_saq_timeout_sec
@@ -105,7 +106,7 @@ async def hold_awaiting_cloud(
     NOT it (on the reconcile at-ceiling path ``attempts`` already equals the cap by the time the chain
     ends, because the last under-cap re-drive set it).
     """
-    cap = cast("ControlSettings", get_settings()).cloud_submit_max_attempts
+    cap = cast("ControlSettings", effective_settings(get_settings())).cloud_submit_max_attempts
     # Pre-read ONLY on the terminal path (``attempts >= cap``), so the hot ``attempts=0`` hold path pays
     # nothing. Two things are needed and neither survives the write: whether the row was ALREADY parked
     # in the terminal budget-spent state (the edge trigger), and the chain's ``node_loss_redrives``

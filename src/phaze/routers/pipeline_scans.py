@@ -26,12 +26,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
+from phaze.runtime_config import current
 from phaze.services.pipeline import get_agent_reconciliations, get_scan_watcher_counts
 from phaze.services.scan_deletion import delete_scan_cascade
 from phaze.web.template_globals import register_page_name_globals, register_set_glyph_globals
@@ -166,7 +166,7 @@ def is_scan_stalled(batch: ScanBatch) -> bool:
     """
     if batch.status != ScanStatus.RUNNING.value:
         return False
-    warn_threshold = int(get_settings().scan_stall_seconds * _UI_STALL_WARN_FRACTION)
+    warn_threshold = int(current().scan_stall_seconds * _UI_STALL_WARN_FRACTION)
     return seconds_since_progress(batch) > warn_threshold
 
 

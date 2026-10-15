@@ -1226,3 +1226,71 @@ def test_agent_s3_router_is_mounted_on_the_app() -> None:
     paths = set(app.openapi()["paths"])
     assert "/api/internal/agent/s3/{file_id}/uploaded" in paths
     assert "/api/internal/agent/s3/{file_id}/failed" in paths
+
+
+async def test_upload_failure_freezes_live_retry_cap_then_spills_on_next_callback(
+    seed_test_agent: tuple[Agent, str], session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    from datetime import UTC, datetime
+
+    from phaze import runtime_config
+    from phaze.routers import agent_s3
+    from phaze.runtime_config import RuntimeConfigStore
+
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    startup = agent_s3.get_settings()
+    assert startup.push_max_attempts == 3
+    changes: dict[str, Any] = {}
+
+    async def provider() -> dict[str, Any]:
+        return dict(changes)
+
+    store = RuntimeConfigStore(startup, runtime_toml=None, env={}, override_provider=provider, check_sizing=False)
+    monkeypatch.setattr(runtime_config, "get_runtime_config_store", lambda: store)
+    monkeypatch.setattr(cloud_staging, "get_settings", lambda: startup)
+    agent.last_seen_at = datetime.now(UTC)
+    await session.commit()
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
+    await _seed_ledger(session, file_id, attempt=0)
+    router = FakeTaskRouter()
+
+    async def create(*_args: Any, **_kwargs: Any) -> str:
+        # The first callback already captured the previous policy and chose its retry.
+        # A concurrent edit cannot retroactively reset that decision or its counter.
+        changes["push_max_attempts"] = 1
+        assert (await store.reload("api")).successful
+        return "fresh-upload"
+
+    create_upload = AsyncMock(side_effect=create)
+    abort, delete = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", create_upload)
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", AsyncMock(return_value=["https://s3.test/fresh?partNumber=1"]))
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+
+    async with _make_client(session, router, raw_token) as ac:
+        first = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "first transfer failed"})
+        assert first.status_code == 200, first.text
+        assert first.json()["cleared"] is False
+        ledger = await _ledger_row(session, f"s3_upload:{file_id}")
+        assert ledger is not None and ledger.redrive_attempt == 1
+        job = await _cloud_job(session, file_id)
+        assert job is not None and job.status == CloudJobStatus.UPLOADING.value and job.upload_id == "fresh-upload"
+        assert len(router.captures) == 1 and router.captures[0][1] == "s3_upload"
+        assert next(iter(router.queues.values())).captured_policy[0]["retries"] == 0
+        assert store.current().push_max_attempts == 1 and startup.push_max_attempts == 3
+
+        second = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "next transfer failed"})
+        assert second.status_code == 200, second.text
+        assert second.json()["cleared"] is True
+
+    create_upload.assert_awaited_once()
+    assert len(router.captures) == 1  # The reduced live cap prevented another upload job.
+    assert abort.await_count == 2  # Prior multipart during retry, fresh multipart on spill.
+    delete.assert_awaited_once()
+    job = await _cloud_job(session, file_id)
+    assert job is not None and job.status == CloudJobStatus.AWAITING.value and job.cloud_phase is None
+    assert job.attempts >= startup.cloud_submit_max_attempts
+    assert await _ledger_row(session, f"s3_upload:{file_id}") is None

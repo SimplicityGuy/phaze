@@ -15,6 +15,7 @@ from phaze.enums.stage import Status
 from phaze.models.agent import Agent
 from phaze.routers.pipeline._common import logger, router, templates
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.runtime_config import effective_settings
 from phaze.services.agent_liveness import derive_compute_lane_identities
 from phaze.services.backends import (
     derive_cloud_hold_reason,
@@ -277,7 +278,7 @@ async def _build_dag_context(
     # not an online worker). It rides the same dag.items() seed + OOB loop, no stats_bar.html edit.
     dag["computeLanesActive"] = sum(1 for lane in await derive_compute_lane_identities(session) if lane.state == "ACTIVE")
     # Configured inventory includes idle lanes and local; activity is a separate signal.
-    configured_backends = cast("ControlSettings", get_settings()).backends
+    configured_backends = cast("ControlSettings", effective_settings(get_settings())).backends
     dag["laneCount"] = len(configured_backends)
     dag["clusterCount"] = sum(backend.kind != "local" for backend in configured_backends)
 
@@ -353,7 +354,7 @@ def _shared_stats_context(
     each caller's own page-only or poll-only extras) stays in the caller; only the assembled dict shape
     that must agree between them lives here.
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     incidents, incidents_known = get_attention_snapshot()
     # phaze-m1drf.1 acceptance 3: publish the waiting-room depths the operator otherwise
     # counts in psql. POLL-DRIVEN by construction -- this function runs only when the admin

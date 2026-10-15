@@ -63,12 +63,12 @@ return count
 """
 
 
-async def check_rate_limit(redis_pool: Any, max_rpm: int, *, sleep: Callable[[float], Awaitable[Any]]) -> None:
+async def check_rate_limit(redis_pool: Any, max_rpm: int | Callable[[], int], *, sleep: Callable[[float], Awaitable[Any]]) -> None:
     """Block until an atomic rolling-window request slot is available."""
     key = "phaze:llm:rpm"
     while True:
         count = int(await redis_pool.eval(_RATE_LIMIT_LUA, 1, key, _RATE_LIMIT_WINDOW_SEC))
-        if count <= max_rpm:
+        if count <= (max_rpm() if callable(max_rpm) else max_rpm):
             return
         await redis_pool.decr(key)
         await sleep(2.0)

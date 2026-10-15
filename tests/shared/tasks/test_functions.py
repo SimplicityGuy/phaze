@@ -120,6 +120,9 @@ def _patch_agent_settings() -> Any:
     from phaze.config import AgentSettings
 
     stub = MagicMock(spec=AgentSettings)
+    # This unit stub models the settings-copy boundary; real snapshot isolation is covered
+    # in test_runtime_policy_consumers with concrete settings models.
+    stub.model_copy.return_value = stub
     stub.analysis_stall_timeout_sec = 1800
     # Derived on the real settings class (a property), so a spec'd MagicMock does NOT compute it --
     # it must be stamped or every throttle comparison hits a MagicMock (phaze-w55w1).

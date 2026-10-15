@@ -61,7 +61,9 @@ from pydantic import ValidationError
 import structlog
 
 from phaze.config import AgentSettings, get_settings
-from phaze.logging_config import _parse_bool, configure_logging
+from phaze.logging_config import _parse_bool, configure_logging, log_level_applier
+from phaze.runtime_config import current, effective_settings, get_runtime_config_store
+from phaze.runtime_config_agent import poll_agent_runtime_config
 from phaze.schemas.agent_analysis import (
     AnalysisFailurePayload,
     AnalysisProgressPayload,
@@ -665,6 +667,7 @@ async def _analyze_step(
     Every failure reports first and then exits ``EXIT_ANALYSIS`` (12).
     """
     t_analyze = time.monotonic()
+    runtime_policy = current()
     progress_cb, heartbeat_cb, pending_progress = _make_progress_cb(client, file_id, cfg.analysis_progress_interval_sec)
     # Begin/end markers bracket child fd 1/2 output framed as ``analysis_child_output``.
     log.info("job_runner_analyze_begin", file_id=fid, step="analyze", detail="analysis running -- framed essentia output follows")
@@ -680,6 +683,9 @@ async def _analyze_step(
             progress_cb=progress_cb,
             heartbeat_cb=heartbeat_cb,
             stall_timeout=cfg.analysis_stall_timeout_sec,
+            intra_op_threads=runtime_policy.analysis_intra_op_threads,
+            omp_threads=runtime_policy.analysis_omp_threads,
+            tf_batch_size=runtime_policy.analysis_tf_batch_size,
         )
     except Exception as exc:
         # broad by design: essentia/driver failures span many exception types (a stalled
@@ -809,6 +815,11 @@ async def run() -> None:
     # Extract locally from the downloaded file instead of staging a second artifact.
     extracted_audio_path: str | None = None
     try:
+        runtime_store = get_runtime_config_store()
+        runtime_store.register_applier("log_level", log_level_applier(json_logs=cfg.log_json, friendly=_resolve_friendly_default()))
+        await runtime_store.reload("startup")
+        await poll_agent_runtime_config({"runtime_config_store": runtime_store}, client)
+        cfg = effective_settings(cfg)
         url, expected_sha256, audio_ext, _presign_metadata = await _presign_step(client, file_id, fid)
 
         # The temp file MUST carry the file's REAL audio extension: essentia detects

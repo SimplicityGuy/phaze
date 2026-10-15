@@ -30,6 +30,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import get_authenticated_agent
+from phaze.runtime_config import effective_settings
 from phaze.schemas.agent_s3 import UploadedRequest, UploadedResponse, UploadFailedRequest, UploadFailedResponse
 from phaze.services.agent_s3_reports import (
     ProtocolOutcome,
@@ -200,7 +201,7 @@ async def report_upload_failed(
     post-commit (T-53-17). ``file_id`` is the PATH value only; ``agent`` from the token (AUTH-01).
     ``body.detail`` is a bounded optional diagnostic that carries no identity.
     """
-    settings = cast("ControlSettings", get_settings())
+    settings = cast("ControlSettings", effective_settings(get_settings()))
     try:
         result = await process_upload_failed(session, file_id, settings, request.app.state.task_router)
     except UnknownUploadFileError as exc:

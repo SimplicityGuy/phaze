@@ -11,6 +11,7 @@ the suite.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
     from phaze.config import BaseSettings
 
 
-_THREAD_ENV = {"analysis_intra_op_threads": INTRA_OP_ENV, "analysis_omp_threads": OMP_ENV}
+_THREAD_ENV = {"analysis_intra_op_threads": INTRA_OP_ENV, "analysis_omp_threads": OMP_ENV, "analysis_tf_batch_size": "PHAZE_ANALYSIS_TF_BATCH_SIZE"}
 _AGENT_MIN_ENV = {
     "PHAZE_AGENT_API_URL": "http://app.runtime-config.invalid:8000",
     "PHAZE_AGENT_TOKEN": "phaze_agent_runtime-config-token-000000",
@@ -52,13 +53,13 @@ _AGENT_MIN_ENV = {
 
 
 def _env_names(key: str) -> list[str]:
-    alias = ControlSettings.model_fields[key].validation_alias
+    alias = (ControlSettings.model_fields.get(key) or AgentSettings.model_fields[key]).validation_alias
     names = [choice for choice in alias.choices if isinstance(choice, str)] if isinstance(alias, AliasChoices) else []
     return [*names, key]
 
 
 def _toml_value(value: Any) -> str:
-    return f'"{value}"' if isinstance(value, str) else str(value)
+    return json.dumps(list(value) if isinstance(value, tuple) else value)
 
 
 def _write_toml(directory: Path, values: Mapping[str, Any]) -> None:
@@ -72,7 +73,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for key in RELOADABLE_KEYS - _THREAD_ENV.keys():
         for name in _env_names(key):
             monkeypatch.delenv(name.upper(), raising=False)
-    for name in (INTRA_OP_ENV, OMP_ENV, "PHAZE_ROLE"):
+    for name in (*_THREAD_ENV.values(), "PHAZE_ROLE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PHAZE_BACKENDS_CONFIG_FILE", "/nonexistent/phaze-runtime-config/backends.toml")
     get_runtime_config_store.cache_clear()
@@ -123,8 +124,40 @@ _LAYER_VALUES: dict[str, tuple[Any, Any, Any]] = {
     # (phaze-mvq8z.22), so a file/override value above the env pin would be capped, not applied.
     "analysis_intra_op_threads": (3, 2, 1),
     "analysis_omp_threads": (3, 2, 1),
+    "analysis_tf_batch_size": (24, 16, 8),
     "analysis_stall_timeout_sec": (600, 700, 800),
     "cloud_route_threshold_sec": (3600, 3700, 3800),
+    "worker_job_timeout": (200, 300, 400),
+    "worker_max_retries": (2, 3, 5),
+    "worker_keep_result": (200, 300, 400),
+    "aborting_reap_slack_seconds": (10, 20, 30),
+    "active_reap_slack_seconds": (100, 200, 300),
+    "scan_stall_seconds": (100, 200, 300),
+    "scan_chunk_size": (20, 30, 40),
+    "watcher_settle_seconds": (1, 2, 3),
+    "watcher_max_pending_seconds": (100, 200, 300),
+    "analysis_progress_interval_sec": (1.0, 2.0, 3.0),
+    "discogs_match_concurrency": (2, 3, 4),
+    "llm_model": ("model-env", "model-file", "model-override"),
+    "llm_max_rpm": (10, 20, 40),
+    "llm_batch_size": (2, 3, 4),
+    "llm_max_companion_chars": (100, 200, 400),
+    "convention_date_fallback_enabled": (False, True, False),
+    "convention_date_min_supporting": (1, 2, 3),
+    "convention_date_min_purity": (0.2, 0.3, 0.4),
+    "push_max_attempts": (1, 2, 4),
+    "cloud_node_loss_max_redrives": (2, 3, 4),
+    "cloud_redrive_backoff_sec": ((10, 20), (20, 30), (30, 40)),
+    "cloud_budget_cooldown_days": (1.0, 2.0, 3.0),
+    "cloud_budget_max_chains": (1, 2, 4),
+    "cloud_budget_max_node_loss": (1, 2, 4),
+    "cloud_spill_to_local_after_seconds": (100, 200, 300),
+    "s3_presign_put_ttl_sec": (100, 200, 300),
+    "s3_presign_get_ttl_sec": (100, 200, 300),
+    "s3_multipart_part_size_bytes": (6000000, 7000000, 8000000),
+    "s3_client_timeout_sec": (10, 20, 40),
+    "push_timeout_sec": (100, 200, 300),
+    "push_connect_timeout_sec": (10, 20, 40),
 }
 
 
@@ -146,9 +179,14 @@ def test_each_layer_beats_the_one_below_it_per_key(key: str, tmp_path: Path, mon
         if key in _THREAD_ENV:
             env[_THREAD_ENV[key]] = str(env_value)
         else:
-            monkeypatch.setenv(_env_names(key)[0], str(env_value))
+            monkeypatch.setenv(_env_names(key)[0], ",".join(map(str, env_value)) if isinstance(env_value, tuple) else str(env_value))
         overrides = _Overrides()
-        store = _store(tmp_path, overrides=overrides, env=env)
+        settings = None
+        if key not in ControlSettings.model_fields and key not in _THREAD_ENV:
+            for name, value in _AGENT_MIN_ENV.items():
+                monkeypatch.setenv(name, value)
+            settings = AgentSettings()
+        store = _store(tmp_path, settings=settings, overrides=overrides, env=env)
         assert (getattr(store.current(), key), store.snapshot().sources[key]) == (env_value, "env")
         assert env_value != default_value
 
