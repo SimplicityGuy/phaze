@@ -73,13 +73,14 @@ async def test_preview_shape_and_confirmation_bind_original_eligible_selection(
         assert response.json()["review_tokens"] == [token]
 
 
+@pytest.mark.parametrize("expire_timestamp", [False, True])
 async def test_bulk_undo_response_counts_actual_versions_and_replay(
-    client: AsyncClient, session: AsyncSession, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]]
+    client: AsyncClient, session: AsyncSession, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]], expire_timestamp: bool
 ) -> None:
     from datetime import timedelta
 
     from bs4 import BeautifulSoup
-    from sqlalchemy import update
+    from sqlalchemy import inspect, update
 
     from phaze.models.proposal import RenameProposal
 
@@ -91,6 +92,12 @@ async def test_bulk_undo_response_counts_actual_versions_and_replay(
     assert form is not None
     undo_tokens = [field["value"] for field in form.select('input[name="review_tokens"]')]
     assert len(undo_tokens) == 3
+    if expire_timestamp:
+        # Bulk synchronization can expire any matched fixture's server-updated timestamp.
+        session.expire(rows[1], ["updated_at"])
+        assert "updated_at" in inspect(rows[1]).expired_attributes
+    # The HTTP dependency shares this session; read the approved version with awaited I/O.
+    await session.refresh(rows[1], attribute_names=["updated_at"])
     await session.execute(
         update(RenameProposal)
         .where(RenameProposal.id == rows[1].id)
