@@ -26,7 +26,7 @@ a module makes the inventory fail until this page is reconciled.
 | `routers/` | 67 | FastAPI UI, public, and internal-agent endpoints; includes `pipeline/` and `shell/` packages |
 | `schemas/` | 30 | Pydantic wire contracts; agent payloads remain ORM-free |
 | `services/` | 157 | Business rules and infrastructure adapters, including bounded companion acquisition/import, companion detail/view projection, the remote transport effect and the operator-triggered remote lookup; includes `backends/` and `pipeline/` packages |
-| `tasks/` | 52 | SAQ controller/agent jobs, periodic junk-review observations, and shared queue policy |
+| `tasks/` | 53 | SAQ controller/agent jobs, periodic junk-review observations, and shared queue policy |
 | `telemetry/` | 12 | OpenTelemetry bootstrap, producer identity, and HTTP, DB, SAQ, and pipeline instrumentation |
 | `utils/` | 2 | Dependency-light general helpers |
 | `web/` | 4 | Static/template globals and SAQ web mounting |
