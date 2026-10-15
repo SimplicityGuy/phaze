@@ -335,6 +335,7 @@ def serve_live_app() -> Iterator[str]:
             process.wait(timeout=15)
         if process.poll() is None:
             process.kill()
+            process.wait(timeout=15)
 
 
 #
