@@ -4,10 +4,13 @@ Run after migrating/seeding a dedicated local test or benchmark database. The ap
 intentionally omitted: it migrates, starts background tasks and can create a development agent.
 Real SAQ handles are installed instead (their initial connect provisions SAQ's own tables). No
 workers run. This harness therefore permits ONLY the local harness ports/names, never production.
+It holds pytest's database-scoped exclusive session lock before any queue or request setup, and
+refuses concurrent suites or measurements. It does not honor pytest's shared-database bypass.
 
 Reports contain SQL fingerprints, never SQL text, parameters, URLs, rendered HTML or agent IDs.
 Spans overlap: sum of concurrent SQL/read durations is NOT request wall time. Pool acquisition
 includes connection establishment; SQLAlchemy pre-ping is outside that span. Warmups are not samples.
+Summaries report n, median and maximum only; no tail percentile is inferred from short runs.
 Use identical corpus, backend configuration, active tabs and source base for before/after runs.
 The idle case is not evidence about active production workload or infrastructure saturation.
 
@@ -21,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, asynccontextmanager, redirect_stdout
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import wraps
@@ -31,15 +34,16 @@ import json
 import statistics
 import sys
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from httpx import ASGITransport, AsyncClient
-from psycopg import AsyncCursor
+from psycopg import AsyncConnection, AsyncCursor
 from psycopg_pool import AsyncConnectionPool
 import redis.asyncio as redis_async
 from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 from starlette.templating import Jinja2Templates
@@ -50,6 +54,10 @@ from phaze.main import create_app
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import stages
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @dataclass
@@ -63,6 +71,30 @@ class Sample:
 
 
 _CURRENT: ContextVar[Sample | None] = ContextVar("dashboard_profile", default=None)
+# Same database-scoped session lock as tests/db_guard.py. A regression test pins compatibility;
+# the standalone script does not depend on importing the repository's test package.
+_DATABASE_SESSION_LOCK_KEY = 0x7048415A_45544553
+
+
+@asynccontextmanager
+async def exclusive_database(dsn: str) -> AsyncIterator[None]:
+    """Hold pytest's actual database-scoped lock through setup, requests and resource cleanup.
+
+    Fail closed on connection errors or contention, regardless of pytest's optional sharing
+    bypass. PostgreSQL releases this session lock when the dedicated connection closes.
+    """
+    raw_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
+    async with await AsyncConnection.connect(
+        raw_dsn, autocommit=True, connect_timeout=5, application_name="phaze-dashboard-profile-lock"
+    ) as connection:
+        cursor = await connection.execute("SELECT pg_try_advisory_lock(%s)", (_DATABASE_SESSION_LOCK_KEY,))
+        row = await cursor.fetchone()
+        if row is None or not row[0]:
+            raise RuntimeError("Database is owned by a pytest session or another measurement; wait or allocate an isolated seat")
+        try:
+            yield
+        finally:
+            await connection.execute("SELECT pg_advisory_unlock(%s)", (_DATABASE_SESSION_LOCK_KEY,))
 
 
 def record(label: str, start: float) -> None:
@@ -135,6 +167,11 @@ def validate_targets(dsn: str, redis_url: str) -> None:
 
 
 def instrument(stack: ExitStack, engine: Any) -> None:
+    def selected_engine_only(connection: Any) -> None:
+        if connection.engine is not engine.sync_engine:
+            record_error("routing.unexpected_engine")
+            raise RuntimeError("A profile read attempted an engine outside the selected database")
+
     def before(_conn: Any, _cursor: Any, statement: str, _params: Any, context: Any, _many: bool) -> None:
         context.profile_start = time.perf_counter()
         context.profile_key = fingerprint(statement)
@@ -151,9 +188,11 @@ def instrument(stack: ExitStack, engine: Any) -> None:
     event.listen(engine.sync_engine, "before_cursor_execute", before)
     event.listen(engine.sync_engine, "after_cursor_execute", after)
     event.listen(engine.sync_engine, "handle_error", failed)
+    event.listen(Engine, "engine_connect", selected_engine_only)
     stack.callback(event.remove, engine.sync_engine, "before_cursor_execute", before)
     stack.callback(event.remove, engine.sync_engine, "after_cursor_execute", after)
     stack.callback(event.remove, engine.sync_engine, "handle_error", failed)
+    stack.callback(event.remove, Engine, "engine_connect", selected_engine_only)
     original_execute = AsyncCursor.execute
 
     async def execute(cursor: Any, query: Any, *args: Any, **kwargs: Any) -> Any:
@@ -204,8 +243,7 @@ def summarize(samples: list[Sample]) -> dict[str, Any]:
         values = sorted(values)
         return {
             "n": len(values),
-            "p50_ms": statistics.median(values),
-            "p95_ms": values[min(len(values) - 1, int(len(values) * 0.95))],
+            "median_ms": statistics.median(values),
             "max_ms": max(values),
         }
 
@@ -224,6 +262,12 @@ def summarize(samples: list[Sample]) -> dict[str, Any]:
 
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     validate_targets(args.dsn, args.redis_url)
+    async with exclusive_database(args.dsn):
+        return await _run_owned(args)
+
+
+async def _run_owned(args: argparse.Namespace) -> dict[str, Any]:
+    """Run only while holding the selected database's exclusive session lock."""
     cfg = get_settings()
     engine = create_async_engine(
         args.dsn.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -264,6 +308,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         sample.wall_ms = (time.perf_counter() - start) * 1000
                         sample.status, sample.payload_bytes = response.status_code, len(response.content)
                         response.raise_for_status()
+                        # A service may catch/degrade a connection failure. Such a fallback cannot
+                        # turn an accidental read of the process-default database into a valid profile.
+                        if "routing.unexpected_engine" in sample.errors:
+                            raise RuntimeError("Refusing a profile with reads outside the selected engine")
                         if collect:
                             samples.append(sample)
                     finally:

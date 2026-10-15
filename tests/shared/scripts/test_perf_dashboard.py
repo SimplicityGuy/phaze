@@ -143,3 +143,88 @@ async def test_real_database_drivers_count_success_and_failure_without_sql_leaka
         _CURRENT.reset(token)
         await pool.close()
         await engine.dispose()
+
+
+def test_summary_reports_counts_median_and_max_without_small_sample_percentiles() -> None:
+    from scripts.perf_dashboard import summarize
+
+    one = Sample("/", wall_ms=3, events={"template.render": [2]})
+    assert summarize([one])["/"]["wall"] == {"n": 1, "median_ms": 3, "max_ms": 3}
+    two = Sample("/", wall_ms=7, events={"template.render": [4]})
+    report = summarize([one, two])["/"]
+    assert report["wall"] == {"n": 2, "median_ms": 5, "max_ms": 7}
+    assert report["events"]["template.render"] == {"n": 2, "median_ms": 3, "max_ms": 4}
+    assert "p95" not in json.dumps(report)
+
+
+async def test_profile_refuses_real_pytest_session_before_queue_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pytest already owns this seat on another connection; no endpoint or queue runs."""
+    from argparse import Namespace
+    import os
+    from unittest.mock import Mock
+
+    from scripts import perf_dashboard
+    from tests.db_guard import TEST_DB_SESSION_LOCK_KEY
+
+    assert perf_dashboard._DATABASE_SESSION_LOCK_KEY == TEST_DB_SESSION_LOCK_KEY
+    queue_factory = Mock(side_effect=AssertionError("queue setup must not happen without ownership"))
+    monkeypatch.setattr(perf_dashboard, "build_pipeline_queue", queue_factory)
+    # This harness never adopts pytest's opt-out: the connection actually holding its lock wins.
+    monkeypatch.setenv("PHAZE_TEST_DB_ALLOW_SHARED", "1")
+    args = Namespace(dsn=os.environ["TEST_DATABASE_URL"], redis_url=os.environ["PHAZE_REDIS_URL"])
+    with pytest.raises(RuntimeError, match="owned by a pytest session"):
+        await perf_dashboard.run(args)
+    queue_factory.assert_not_called()
+
+
+async def test_profile_lock_blocks_pytest_and_measurement_then_releases_on_error() -> None:
+    """Use only this seat's idle migration DB so the outer pytest lock stays untouched."""
+    import os
+
+    from scripts.perf_dashboard import exclusive_database
+    from tests.db_guard import SharedTestDatabaseError, acquire_exclusive_session_lock, release_exclusive_session_lock
+
+    dsn = os.environ["MIGRATIONS_TEST_DATABASE_URL"]
+    with pytest.raises(ValueError, match="synthetic"):
+        async with exclusive_database(dsn):
+            with pytest.raises(SharedTestDatabaseError, match="phaze-dashboard-profile-lock"):
+                acquire_exclusive_session_lock(dsn, explicit=True)
+            with pytest.raises(RuntimeError, match="another measurement"):
+                async with exclusive_database(dsn):
+                    pytest.fail("second measurement acquired an owned database")
+            raise ValueError("synthetic")
+    # Closing the profiling guard must make the exact same database/key available to pytest.
+    connection = acquire_exclusive_session_lock(dsn, explicit=True)
+    assert connection is not None
+    release_exclusive_session_lock(connection)
+
+
+async def test_instrumentation_rejects_a_second_sqlalchemy_engine() -> None:
+    """Imported factory mistakes must not become a silent default-database profile."""
+    from contextlib import ExitStack
+    import os
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from scripts.perf_dashboard import instrument
+
+    selected = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    accidental = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    sample = Sample("/routing-check")
+    token = _CURRENT.set(sample)
+    try:
+        with ExitStack() as stack:
+            instrument(stack, selected)
+            async with selected.connect():
+                pass
+            with pytest.raises(RuntimeError, match="outside the selected database"):
+                async with accidental.connect():
+                    pytest.fail("an unselected engine was allowed")
+        assert sample.errors["routing.unexpected_engine"] == 1
+        # Instrumentation is scoped: no global restriction leaks out of the profiling context.
+        async with accidental.connect():
+            pass
+    finally:
+        _CURRENT.reset(token)
+        await accidental.dispose()
+        await selected.dispose()
