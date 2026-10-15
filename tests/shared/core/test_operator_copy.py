@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[3]
 # evidence and instructions for developers, not current product guidance.
 CURRENT_DOCS = (
     "README.md",
+    "src/phaze/agent_watcher/README.md",
     "docs/README.md",
     "docs/multi-compute.md",
     "docs/k8s-burst.md",
