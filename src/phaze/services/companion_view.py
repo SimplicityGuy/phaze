@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import cast, func, select
-from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -23,6 +23,7 @@ from phaze.schemas.companion_details import CompanionDetails, DetailPage, Stored
 from phaze.schemas.local_source_import import ImportLocalSource, SourceDecision
 from phaze.services.companion_acquisition import get_latest_source_attempts
 from phaze.services.companion_details import (
+    _array,
     _embedded_freshness,
     _file,
     _observation_query,
@@ -148,13 +149,15 @@ async def visible_parsed_content(session: AsyncSession, details: CompanionDetail
     if media is None or not details.sources:
         return ()
     obs = ProviderSourceObservation
+    # Normalize before slicing too: lax JSONPath can wrap a scalar as a one-item array.
+    sections = _array(obs.payload["sections"])
     query = (
         _observation_query(media)
         .add_columns(
             func.jsonb_path_query_array(obs.payload, cast("$.tracks[0 to 2]", JSONPATH)).label("visible_tracks"),
             func.jsonb_path_query_array(obs.payload, cast("$.release_facts[0 to 5]", JSONPATH)).label("visible_facts"),
-            func.jsonb_path_query_array(obs.payload, cast("$.sections[0 to 63]", JSONPATH)).label("visible_sections"),
-            func.jsonb_array_length(func.coalesce(obs.payload["sections"], cast("[]", JSONB))).label("section_count"),
+            func.jsonb_path_query_array(sections, cast("$[0 to 63]", JSONPATH)).label("visible_sections"),
+            func.jsonb_array_length(sections).label("section_count"),
         )
         .where(
             obs.object_id.in_([source.source_object_id for source in details.sources]),
