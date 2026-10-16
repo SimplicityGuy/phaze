@@ -148,6 +148,18 @@ def _find_run_step(job: dict[str, Any], needle: str) -> dict[str, Any]:
     return hits[0]
 
 
+def test_browser_ci_requires_the_template_class_guard_after_pinned_install() -> None:
+    job = _browser_job()
+    steps = job["steps"]
+    install = _find_run_step(job, "just install")
+    guard = _find_run_step(job, "pytest tests/shared/test_template_classes_resolve.py")
+    assert guard["env"]["PHAZE_REQUIRE_TAILWIND"] == "1"
+    assert "if" not in guard and not guard.get("continue-on-error", False)
+    assert steps.index(install) < steps.index(guard) < steps.index(_find_run_step(job, "playwright --version"))
+    justfile = _JUSTFILE.read_text(encoding="utf-8")
+    assert "install: setup tailwind" in justfile
+
+
 def test_root_ci_does_not_serialize_tests_behind_quality() -> None:
     """Tests may start after change detection while quality runs independently.
 
