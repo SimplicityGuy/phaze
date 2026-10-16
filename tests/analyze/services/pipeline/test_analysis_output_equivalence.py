@@ -28,20 +28,30 @@ short-trailing-window drop rule and its off-by-one edges), the chunked streaming
 per-window failure isolation that lets a file complete when the coarse sweep cannot run, and
 the exact key set and ordering of the returned dict.
 
-NOT COVERED, stated plainly rather than papered over: the coarse tier's TENSORFLOW MODEL SWEEP.
-The real model set (12 active graphs by default, 34 in rollback mode) is not in this
-repository and is not present in CI, so
-``_get_classifier`` raises and every coarse window is skipped -- which is why
-``coarse_windows_analyzed`` is 0 and ``mood``/``style``/``danceability``/``features`` are empty
-in the recordings. Supplying a fake models_dir or mocking ``TensorflowPredict*`` would produce a
-harness that LOOKS like it covers the coarse tier while proving nothing about it -- exactly the
-discharge-by-proxy this bead exists to prevent -- so it is not done. The pure-Python reductions
+THE COARSE TIER'S TENSORFLOW MODEL SWEEP is covered ONLY on a host that holds the real model
+set, and is NOT covered in CI. The weights (3.26 GB for the full 34-graph set, 54.0 MB for the
+12-graph default) are not in this repository and no tests workflow provisions them. So there
+are two recordings:
+
+* ``analysis_output_equivalence_golden.json`` -- an EMPTY models_dir, run everywhere including
+  CI. ``_get_classifier`` raises, every coarse window is skipped, and ``coarse_windows_analyzed``
+  is 0 with ``mood``/``style``/``danceability``/``features`` empty. This pins the failure-isolation
+  path and says NOTHING about model inference.
+* ``analysis_output_equivalence_real_models_golden.json`` (phaze-28883) -- the REAL model set,
+  12-graph default over all four fixtures plus the 34-graph rollback set over the shortest one,
+  every coarse window analyzed. Its tests SKIP unless ``PHAZE_TEST_MODELS_DIR`` names the
+  set (``tests/conftest.py`` supplies it from ``~/essentia-models`` when that holds the complete
+  pinned set). A skip there is not a pass: in CI the model sweep is still unpinned, and a green
+  CI run must not be read as covering it. The operator-run command and the recording's receipts
+  are in ``docs/spikes/phaze-28883-real-model-coarse-pin.md``.
+
+Supplying a fake models_dir or mocking ``TensorflowPredict*`` would produce a harness that LOOKS
+like it covers the coarse tier while proving nothing about it -- exactly the discharge-by-proxy
+this bead exists to prevent -- so it is not done, in either recording. The pure-Python reductions
 that consume the sweep's output (``derive_mood`` / ``derive_style`` / ``derive_danceability`` /
 ``_positive_class_prediction`` / ``aggregate_dominant`` / ``aggregate_danceability`` /
-``_representative_features``) ARE pinned below over recorded inputs; they carry no essentia
-claim and are labelled as such. What remains genuinely unpinned is the model-inference step
-itself, and closing that needs the model set on a real node -- a separate bead, not a weaker
-test here.
+``_representative_features``) are ALSO pinned below over hand-written inputs, which run
+everywhere; those carry no essentia claim and are labelled as such.
 
 THE FIXTURES are generated in-process from pure Python (``wave`` + ``struct``, no numpy RNG, no
 ffmpeg in the write path), so the input bytes are identical on every machine and every run --
@@ -60,6 +70,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 import struct
 from typing import Any
@@ -67,6 +78,8 @@ import wave
 
 import pytest
 
+from phaze.scripts.download_models import MANIFEST
+from phaze.services import analysis
 from phaze.services.analysis import (
     CoarseWindow,
     FineWindow,
@@ -81,9 +94,12 @@ from phaze.services.analysis import (
     derive_mood,
     derive_style,
 )
+from phaze.services.analysis_models import ModelSetConfig, _select_model_sets
+from tests._real_models import ENV_VAR as _REAL_MODELS_ENV_VAR
 
 
 _GOLDEN_PATH = Path(__file__).with_name("analysis_output_equivalence_golden.json")
+_REAL_MODELS_GOLDEN_PATH = Path(__file__).with_name("analysis_output_equivalence_real_models_golden.json")
 
 # A cheap source rate: both tiers resample away from it, so the real Resample stage is in the
 # signal path rather than being skipped as a no-op.
@@ -245,11 +261,174 @@ def test_analysis_is_reproducible_within_a_run(fixture_audio: dict[str, Path], e
     assert repeat == analysis_results[name]
 
 
+# The coarse tier with the REAL model set (phaze-28883).
+#
+# Everything above runs with an empty models_dir and so never reaches TensorFlow. Everything in
+# this section runs the real ``TensorflowPredict*`` graphs from the real weight files: no mock,
+# no fake models_dir. It SKIPS where the weights are absent -- CI today -- and that skip is the
+# disclosed gap, not coverage.
+#
+# Two sweeps, because production has two. The 12-graph DEFAULT (one musicnn_msd head per
+# characteristic + the discogs genre graph) runs over all four fixtures, and over one more that
+# exists only here: every fixture above is at most 180 s and so has exactly ONE coarse window,
+# which never exercises the model-major sweep across several buffers nor the D-07 coarse chunk
+# boundary. ``multi_chunk_124s_128bpm_g196`` runs at a 4 s coarse window, giving 31 coarse
+# windows -- one more than ``_COARSE_CHUNK_WINDOWS`` -- so each graph is built, swept over a full
+# 30-window chunk, released, and built again for the second. The 4 s window is a smaller value
+# of a real parameter, not a different code path, and still holds a whole musicnn (~3 s) and
+# effnet (~2 s) patch; reaching a second chunk at the production 180 s needs a 93-minute file,
+# and inference cost follows audio length, not window count, so the file is kept short. The 34-graph ROLLBACK
+# (``PHAZE_ANALYSIS_MODEL_VARIANTS=all``) runs over the shortest fixture only: it costs ~6x the
+# default per file, almost all of it the eleven 289 MB vggish graphs, and one window already
+# drives every one of its 34 graphs. Rollback mode is selected with ``_select_model_sets("all")``
+# -- the exact function production calls at import -- swapped into the module global the
+# pipeline reads, because ``MODEL_SETS`` is resolved once at import and the env var alone would
+# not reach an already-imported module.
+
+_REAL_MODELS_DIR = os.environ.get(_REAL_MODELS_ENV_VAR) or None
+_ROLLBACK_FIXTURE = "single_window_25s_120bpm_a220"
+_ROLLBACK_KEY = f"rollback_all:{_ROLLBACK_FIXTURE}"
+_MULTI_CHUNK_KEY = "multi_chunk_124s_128bpm_g196"
+_MULTI_CHUNK_SHAPE = (124, 128, 195.99771799087463)  # seconds, bpm, G3
+_MULTI_CHUNK_COARSE_WINDOW_SEC = 4
+_REAL_MODEL_ENTRIES = [*sorted(_FIXTURES), _MULTI_CHUNK_KEY, _ROLLBACK_KEY]
+
+# Absolute tolerance on every float leaf, and ONLY on float leaves. On the recording host the
+# whole output was byte-identical across separate processes, so this is not absorbing noise
+# there. It exists so the pin stays portable to the deployed linux/amd64 and linux/arm64 nodes,
+# where TensorFlow's last bits may differ -- the same 1e-4 ``scripts/parity/compare_analysis.py``
+# uses for the cross-architecture parity check. A refactor that changes WHICH audio reaches a
+# graph, which graph runs, or which label a score is attached to moves these values by orders of
+# magnitude more. Counts, keys, labels, window bounds and the derived mood/style strings are
+# compared exactly.
+_REAL_MODELS_ATOL = 1e-4
+
+requires_real_models = pytest.mark.skipif(
+    _REAL_MODELS_DIR is None,
+    reason=(
+        f"REAL-MODEL COARSE PIN NOT RUN (a skip, not a pass): {_REAL_MODELS_ENV_VAR} is unset or empty, and "
+        "tests/conftest.py supplies it from ~/essentia-models only when that holds the complete pinned model set -- "
+        "the coarse tier's TensorFlow sweep is unverified on this run; see docs/spikes/phaze-28883-real-model-coarse-pin.md"
+    ),
+)
+
+
+def _real_models_golden() -> dict[str, Any]:
+    with _REAL_MODELS_GOLDEN_PATH.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _assert_equivalent(actual: Any, expected: Any, path: str = "$") -> None:
+    """Structural equality, with ``_REAL_MODELS_ATOL`` on float leaves and exact equality elsewhere."""
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict), path
+        assert set(actual) == set(expected), f"{path}: keys {sorted(set(actual) ^ set(expected))} differ"
+        for key, value in expected.items():
+            _assert_equivalent(actual[key], value, f"{path}.{key}")
+    elif isinstance(expected, list):
+        assert isinstance(actual, list), path
+        assert len(actual) == len(expected), f"{path}: length {len(actual)} != {len(expected)}"
+        for index, (got, want) in enumerate(zip(actual, expected, strict=True)):
+            _assert_equivalent(got, want, f"{path}[{index}]")
+    elif isinstance(expected, float) and not isinstance(expected, bool):
+        assert isinstance(actual, float), f"{path}: {actual!r} is not a float"
+        assert math.isclose(actual, expected, abs_tol=_REAL_MODELS_ATOL), f"{path}: {actual!r} != {expected!r} (abs_tol={_REAL_MODELS_ATOL})"
+    else:
+        assert actual == expected, f"{path}: {actual!r} != {expected!r}"
+
+
+def _analyze_with_real_models(path: Path, coarse_window_sec: int = _COARSE_WINDOW_SEC) -> dict[str, Any]:
+    assert _REAL_MODELS_DIR is not None
+    return analyze_file(
+        str(path),
+        _REAL_MODELS_DIR,
+        fine_window_sec=_FINE_WINDOW_SEC,
+        coarse_window_sec=coarse_window_sec,
+        fine_min_sec=_FINE_MIN_SEC,
+    )
+
+
+@pytest.fixture(scope="module")
+def real_model_results(fixture_audio: dict[str, Path], tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """The real pipeline with the real weights: the default sweep per fixture and the multi-chunk case, the rollback sweep on one.
+
+    An EXPLICIT ``PHAZE_TEST_MODELS_DIR`` pointing at an incomplete set fails here, loudly,
+    rather than recording a coarse tier that silently lost the models it could not load.
+    """
+    assert _REAL_MODELS_DIR is not None
+    models = Path(_REAL_MODELS_DIR)
+    missing = sorted(name for name, size in MANIFEST.items() if not (models / name).is_file() or (models / name).stat().st_size != size)
+    assert not missing, f"{_REAL_MODELS_ENV_VAR}={_REAL_MODELS_DIR} is missing or has wrong-size model files: {missing}"
+    results = {name: _analyze_with_real_models(path) for name, path in fixture_audio.items()}
+    seconds, bpm, tone_hz = _MULTI_CHUNK_SHAPE
+    multi_chunk = tmp_path_factory.mktemp("analysis_output_equivalence_multi_chunk") / f"{_MULTI_CHUNK_KEY}.wav"
+    _write_wav(multi_chunk, seconds=seconds, bpm=bpm, tone_hz=tone_hz)
+    results[_MULTI_CHUNK_KEY] = _analyze_with_real_models(multi_chunk, coarse_window_sec=_MULTI_CHUNK_COARSE_WINDOW_SEC)
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(analysis, "MODEL_SETS", _select_model_sets("all"))
+        results[_ROLLBACK_KEY] = _analyze_with_real_models(fixture_audio[_ROLLBACK_FIXTURE])
+    return results
+
+
+def test_real_models_recording_covers_the_coarse_tier() -> None:
+    """The recording itself analyzed every coarse window, for every entry. Runs WITHOUT the models.
+
+    This is what makes the golden below mean anything: a recording taken with the weights
+    missing would also carry ``coarse_windows_analyzed == 0`` and empty features, and comparing
+    against it would re-pin the empty-models path under a real-model name. Checked on the FILE,
+    so it guards the recording even where the comparison itself skips.
+    """
+    golden = _real_models_golden()
+    assert set(golden) == set(_REAL_MODEL_ENTRIES)
+    assert golden[_MULTI_CHUNK_KEY]["coarse_windows_total"] > analysis._COARSE_CHUNK_WINDOWS, "the multi-chunk case must cross a coarse chunk"
+    for name, result in golden.items():
+        assert result["coarse_windows_total"] > 0, name
+        assert result["coarse_windows_analyzed"] == result["coarse_windows_total"], name
+        coarse = [window for window in result["windows"] if window["tier"] == "coarse"]
+        assert len(coarse) == result["coarse_windows_analyzed"], name
+        for window in coarse:
+            assert window["features"]["genre"]["predictions"], name
+        assert result["mood"] is not None, name
+        assert result["style"] is not None, name
+        assert result["danceability"] is not None, name
+
+
+@requires_real_models
+@pytest.mark.parametrize("entry", _REAL_MODEL_ENTRIES, ids=_REAL_MODEL_ENTRIES)
+def test_real_model_analysis_matches_the_recorded_baseline(real_model_results: dict[str, Any], entry: str) -> None:
+    """The WHOLE returned dict, coarse tier included, against the real-model recording."""
+    _assert_equivalent(real_model_results[entry], _real_models_golden()[entry], entry)
+
+
+@requires_real_models
+@pytest.mark.parametrize(("mode", "graphs"), [("msd", 12), ("all", 34)])
+def test_real_model_features_follow_the_registry_order(real_model_results: dict[str, Any], mode: str, graphs: int) -> None:
+    """Feature-dict INSERTION order -- registry order per set and per variant, ``genre`` last -- with every graph present.
+
+    Asserted here rather than through the golden because the repo's JSON formatter sorts the
+    golden's keys, and this order is output: the features dict is JSON-serialized downstream.
+    A non-empty prediction list per selected variant also proves every one of the 12 (default)
+    / 34 (rollback) graphs actually ran on the window.
+    """
+    model_sets: tuple[ModelSetConfig, ...] = _select_model_sets(mode)
+    assert sum(len(group.models) for group in model_sets) + 1 == graphs
+    expected = [(group.name, [model.variant for model in group.models]) for group in model_sets]
+    entries = [_ROLLBACK_KEY] if mode == "all" else [*sorted(_FIXTURES), _MULTI_CHUNK_KEY]
+    for entry in entries:
+        for window in (w for w in real_model_results[entry]["windows"] if w["tier"] == "coarse"):
+            features = window["features"]
+            assert list(features) == [name for name, _ in expected] + ["genre"], entry
+            assert [(name, list(features[name])) for name, _ in expected] == expected, entry
+            assert all(features[name][variant] for name, variants in expected for variant in variants), entry
+            assert features["genre"]["predictions"], entry
+
+
 # The pure reductions the coarse sweep feeds.
 #
 # NO ESSENTIA CLAIM IS ATTACHED TO ANYTHING BELOW. These are pure Python functions pinned over
-# hand-written inputs -- the model INFERENCE that produces real inputs for them is the gap named
-# in this module's docstring and is not closed here. They are pinned anyway because they are
+# hand-written inputs -- the model INFERENCE that produces real inputs for them is pinned only by
+# the real-model section above, which skips wherever the weights are absent (CI included), so
+# these tables are the only coarse-tier pin a CI run carries. They are pinned anyway because they are
 # inside phaze-bk9el.15's blast radius, they are pure (so a table IS a complete characterization
 # of them), and the alternative -- leaving the whole coarse half unpinned because its top layer
 # cannot be reached in CI -- would be strictly worse.
