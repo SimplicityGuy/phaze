@@ -10,3 +10,12 @@
 {% macro fig_svg(key, value) -%}
 <tspan x-text="formatCount($store.pipeline.summaryFlow?.{{ key }})">{{ value | thousands }}</tspan>
 {%- endmacro %}
+
+{# Counter-only Tracklists has no completion state; availability follows the same live count. #}
+{% set _tracklist_status = "$store.pipeline.summaryFlow?.tracklists == null ? 'unavailable' : 'optional'" %}
+{% macro tracklist_status(label) -%}
+<span x-text="{{ _tracklist_status }}">{{ label }}</span>
+{%- endmacro %}
+{% macro tracklist_status_svg(label) -%}
+<tspan x-text="{{ _tracklist_status }}">{{ label }}</tspan>
+{%- endmacro %}

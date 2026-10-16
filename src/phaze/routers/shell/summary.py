@@ -246,6 +246,7 @@ class _FlowValues:
     approved_files: int | None
     pending_rows: int | None
     approved_rows: int | None
+    tracklists: int | None
 
 
 def _flow_values(
@@ -270,6 +271,7 @@ def _flow_values(
         approved_files=_count_or_none(execute.get("total"), measured.measured("execute_total")),
         pending_rows=_count_or_none(proposal_pending, measured.measured("proposal_stats")),
         approved_rows=_count_or_none(proposal_approved, measured.measured("proposal_stats")),
+        tracklists=_count_or_none(stage_progress.get("tracklist", {}).get("done"), measured.measured("tracklist")),
     )
 
 
@@ -292,6 +294,7 @@ def flow_counts(values: _FlowValues) -> dict[str, int | None]:
         "pendingRows": values.pending_rows,
         "approvedRows": values.approved_rows,
         "executed": values.executed,
+        "tracklists": values.tracklists,
     }
 
 
@@ -369,6 +372,22 @@ def _flow_review_apply_nodes(values: _FlowValues) -> list[dict[str, Any]]:
     ]
 
 
+def _flow_tracklist_node(values: _FlowValues) -> dict[str, Any]:
+    """Optional availability, never completion: no population is required to have tracklists."""
+    return {
+        "name": "Tracklists",
+        "href": "/s/tracklist",
+        "done": values.tracklists,
+        "total": None,  # There is no authoritative population that should have a tracklist.
+        "store_keys": {"done": "tracklists", "total": None},
+        "detail": "files with tracklists",
+        "detail_suffix": "files with tracklists",
+        "status": dict(_UNAVAILABLE_STATUS)
+        if values.tracklists is None
+        else {"label": "optional", "tone": "neutral", "icon": "—", "pulse": False, "failed": 0, "missing": 0},
+    }
+
+
 def _build_summary_flow(
     stage_progress: dict[str, dict[str, int | None]],
     total_files: int | None,
@@ -377,14 +396,14 @@ def _build_summary_flow(
     *,
     flow_read_failures: Mapping[str, tuple[str, ...]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build the six-node DAG flow strip (Discover through Execute) for the Summary overview.
+    """Build the Summary flow, including optional, counter-only tracklist availability.
 
     ``total_files`` is accepted for signature stability; the Discover node reads the discovery
     count itself so it carries that read's availability rather than a pre-coerced integer.
     """
     del total_files
     values = _flow_values(stage_progress, proposal_pending, proposal_approved, flow_read_failures)
-    return _flow_dag_nodes(values) + _flow_review_apply_nodes(values)
+    return _flow_dag_nodes(values) + _flow_review_apply_nodes(values) + [_flow_tracklist_node(values)]
 
 
 # Proxy edge widths, in SVG user units. A measured zero gets a visible hairline of its own -- an
@@ -425,6 +444,7 @@ def _build_flow_edges(values: _FlowValues) -> list[dict[str, Any]]:
         ("join-propose", "Metadata + Analyze", "Propose", values.convergence, "files with both, ready to propose", "convergence"),
         ("propose-review", "Propose", "Review", values.proposed, "files with a proposal", "proposedDone"),
         ("review-apply", "Review", PAGE_NAMES["apply"], values.approved_files, "files approved to execute", "approvedFiles"),
+        ("discover-tracklists", "Discover", "Tracklists", values.discovered, "files discovered; tracklists optional", "discovered"),
     )
     widest = max((spec[3] for spec in specs if spec[3]), default=0)
     edges = []
@@ -653,7 +673,7 @@ def _derive_summary_overview(stage_progress: dict[str, dict[str, int | None]], i
     values = _flow_values(stage_progress, inputs.proposal_pending, inputs.proposal_approved, inputs.flow_read_failures)
     total_files = values.discovered
 
-    flow = _flow_dag_nodes(values) + _flow_review_apply_nodes(values)
+    flow = _flow_dag_nodes(values) + _flow_review_apply_nodes(values) + [_flow_tracklist_node(values)]
     failures = _summary_failure_totals(metadata, analyze, inputs.orphan_counts)
     attention = _build_attention_items(metadata, analyze, failures, inputs)
     recommended = _derive_recommended_action(

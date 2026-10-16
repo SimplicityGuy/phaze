@@ -45,12 +45,14 @@ async def test_the_flow_card_counts_advance_with_the_poll_and_agree_with_the_sid
     assert "1 / 2 files" in await _card_text(page, "Analyze")
     assert "2 files" in await _card_text(page, "Discover")
     assert "0 awaiting decision" in await _card_text(page, "Review")
+    assert "0 files with tracklists" in await _card_text(page, "Tracklists")
 
     # Now the corpus moves with no interaction of any kind: one more file discovered, a second file analyzed,
     # and proposals appear in the two proposal-row states the Review and Execute cards count (each proposal seeds its
     # own file, so the corpus ends at five).
     third = await seed.file(filename="<set-03>.mp3")
     await seed.analysis(third)
+    await seed.tracklist(file=first)
     await seed.proposal(status=ProposalStatus.PENDING, filename="<set-04>.mp3")
     await seed.proposal(status=ProposalStatus.APPROVED, filename="<set-05>.mp3")
 
@@ -68,3 +70,14 @@ async def test_the_flow_card_counts_advance_with_the_poll_and_agree_with_the_sid
     await _wait_text(page, '[data-flow-node="Analyze"]', "2 / 5")
     await _wait_text(page, '[data-flow-text-node="Analyze"]', "2 of 5 files")
     await _wait_text(page, '[data-flow-text-edge="analyze-join"]', "2 files analyzed")
+    await _wait_text(page, card.format("Tracklists"), "1 files with tracklists")
+    await _wait_text(page, '[data-flow-node="Tracklists"]', "1 files")
+    await _wait_text(page, '[data-flow-text-node="Tracklists"]', "1 files with tracklists")
+    # The same null that a degraded read publishes must update availability everywhere, then recover.
+    for count, label in [(None, "unavailable"), (1, "optional")]:
+        await page.evaluate("count => { Alpine.store('pipeline').summaryFlow.tracklists = count; }", count)
+        for selector in (card.format("Tracklists"), '[data-flow-node="Tracklists"]', '[data-flow-text-node="Tracklists"]'):
+            await _wait_text(page, selector, label)
+    await page.locator(card.format("Tracklists")).click()
+    await page.wait_for_url("**/s/tracklist")
+    await page.wait_for_selector("[data-summary-overview]", state="detached")

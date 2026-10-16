@@ -17,6 +17,7 @@
     3: {"x": 360, "y": 72, "w": 130},
     4: {"x": 530, "y": 72, "w": 130},
     5: {"x": 700, "y": 72, "w": 130},
+    6: {"x": 160, "y": 206, "w": 140},
 } %}
 {% set _paths = {
     "discover-metadata": "M120 100 C140 100 140 42 160 42",
@@ -26,12 +27,14 @@
     "join-propose": "M330 100 L360 100",
     "propose-review": "M490 100 L530 100",
     "review-apply": "M660 100 L700 100",
+    "discover-tracklists": "M65 128 C65 234 120 234 160 234",
 } %}
 {% set _bottleneck = summary.bottleneck %}
 {% macro _value(node) -%}
 {%- if node.href == '/s/rename' -%}{{ node.detail }}
 {%- elif node.href == '/s/apply' -%}{{ node.done | thousands }} files executed, {{ node.detail }}
 {%- elif node.href == '/s/discover' -%}{{ node.done | thousands }} files
+{%- elif node.href == '/s/tracklist' -%}{{ node.done | thousands }} files with tracklists, optional enrichment
 {%- else -%}{{ node.done | thousands }} of {{ node.total | thousands }} files
 {%- endif -%}
 {%- endmacro %}
@@ -40,11 +43,15 @@
 {%- if node.href == '/s/rename' -%}{{ flow.fig(node.store_keys.total, node.total) }} {{ node.detail_suffix }}
 {%- elif node.href == '/s/apply' -%}{{ flow.fig(node.store_keys.done, node.done) }} files executed, {{ flow.fig(node.store_keys.total, node.total) }} {{ node.detail_suffix }}
 {%- elif node.href == '/s/discover' -%}{{ flow.fig(node.store_keys.done, node.done) }} files
+{%- elif node.href == '/s/tracklist' -%}{{ flow.fig(node.store_keys.done, node.done) }} files with tracklists, optional enrichment
 {%- else -%}{{ flow.fig(node.store_keys.done, node.done) }} of {{ flow.fig(node.store_keys.total, node.total) }} files
 {%- endif -%}
 {%- endmacro %}
 {% macro _status(node) -%}
 {{ node.status.label }}{% if node.status.failed %}, {{ node.status.failed | thousands }} failed{% endif %}{% if node.status.missing %}, {{ node.status.missing | thousands }} missing{% endif %}
+{%- endmacro %}
+{% macro _status_live(node) -%}
+{% if node.href == '/s/tracklist' %}{{ flow.tracklist_status(node.status.label) }}{% else %}{{ _status(node) }}{% endif %}
 {%- endmacro %}
 {% macro _bottleneck_text(bottleneck) -%}
 {%- if bottleneck.source == 'unavailable' -%}Bottleneck unknown: {{ bottleneck.title }}
@@ -56,7 +63,7 @@
 <p data-flow-bottleneck="{{ _bottleneck.source }}" class="mt-3 text-xs text-gray-700 dark:text-gray-300">{{ _bottleneck_text(_bottleneck) }}</p>
 
 <figure data-flow-board class="mt-3 hidden min-w-0 md:block">
-    <svg role="img" aria-labelledby="summary-flow-board-title" aria-describedby="summary-flow-board-desc" viewBox="0 0 840 200" preserveAspectRatio="xMidYMid meet" class="block h-auto w-full max-w-full" focusable="false">
+    <svg role="img" aria-labelledby="summary-flow-board-title" aria-describedby="summary-flow-board-desc" viewBox="0 0 840 272" preserveAspectRatio="xMidYMid meet" class="block h-auto w-full max-w-full" focusable="false">
         <title id="summary-flow-board-title">Pipeline flow board</title>
         <desc id="summary-flow-board-desc">{% for node in _nodes %}{{ node.name }}: {{ _value(node) }}, {{ _status(node) }}. {% endfor %}{% for edge in summary.flow_edges %}{{ edge.source }} to {{ edge.target }}: {{ edge.value | thousands }} {{ edge.unit }}. {% endfor %}{{ _bottleneck_text(_bottleneck) }}.</desc>
         {% for edge in summary.flow_edges %}
@@ -73,22 +80,22 @@
             <rect x="{{ box.x }}" y="{{ box.y }}" width="{{ box.w }}" height="56" rx="6"
                 {% if outlined %}stroke-width="3" class="fill-white stroke-amber-500 dark:fill-phaze-panel dark:stroke-amber-400"{% else %}stroke-width="1" class="fill-white stroke-gray-300 dark:fill-phaze-panel dark:stroke-phaze-border"{% endif %}></rect>
             <text x="{{ box.x + 8 }}" y="{{ box.y + 14 }}" font-size="9" letter-spacing="1.5" class="fill-gray-900 uppercase dark:fill-gray-100">{{ node.name }}</text>
-            <text x="{{ box.x + 8 }}" y="{{ box.y + 29 }}" font-size="10" font-weight="600" class="fill-gray-900 font-mono dark:fill-gray-100">{% if node.href == '/s/discover' %}{{ flow.fig_svg(node.store_keys.done, node.done) }}{% elif node.href == '/s/rename' %}{{ flow.fig_svg(node.store_keys.total, node.total) }} waiting{% elif node.href == '/s/apply' %}{{ flow.fig_svg(node.store_keys.done, node.done) }} executed{% else %}{{ flow.fig_svg(node.store_keys.done, node.done) }} / {{ flow.fig_svg(node.store_keys.total, node.total) }}{% endif %}</text>
-            <text x="{{ box.x + 8 }}" y="{{ box.y + 41 }}" font-size="9" class="fill-gray-600 dark:fill-gray-300">{{ node.status.label }}</text>
+            <text x="{{ box.x + 8 }}" y="{{ box.y + 29 }}" font-size="10" font-weight="600" class="fill-gray-900 font-mono dark:fill-gray-100">{% if node.href == '/s/discover' %}{{ flow.fig_svg(node.store_keys.done, node.done) }}{% elif node.href == '/s/tracklist' %}{{ flow.fig_svg(node.store_keys.done, node.done) }} files{% elif node.href == '/s/rename' %}{{ flow.fig_svg(node.store_keys.total, node.total) }} waiting{% elif node.href == '/s/apply' %}{{ flow.fig_svg(node.store_keys.done, node.done) }} executed{% else %}{{ flow.fig_svg(node.store_keys.done, node.done) }} / {{ flow.fig_svg(node.store_keys.total, node.total) }}{% endif %}</text>
+            <text x="{{ box.x + 8 }}" y="{{ box.y + 41 }}" font-size="9" class="fill-gray-600 dark:fill-gray-300">{% if node.href == '/s/tracklist' %}{{ flow.tracklist_status_svg(node.status.label) }}{% else %}{{ node.status.label }}{% endif %}</text>
             {% if node.status.failed or node.status.missing %}
             <text x="{{ box.x + 8 }}" y="{{ box.y + 52 }}" font-size="9" class="fill-red-700 dark:fill-red-300">{% if node.status.failed %}{{ node.status.failed | thousands }} failed{% endif %}{% if node.status.failed and node.status.missing %} · {% endif %}{% if node.status.missing %}{{ node.status.missing | thousands }} missing{% endif %}</text>
             {% endif %}
         </g>
         {% endfor %}
     </svg>
-    <figcaption class="mt-2 text-xs text-muted">Edge widths show the files holding each stage's output; Metadata and Analyze count music and video files only. Dashed edges were not measured.</figcaption>
+    <figcaption class="mt-2 text-xs text-muted">Edge widths show the files holding each stage's output; Metadata and Analyze count music and video files only. Tracklists are optional enrichment and do not gate proposals. Dashed edges were not measured.</figcaption>
 </figure>
 
 <div data-flow-text class="sr-only">
     <h3>Pipeline flow values</h3>
     <ul>
         {% for node in _nodes %}
-        <li data-flow-text-node="{{ node.name }}">{{ node.name }}: {{ _value_live(node) }}; status {{ _status(node) }}{% if _bottleneck.node == node.name %}; bottleneck{% endif %}</li>
+        <li data-flow-text-node="{{ node.name }}">{{ node.name }}: {{ _value_live(node) }}; status {{ _status_live(node) }}{% if _bottleneck.node == node.name %}; bottleneck{% endif %}</li>
         {% endfor %}
         {% for edge in summary.flow_edges %}
         <li data-flow-text-edge="{{ edge.id }}">{{ edge.source }} to {{ edge.target }}: {{ flow.fig(edge.key, edge.value) }} {{ edge.unit }}</li>
