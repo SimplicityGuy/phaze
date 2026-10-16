@@ -66,7 +66,7 @@ _PROBE_JS = r"""
         node: r.parentElement.dataset.flowNode, width: getComputedStyle(r).strokeWidth,
     })) : [];
     const flowSection = document.querySelector('section[aria-labelledby="pipeline-flow-title"]');
-    const cards = [...flowSection.querySelectorAll('a[href="/s/metadata"], a[href="/s/analyze"], a[href="/s/propose"]')];
+    const cards = [...flowSection.querySelectorAll('a[href="/s/metadata"], a[href="/s/analyze"], a[href="/s/propose"], a[href="/s/tracklist"]')];
     const text = document.querySelector('[data-flow-text]');
     const attention = document.querySelector('section[aria-labelledby="needs-attention-title"]');
     const topAttention = attention.querySelector('ol li h3');
@@ -121,7 +121,7 @@ async def test_flow_board_holds_its_layout_values_and_contrast(viewport: str, th
         expected_outline = [{"node": "Metadata", "width": "3px"}]
 
     # The text equivalent: every node and edge, at every width, visually hidden.
-    assert len(probe["textItems"]) == 6 + 7, f"{where}: text equivalent has {probe['textItems']}"
+    assert len(probe["textItems"]) == 7 + 8, f"{where}: text equivalent has {probe['textItems']}"
     assert probe["textClipped"], f"{where}: the text equivalent is not visually hidden"
 
     # The cards remain the links and carry complete values at every width.
@@ -134,7 +134,7 @@ async def test_flow_board_holds_its_layout_values_and_contrast(viewport: str, th
     else:
         assert probe["boardVisible"], f"{where}: the flow board is not visible at md+"
         assert probe["boardRight"] <= probe["viewport"], f"{where}: the board overruns the viewport"
-        assert (probe["nodeCount"], probe["edgeCount"]) == (6, 7)
+        assert (probe["nodeCount"], probe["edgeCount"]) == (7, 8)
         assert probe["outlined"] == expected_outline, f"{where}: outlined {probe['outlined']}"
         assert not probe["spills"], f"{where}: board text overruns its node box: {probe['spills']}"
         low = [c for c in probe["contrasts"] if c["ratio"] < 4.5]
@@ -159,6 +159,7 @@ async def test_archive_scale_counts_fit_inside_their_nodes(theme: str, page_at: 
             metadata=_bucket(145_057, not_started=0, done=104_156, failed=12_345, missing=28_556),
             analyze=_bucket(145_057, not_started=0, in_flight=0, orphaned=0, done=131_478, failed=1_234, missing=12_345),
             proposals={"done": 99_999, "total": None},
+            tracklist={"done": 123_456, "total": None},
             execute={"done": 88_888, "total": 77_777},
         ),
         _inputs(proposal_pending=123_456, proposal_approved=654_321),

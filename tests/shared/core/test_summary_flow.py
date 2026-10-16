@@ -112,7 +112,7 @@ def _edge(overview: dict[str, Any], edge_id: str) -> dict[str, Any]:
 def test_empty_archive_edges_are_measured_zeros_and_the_bottleneck_is_discovery() -> None:
     overview = _derive_summary_overview(_progress(total=0), _inputs())
 
-    assert [edge["value"] for edge in overview["flow_edges"]] == [0] * 7
+    assert [edge["value"] for edge in overview["flow_edges"]] == [0] * 8
     assert {edge["state"] for edge in overview["flow_edges"]} == {"empty"}
     assert all(edge["width"] == 1.0 for edge in overview["flow_edges"]), "a measured zero keeps a visible hairline, never no width"
     assert overview["total_files"] == 0
@@ -436,6 +436,7 @@ async def test_stage_progress_sink_attributes_each_real_failure_and_keeps_the_le
         ({"proposal_stats"}, {"Review.status": "unavailable", "Execute.detail": "— approved now"}),
         ({"analyze_split"}, {"Analyze": 1, "Analyze.status": "activity unavailable", "analyze-join": 1}),
         ({"discovery"}, {"Discover": None, "total_files": None}),
+        ({"tracklist"}, {"Tracklists": None, "Tracklists.status": "unavailable"}),
     ],
 )
 @pytest.mark.usefixtures("inject_faults")
@@ -497,7 +498,7 @@ async def test_healthy_empty_archive_keeps_measured_zeros(session: AsyncSession)
     overview = await _summary_under(set(), session)
     assert overview["attention_known"] is True
     assert overview["total_files"] == 0
-    assert [edge["value"] for edge in overview["flow_edges"]] == [0] * 7
+    assert [edge["value"] for edge in overview["flow_edges"]] == [0] * 8
     assert {edge["state"] for edge in overview["flow_edges"]} == {"empty"}
     assert overview["bottleneck"]["node"] == "Discover"
 
@@ -642,3 +643,37 @@ async def test_real_failure_reaches_the_rendered_board_as_unknown(client: Any, s
 
 def _texts(soup: BeautifulSoup, selector: str) -> list[str]:
     return [element.get_text(" ", strip=True) for element in soup.select(selector)]
+
+
+@pytest.mark.parametrize("count", [0, 1, 15])
+def test_tracklists_are_authoritative_optional_file_counts(count: int) -> None:
+    progress = _progress(tracklist={"done": count, "total": None})
+    overview = _derive_summary_overview(progress, _inputs(flow_read_failures=_healthy_sink()))
+    node = _node(overview, "Tracklists")
+    assert node["done"] == count
+    assert node["total"] is None
+    assert node["status"]["label"] == "optional"
+    assert overview["flow_counts"]["tracklists"] == count
+    assert summary_mod.build_flow_counts(progress, 0, 0, _healthy_sink()) == overview["flow_counts"]
+    assert not any(edge["source"] == "Tracklists" for edge in overview["flow_edges"])
+    soup = _render(overview)
+    card = soup.select_one('[data-flow-card="Tracklists"]')
+    assert card is not None
+    assert card["href"] == card["hx-get"] == "/s/tracklist"
+    assert card["hx-target"] == "#stage-workspace"
+    assert f"{count} files with tracklists" in card.get_text(" ", strip=True)
+    assert "proposals do not require a tracklist" in card.get_text()
+    assert "summaryFlow?.tracklists" in str(card)
+    assert f"{count} files" in soup.select_one('[data-flow-node="Tracklists"]').get_text(" ", strip=True)
+    assert f"{count} files with tracklists" in soup.select_one('[data-flow-text-node="Tracklists"]').get_text(" ", strip=True)
+
+
+def test_unmeasured_tracklist_count_never_becomes_zero_or_complete() -> None:
+    overview = _derive_summary_overview(_progress(), _inputs(flow_read_failures=_healthy_sink(tracklist=("query_failed",))))
+    node = _node(overview, "Tracklists")
+    assert node["done"] is None
+    assert node["status"]["label"] == "unavailable"
+    assert overview["flow_counts"]["tracklists"] is None
+    soup = _render(overview)
+    assert "— files with tracklists" in soup.select_one('[data-flow-card="Tracklists"]').get_text(" ", strip=True)
+    assert "unavailable" in soup.select_one('[data-flow-text-node="Tracklists"]').get_text()

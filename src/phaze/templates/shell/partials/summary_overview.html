@@ -36,6 +36,7 @@
             {% set propose = summary.flow[3] %}
             {% set review = summary.flow[4] %}
             {% set apply = summary.flow[5] %}
+            {% set tracklists = summary.flow[6] %}
             {% include "shell/partials/_summary_flow_board.html" %}
             <div class="mt-4 grid min-w-0 gap-3">
                 {% for item in [discover] %}
@@ -57,6 +58,15 @@
                     </a>
                     {% endfor %}
                 </div>
+
+                <a data-flow-card="{{ tracklists.name }}" href="{{ tracklists.href }}" hx-get="{{ tracklists.href }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="min-w-0 rounded-lg border border-gray-200 p-3 hover:bg-gray-50 dark:border-phaze-border dark:hover:bg-white/5 {{ _link_focus }}">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <span class="font-jura text-xs uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ tracklists.name }}</span>
+                        {{ ui.status_pill(flow.tracklist_status(tracklists.status.label), tracklists.status.tone, icon=tracklists.status.icon) }}
+                    </div>
+                    <p class="mt-3 font-mono text-lg font-semibold tabular-nums text-gray-900 dark:text-gray-100">{{ flow.fig(tracklists.store_keys.done, tracklists.done) }} <span class="text-xs font-normal text-muted">files with tracklists</span></p>
+                    <p class="mt-1 text-xs text-muted">Optional enrichment; proposals do not require a tracklist.</p>
+                </a>
 
                 <div class="grid min-w-0 gap-3 md:grid-cols-3">
                     {% for item in [propose, review, apply] %}
