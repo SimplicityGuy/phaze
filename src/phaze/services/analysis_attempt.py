@@ -10,6 +10,7 @@ from sqlalchemy import BigInteger, String, bindparam, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 import structlog
 
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.tasks._shared.attempt_context import ledger_enqueue_session
 
@@ -92,3 +93,37 @@ async def analysis_failure_ack_matches(session: AsyncSession, key: str, enqueued
     await session.execute(select(func.pg_advisory_xact_lock(_LOCK_KEY)), {"key": key})
     epoch = await session.scalar(select(SchedulingLedger.enqueued_at).where(SchedulingLedger.key == key))
     return epoch is None or epoch == enqueued_at
+
+
+async def try_lock_analysis_attempt(session: AsyncSession, key: str) -> bool:
+    """Exclude the entire before-enqueue/broker interval without waiting on a producer.
+
+    The transaction lock conflicts with the producer's session lock and survives until
+    the caller commits or rolls back. Callers must re-read ownership after acquisition.
+    """
+    return bool(await session.scalar(select(func.pg_try_advisory_xact_lock(_LOCK_KEY)), {"key": key}))
+
+
+async def cloud_owns_analysis(session: AsyncSession, file_id: Any, *, include_awaiting: bool = False) -> bool:
+    """Whether a committed cloud dispatch already owns this file's analysis.
+
+    Called under the attempt lock. Awaiting is intentionally excluded: the bounded
+    drain may spill it to local, and a manual local enqueue remains valid. A producer
+    without serialization includes awaiting: it cannot safely race the drain there.
+    """
+    statuses: tuple[str, ...] = (
+        CloudJobStatus.UPLOADING.value,
+        CloudJobStatus.UPLOADED.value,
+        CloudJobStatus.SUBMITTED.value,
+        CloudJobStatus.RUNNING.value,
+    )
+    if include_awaiting:
+        statuses += (CloudJobStatus.AWAITING.value,)
+    return bool(
+        await session.scalar(
+            select(CloudJob.id).where(
+                CloudJob.file_id == file_id,
+                CloudJob.status.in_(statuses),
+            )
+        )
+    )

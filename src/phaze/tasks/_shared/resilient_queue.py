@@ -55,7 +55,7 @@ class ResilientPostgresQueue(PostgresQueue):
         if registered_queue is not None and registered_queue.name != self.name:
             raise ValueError(f"Job registered to a different queue: {registered_queue.name}")
         # Control-only lazy import: agent queues have no ledger handle.
-        from phaze.services.analysis_attempt import serialize_analysis_enqueue  # noqa: PLC0415
+        from phaze.services.analysis_attempt import cloud_owns_analysis, serialize_analysis_enqueue  # noqa: PLC0415
         from phaze.tasks._shared.attempt_context import EnqueueAuthority, enqueue_authority, ledger_enqueue_session  # noqa: PLC0415
 
         key = f"process_file:{(payload or {}).get('file_id')}"
@@ -71,10 +71,27 @@ class ResilientPostgresQueue(PostgresQueue):
                     # Preserve availability without overwriting another attempt's ledger
                     # or manufacturing trusted metadata before broker deduplication.
                     logger.warning("analysis_attempt_lock_degraded", key=key, exc_info=True)
+                    if not payload.get("scratch_path"):
+                        # Preserve ordinary local availability only after a successful
+                        # read excludes cloud ownership. Awaiting also protects an
+                        # uncommitted drain dispatch. If this read is unavailable (for
+                        # example, the ledger pool is exhausted), propagate its error:
+                        # uncertainty must never authorize a second broker-side owner.
+                        async with maker() as observer:
+                            if await cloud_owns_analysis(observer, payload["file_id"], include_awaiting=True):
+                                logger.warning("analysis enqueue held: unserialized producer may race cloud owner", key=key)
+                                return None
                 else:
                     enqueue_authority.set(EnqueueAuthority(key, serialized=True))
                     live = await self.job(key)
                     if live is not None and live.status not in TERMINAL_STATUSES:
+                        return None
+                    # A cloud drain may have won while this local producer waited for
+                    # the attempt lock. Its compute-agent scratch handoff is the one
+                    # legitimate process_file enqueue for an already-busy cloud owner.
+                    borrowed = ledger_enqueue_session.get()
+                    if borrowed is not None and not payload.get("scratch_path") and await cloud_owns_analysis(borrowed, payload["file_id"]):
+                        logger.info("analysis enqueue held: cloud dispatch owns file", key=key)
                         return None
                 return await super().enqueue(job_or_func, **kwargs)
         finally:

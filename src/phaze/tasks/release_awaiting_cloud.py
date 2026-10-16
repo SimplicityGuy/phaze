@@ -56,10 +56,12 @@ from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord
 from phaze.runtime_config import effective_settings
 from phaze.services import backend_breaker, cloud_staging
+from phaze.services.analysis_attempt import try_lock_analysis_attempt
 from phaze.services.cloud_budget import CloudBudgetState
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import get_cloud_staging_candidates
 from phaze.services.route_control import get_route_control
+from phaze.tasks.awaiting_ownership import cloud_candidate_available, has_stale_awaiting_ownership, reconcile_awaiting_ownership
 
 
 if TYPE_CHECKING:
@@ -474,6 +476,19 @@ async def _stage_candidate_page(walk: _TickContext, page: list[tuple[FileRecord,
             walk.state.hold_reasons[hold_reason] += 1
             walk.state.tally["skipped"] += 1
             continue
+        # Nonlocal admission and process_file producers share one attempt lock.
+        # A producer that won after candidate SELECT must keep its local job; a
+        # producer arriving after this lock will observe committed cloud ownership.
+        # Local dispatch acquires the same lock inside its queue.enqueue instead.
+        from phaze.services.backends.local import LocalBackend  # noqa: PLC0415 -- backend graph imports this module
+
+        if not isinstance(target, LocalBackend):
+            locked = await try_lock_analysis_attempt(walk.session, f"process_file:{file.id}")
+            eligible = locked and await cloud_candidate_available(walk.session, file.id)
+            if not eligible:
+                walk.state.hold_reasons["local_analysis_ownership"] += 1
+                walk.state.tally["skipped"] += 1
+                continue
         # WR-02: dispatch re-resolves the fileserver agent per file. Under READ COMMITTED a fileserver
         # revoked by a concurrent session AFTER GATE-2 in the caller but BEFORE this iteration raises
         # NoActiveAgentError straight out of dispatch. Catch it -> CLEAN HOLD of the remaining
@@ -665,6 +680,11 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # never crashes the cron (T-71-03).
         if await get_route_control(session):
             return {"staged": 0, "skipped": 0}
+        # Pay for an ownership-transfer transaction only when stale overlap exists.
+        # A healthy tick keeps its single lock/commit. The transfer commits before
+        # admission so local fallback's queue can acquire its own producer lock.
+        if await has_stale_awaiting_ownership(session):
+            await reconcile_awaiting_ownership(ctx)
         # WR-04 / SCHED-02: one transaction-scoped advisory lock serializes overlapping ticks so no
         # backend's cap is overshot. The second tick blocks here until the first commits, then its
         # once-per-tick in_flight_count snapshot sees the committed dispatches. Auto-released at txn end.
