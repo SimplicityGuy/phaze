@@ -100,7 +100,7 @@ of 0.103 s and a maximum of 27.943 s, with 10,653 s of summed worker time.
 | Outcome | Files |
 |---|---:|
 | Scanned (present per DB) | **94,412** |
-| `ENOENT`: DB row present, file gone from disk | 9 |
+| `ENOENT`: DB row present (`missing_at IS NULL`), file gone from disk | 9 |
 | Opened, **no ground-truth MPEG stream** | 1,663 |
 | Opened, ground-truth stream found | **92,740** |
 
@@ -213,19 +213,33 @@ forward for the remaining ~83,600.
 
 These are measured exactly, but they are a different mechanism from FFmpeg misdetecting the layer:
 
-- **Partial/zero-filled downloads with a real stream later in the file: 92 files** with more than
+- **Partial/zero-filled downloads with a real stream later in the file: 92 files** (follow-up
+  `phaze-nx9ym`) with more than
   1 MiB between the ID3v2 end and the real Layer 3 stream, while ffprobe still says `mp3`. 90 of them
   have an all-zero first MiB and 1 is mostly zero. `mutagen` fails on 90 of the 92 (`can't sync to
   MPEG frame`). ffprobe gives no duration for 67 of the 92, a duration more than 10% off the real
   stream's size-based estimate for 18, and a duration within 10% for 7. **1** has a completed analysis
   row. That analysis completed before today's probe: ffprobe now returns no duration for that file,
   whose real stream is ≈ 2,995 s.
-- **No MPEG stream at all: 1,663 files.** A 1 MiB sample at the head and at the midpoint shows:
-  - 1,074 files zero in both samples, plus 6 more zero in one of the two samples;
-  - 546 HTML documents (`<htm…` 382, `<!DO…` 164) saved under a `.mp3` name;
-  - 20 empty files;
-  - 10 MPEG-TS streams (ffprobe `aac`);
-  - a handful of other containers (ASF/`wmav2` 1, AMR 1, …).
+- **No MPEG stream at all: 1,663 files** (follow-up `phaze-9lph4`). A 1 MiB sample at the head and at the midpoint, plus the
+  first 4 bytes, sorts them into disjoint groups:
+
+  | Group | Files |
+  |---|---:|
+  | Zero in both samples | 1,074 |
+  | HTML saved under a `.mp3` name (`<htm…`) | 382 |
+  | HTML saved under a `.mp3` name (`<!DO…`) | 164 |
+  | Empty (0 bytes) | 20 |
+  | Zero in one of the two samples (4 start with zeros, 2 with an ID3v2.3 tag) | 6 |
+  | MPEG-TS (`0x47` sync; ffprobe `aac`) | 10 |
+  | MP4/ISO-BMFF (ffprobe `aac`) | 1 |
+  | ASF (ffprobe `wmav2`) | 1 |
+  | ID3v2.3 tag + AMR-WB (ffprobe `amr_wb`) | 1 |
+  | ID3v2.3 tag, then no valid MPEG header and no ffprobe stream | 1 |
+  | ID3v2.2 tag, ffprobe `mp3`, 126,463 valid headers but no 64-frame run in the first 64 MiB (not classified by this scan) | 1 |
+  | `SHOW…` text (no ffprobe stream) | 1 |
+  | `#EXT…` playlist text (ffprobe `mp3`, 0 valid headers) | 1 |
+  | **Total** | **1,663** |
 
   **0** of the 1,663 have an analysis row.
 
@@ -255,23 +269,62 @@ Junk-prefix size across all 92,740 ground-truth files, measured from the ID3v2 e
 
 ## Recommendation
 
-1. **Detector thresholds.**
-   - **Minimum chained frames: N = 8.** It has 0 FP and 0 FN measured, and 2.7× margin over the
-     longest foreign chain observed (3 frames). Any N from 4 to 64 measured identically (0 FP); 8 is
-     chosen for margin at a cost of ≈ 8 frames (≈ 3–8 KB) read past the candidate.
-   - **probe_score: do not use a bound as the gate.** Measured FP is 98 at `≤ 1`/`≤ 10`, 107 at
-     `≤ 25` and 7,378 at `≤ 50`, with only 1 of 4 caught at every bound.
-   - **Cheap prefilter instead:** flag when ffprobe's first audio stream codec is not `mp3`, or there
-     is no audio stream. That catches 4 of 4, with 37 FP, all of them real MP2 audio. Then confirm with
-     the N = 8 chain parse, which clears all 37 (layer 2 = `mp2`) and keeps all 4.
-2. **The fix should restore the intended behaviour, not only flag it.** For a confirmed file, the
-   decode and the duration should start at the ground-truth stream offset. One way to do that is to
-   hand FFmpeg the offset (`-skip_initial_bytes`) or force the `mp3` demuxer. Merely skipping the file
-   would leave the 4 files unanalyzed. That design choice belongs to the implementing bead.
-3. **No re-analysis sweep** for class (i). There are 0 silently wrong completed rows.
-4. **The partial-download population (92 + 1,663 files) is a separate defect** and is not this
-   bead's fix. 1 file in it has a completed analysis row. It deserves its own triage bead (scan-time
-   rejection of zero-filled/HTML/empty `.mp3` files). Left to the dispatcher to file; not filed here.
+### Operator decisions (2026-10-19, bead `phaze-di48m`)
+
+Put on 2026-10-19 by the dispatch session via `AskUserQuestion`. The selected option labels are quoted
+verbatim. The durable record is the bead comment on `phaze-di48m`.
+
+> **Operator decision 2026-10-19 (bead `phaze-di48m`) — detector.** Question as put: *"The scan found
+> 4 misdetected MP3s: the trigger plus 3 that FFmpeg mistakes for raw video. None has silently wrong
+> analysis. Which detector should the splice fix use?"* Answer as given: **"N=8 + codec prefilter
+> (Recommended)"**.
+
+> **Operator decision 2026-10-19 (bead `phaze-di48m`) — sweep.** Question as put: *"No misdetected
+> file has silently wrong analysis, so the scan recommends no re-analysis sweep. Agree?"* Answer as
+> given: **"No sweep (Recommended)"**.
+
+> **Operator decision 2026-10-19 (bead `phaze-di48m`) — follow-ups.** Question as put: *"The scan also
+> found unrelated junk in the archive. Which of these should I file as follow-up beads?"* Answers as
+> given: **"1,663 non-audio .mp3 files"**, **"92 MP3s with a >1 MB junk head"**. The 9 `ENOENT` rows
+> were offered and not chosen.
+
+### What follows from the measurements and those decisions
+
+1. **Detector: N=8 + codec prefilter (accepted, see above).**
+   - **Prefilter:** flag when ffprobe's first audio stream codec is not `mp3`, or there is no audio
+     stream. It catches 4 of 4, with 37 FP, all of them real MP2 audio.
+   - **Confirm:** a frame-chain parse with **minimum chained frames N = 8**. That clears all 37 MP2
+     files (layer 2 = `mp2`) and keeps all 4 positives: 0 FP and 0 FN measured, with 2.7× margin over
+     the longest foreign chain observed (3 frames). Any N from 4 to 64 measured identically (0 FP);
+     8 costs ≈ 8 frames (≈ 3–8 KB) read past the candidate.
+   - **The detector returns the ground-truth offset**, not just a verdict: the byte offset of the first
+     chain of at least N frames whose layer is the real stream's. The splice below needs that offset.
+     For the trigger it is 3,444,524. For the three VVC files it is 59,210, 59,366 and 91,737.
+   - **probe_score is not used as a gate.** Measured FP is 98 at `≤ 1`/`≤ 10`, 107 at `≤ 25` and
+     7,378 at `≤ 50`, with only 1 of 4 caught at every bound.
+2. **The fix restores the stream; it does not flag or skip the file.** It follows the settled design
+   of epic `phaze-pjkbu`: *detect, then splice — never remux*. For a confirmed file, the
+   `extract_audio_track` seam writes a scratch copy made of the ID3v2 bytes followed by the bytes from
+   the ground-truth offset. On the trigger file, essentia's loaders and `MetadataReader` read that
+   splice correctly. An FFmpeg-side remedy (`-skip_initial_bytes`, forcing the `mp3` demuxer) is not
+   reachable here: essentia's `AudioLoader`/`MonoLoader` expose no such option, and window geometry
+   comes from a separate `ffprobe` call. A splice fixes both consumers at once, because both read the
+   same scratch file.
+3. **No re-analysis sweep (accepted, see above).** There are 0 silently wrong completed rows in
+   class (i), so no sweep bead is filed.
+4. **Two follow-up beads have been filed for the adjacent populations:**
+   - **`phaze-9lph4` — the 1,663 non-audio `.mp3` files.** The breakdown is the table under "Adjacent
+     populations" above: 1,074 zero-filled, 546 HTML, 20 empty, 6 partly zero, and 17 other containers
+     or text. None has an analysis row.
+   - **`phaze-nx9ym` — the 92 MP3s with a > 1 MiB junk head.** These files **hold real audio**, so
+     this is a duration/geometry defect, not a file to reject. ffprobe gives no duration for 67 of
+     them, a duration more than 10% off the real stream's for 18, and a duration within 10% for 7.
+     `mutagen` fails on 90. 1 has a completed analysis row. 90 have an all-zero first MiB, 1 is
+     mostly zero, and 1 is not zero. **The N=8 + codec-prefilter detector does not catch them**:
+     ffprobe's codec already reads `mp3`, so the prefilter never fires. Their real stream offset is
+     exactly what the frame-chain parse measures.
+5. **The 9 `ENOENT` rows** (present per the database, absent on disk) are recorded here only. They
+   were offered as a follow-up and not chosen.
 
 **Rule 5 (general form).** "ffprobe's verdict cannot be verified by ffprobe" is the
 `docs/design/0012-verification-fidelity-and-operator-attribution.md` rule 3 lesson again, applied to
