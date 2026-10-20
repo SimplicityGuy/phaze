@@ -47,7 +47,10 @@ _CHILD_MODULE = "phaze.analysis_child"
 # megabytes for a long file — far past asyncio's 64 KiB default readline limit.
 _STREAM_LIMIT = 1 << 25  # 32 MiB
 # How many trailing child-stderr lines ride an AnalysisSubprocessError for diagnosis.
-_STDERR_TAIL_LINES = 200
+_STDERR_TAIL_LINES = 20
+# The analysis child's tail is wider: a faulthandler dump (Python stack + 3.14's C-stack trace)
+# runs past 20 lines, and the Python stack at its head is the part worth keeping.
+_CHILD_STDERR_TAIL_LINES = 200
 _STDERR_LINE_MAX = 500
 # How often the stall watchdog wakes to compare "now" against the last activity stamp.
 # Bounded so a very short stall_timeout (tests) is still enforced promptly, and capped as a
@@ -408,7 +411,7 @@ async def _run_analysis_subprocess_traced(
 
     result: dict[str, Any] | None = None
     error_message: str | None = None
-    stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+    stderr_tail: deque[str] = deque(maxlen=_CHILD_STDERR_TAIL_LINES)
     loop = asyncio.get_running_loop()
     last_activity = loop.time()
     last_stage: str | None = None
