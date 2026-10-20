@@ -73,7 +73,7 @@ from phaze.schemas.agent_analysis import (
     StyleScore,
 )
 from phaze.services.agent_client import AgentApiServerError
-from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
+from phaze.services.analysis_exec import AnalysisSubprocessError, format_failure_detail, run_analysis_subprocess
 from phaze.services.analysis_sizing import HEARTBEAT_SURFACE_INTERVAL_SEC
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict, aggregate_style_scores
 from phaze.services.hashing import compute_sha256
@@ -697,7 +697,9 @@ async def _analyze_step(
         log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="error")
         log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
         # Mirror the SAQ lane's reason vocabulary before exiting.
-        await _report_analysis_failure(client, file_id, fid, step="analyze", reason=_reason_for_analysis_exception(exc), error=str(exc))
+        await _report_analysis_failure(
+            client, file_id, fid, step="analyze", reason=_reason_for_analysis_exception(exc), error=format_failure_detail(exc, _ERROR_DETAIL_MAX)
+        )
         sys.exit(EXIT_ANALYSIS)
     # Close the frame on the success path too: everything below is analysis-OUTPUT validation
     # (NOT essentia stdout), so it sits OUTSIDE the frame markers.

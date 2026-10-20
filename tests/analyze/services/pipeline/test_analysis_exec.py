@@ -368,6 +368,57 @@ async def test_child_crash_raises_with_exit_code_and_message(monkeypatch: pytest
     assert "RuntimeError: essentia exploded" in str(excinfo.value)
 
 
+async def test_native_segfault_records_faulthandler_stack_and_names_the_signal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real SIGSEGV in the child leaves faulthandler's header and a Python frame in
+    stderr_tail, and the message names the signal."""
+    _point_child_at(monkeypatch, "segfault_analyze")
+
+    with pytest.raises(AnalysisSubprocessError) as excinfo:
+        await run_analysis_subprocess("/fake/audio.mp3", "/fake/models")
+
+    assert excinfo.value.exit_code == -11
+    assert "-11 (SIGSEGV)" in str(excinfo.value)
+    tail = "\n".join(excinfo.value.stderr_tail)
+    assert "Fatal Python error: Segmentation fault" in tail
+    assert "segfault_analyze" in tail
+
+
+def test_format_failure_detail_appends_tail_and_keeps_most_recent_lines() -> None:
+    from phaze.services.analysis_exec import format_failure_detail
+
+    exc = AnalysisSubprocessError("child exited -11 (SIGSEGV) without a result", exit_code=-11, stderr_tail=tuple(f"line-{i:02d}" for i in range(20)))
+
+    full = format_failure_detail(exc, 2000)
+    assert full.startswith("child exited -11 (SIGSEGV) without a result\nline-00")
+    assert full.endswith("line-19")
+
+    bounded = format_failure_detail(exc, 80)
+    assert len(bounded) <= 80
+    assert bounded.startswith("child exited -11 (SIGSEGV)")
+    assert bounded.endswith("line-19")
+    assert "line-00" not in bounded
+
+    # A faulthandler dump: the Python stack outranks the long C-stack trace behind it.
+    dump = (
+        "old noise",
+        "Fatal Python error: Segmentation fault",
+        "Current thread 0x1 (most recent call first):",
+        '  File "analysis.py", line 9 in analyze_file',
+        "Current thread's C stack trace (most recent call first):",
+        *(f'  Binary file "/opt/py/bin/python3.14", at frame_{i}+0x1 [0x{i:x}]' for i in range(40)),
+    )
+    crash = AnalysisSubprocessError("child exited -11 (SIGSEGV) without a result", exit_code=-11, stderr_tail=dump)
+    squeezed = format_failure_detail(crash, 400)
+    assert len(squeezed) <= 400
+    assert "Fatal Python error: Segmentation fault" in squeezed
+    assert "in analyze_file" in squeezed
+    assert "old noise" not in squeezed
+
+    assert format_failure_detail(AnalysisSubprocessError("m"), 2000) == "m"
+    assert format_failure_detail(RuntimeError("boom"), 2000) == "boom"
+    assert format_failure_detail(exc, 10) == "child exit"
+
+
 async def test_progress_cb_error_never_fails_the_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
     """A raising progress callback is swallowed (logged) — the analysis still completes."""
     _point_child_at(monkeypatch, "fake_analyze")

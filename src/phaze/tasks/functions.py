@@ -37,7 +37,7 @@ from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.runtime_config import RuntimeConfig, current as current_runtime_config, effective_settings
 from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, StyleScore
 from phaze.schemas.agent_tasks import ProcessFilePayload
-from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
+from phaze.services.analysis_exec import AnalysisSubprocessError, format_failure_detail, run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict, aggregate_style_scores
 from phaze.services.hashing import compute_sha256
 from phaze.services.media_path_resolve import resolve_media_path
@@ -541,7 +541,9 @@ async def _extract_and_analyze(
         # error line rides along as detail so the durable failure marker names the actual
         # cause -- e.g. phaze-zibn's AnalysisDecodeError is distinguishable from an essentia
         # segfault without re-running anything.
-        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="crashed", error=str(exc)[:_ERROR_DETAIL_MAX]), job)
+        await _report_terminal_failure(
+            api, payload.file_id, AnalysisFailurePayload(reason="crashed", error=format_failure_detail(exc, _ERROR_DETAIL_MAX)), job
+        )
         return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
 
 

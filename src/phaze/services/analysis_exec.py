@@ -22,6 +22,8 @@ import asyncio
 from collections import deque
 import contextlib
 import json
+import re
+import signal
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -45,13 +47,85 @@ _CHILD_MODULE = "phaze.analysis_child"
 # megabytes for a long file — far past asyncio's 64 KiB default readline limit.
 _STREAM_LIMIT = 1 << 25  # 32 MiB
 # How many trailing child-stderr lines ride an AnalysisSubprocessError for diagnosis.
-_STDERR_TAIL_LINES = 20
+_STDERR_TAIL_LINES = 200
 _STDERR_LINE_MAX = 500
 # How often the stall watchdog wakes to compare "now" against the last activity stamp.
 # Bounded so a very short stall_timeout (tests) is still enforced promptly, and capped as a
 # fraction of the threshold so a production-sized threshold costs a handful of wakeups an hour.
 _WATCHDOG_MIN_TICK_S = 0.05
 _WATCHDOG_TICK_FRACTION = 0.1
+
+
+def _describe_exit(returncode: int) -> str:
+    """Render an exit code, naming the signal for a negative one (``-11`` -> ``-11 (SIGSEGV)``)."""
+    if returncode < 0:
+        try:
+            return f"{returncode} ({signal.Signals(-returncode).name})"
+        except ValueError:
+            return str(returncode)
+    return str(returncode)
+
+
+_FATAL_MARKER = "Fatal Python error"
+_C_STACK_MARKER = "C stack trace"
+_BINARY_FILE_RE = re.compile(r'Binary file "[^"]*?([^/"]+)", at ')
+
+
+def _fit_tail(tail: tuple[str, ...], room: int) -> str:
+    """Pick the tail lines worth storing within ``room`` characters, in chronological order.
+
+    Plain tails keep the MOST RECENT lines. When a faulthandler dump is present, Python
+    3.14 follows the Python stack with a long C-stack trace, so a naive "newest lines"
+    cut would keep only C frames and drop the Python stack -- the part that names what
+    was running. The dump's header and Python stack get priority, then C frames (compacted
+    to the binary's basename) oldest-first, then whatever came before the dump.
+    """
+    lines = [_BINARY_FILE_RE.sub(r"\1 ", line) for line in tail]
+    fatal = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith(_FATAL_MARKER)), None)
+    if fatal is None:
+        pre, critical, cstack = lines, [], []
+    else:
+        c_at = next((i for i in range(fatal, len(lines)) if _C_STACK_MARKER in lines[i]), len(lines))
+        pre, critical, cstack = lines[:fatal], lines[fatal:c_at], lines[c_at:]
+
+    def _cost(chosen: list[str]) -> int:
+        return sum(len(x) + 1 for x in chosen)
+
+    crit_kept: list[str] = []
+    for line in reversed(critical):
+        if _cost([line, *crit_kept]) > room:
+            break
+        crit_kept.insert(0, line)
+    used = _cost(crit_kept)
+    c_kept: list[str] = []
+    for line in cstack:
+        if used + len(line) + 1 > room:
+            break
+        c_kept.append(line)
+        used += len(line) + 1
+    pre_kept: list[str] = []
+    for line in reversed(pre) if len(c_kept) == len(cstack) else ():
+        if used + len(line) + 1 > room:
+            break
+        pre_kept.insert(0, line)
+        used += len(line) + 1
+    return "\n".join([*pre_kept, *crit_kept, *c_kept])
+
+
+def format_failure_detail(exc: BaseException, max_len: int) -> str:
+    """Render ``exc`` for a stored ``error_message``: its message plus the child's stderr tail.
+
+    The tail carries what the child printed as it died (faulthandler's ``Fatal Python
+    error`` line and Python stack on a native crash) -- the only durable record once the
+    pod's logs are deleted. Bounded to ``max_len``; when it does not fit, the OLDEST lines
+    are dropped (see :func:`_fit_tail` for the faulthandler-aware ordering), never the message.
+    """
+    message = str(exc)
+    tail = getattr(exc, "stderr_tail", ())
+    if not tail or max_len <= len(message) + 1:
+        return message[:max_len]
+    body = _fit_tail(tuple(tail), max_len - len(message) - 1)
+    return f"{message}\n{body}" if body else message
 
 
 class AnalysisSubprocessError(RuntimeError):
@@ -448,7 +522,7 @@ async def _run_analysis_subprocess_traced(
     if error_message is not None:
         msg = f"analysis child failed (exit {returncode}): {error_message}"
     elif returncode != 0:
-        msg = f"analysis child exited {returncode} without a result"
+        msg = f"analysis child exited {_describe_exit(returncode)} without a result"
     else:
         msg = "analysis child exited 0 without a result line (malformed protocol)"
     raise AnalysisSubprocessError(msg, exit_code=returncode, stderr_tail=tail)
