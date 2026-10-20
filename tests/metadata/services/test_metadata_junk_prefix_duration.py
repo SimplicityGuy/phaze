@@ -28,6 +28,7 @@ from tests._mpeg_junk_fixtures import (
     _encode_stream,
     _encode_varied_vbr,
     _id3,
+    _make_layer3_junk,
     _make_mutagen_trigger,
     _make_trigger_vbr,
     _make_vvc,
@@ -264,3 +265,24 @@ def test_a_junk_prefixed_file_with_no_real_stream_keeps_mutagens_value(tmp_path:
 
 def test_the_gate_is_the_modules_own_choice_of_signal() -> None:
     assert metadata._LAYER_CODEC == {1: "mp1", 2: "mp2", 3: "mp3"}
+
+
+# phaze-dn0km: junk that mutagen reads as Layer 3, in front of a real Layer 3 stream
+
+
+def test_a_layer_3_junk_chain_before_a_layer_3_stream_stores_the_real_duration_and_bitrate(tmp_path: Path) -> None:
+    fixture = _make_layer3_junk(tmp_path)
+    real = _real_duration(fixture)
+    info = MP3(str(fixture.path)).info
+    assert (info.layer, info.sketchy) == (3, True), "precondition: mutagen reads the junk as a sketchy Layer 3 stream"
+    assert info.frame_offset < fixture.splice_offset, "precondition: mutagen's first frame sits inside the junk"
+    assert abs(info.length - real) > 1, "precondition: mutagen's length is wrong"
+    assert abs(info.bitrate - 320_000) > 100_000, "precondition: mutagen's bitrate is wrong"
+
+    tags = extract_tags(str(fixture.path))
+
+    assert tags.duration is not None
+    assert abs(tags.duration - real) <= 1
+    assert tags.duration_corrected is True
+    assert tags.bitrate is not None
+    assert abs(tags.bitrate - 320_000) <= 3_200

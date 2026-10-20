@@ -52,6 +52,10 @@ _L1_LEN = 32
 # mutagen computes the same frame's length as 136 bytes (it applies the Layer 1 four-byte slot after
 # a bytes-per-frame formula that already includes it), so the chains it follows are spaced by this.
 _L1_LEN_MUTAGEN = 136
+# MPEG-1 Layer 3, 128 kbps, 44.1 kHz: a 417-byte frame, spaced identically for mutagen and ffmpeg.
+# Junk chains of these are what mutagen syncs on while still calling the file Layer 3 (phaze-dn0km).
+_L3_HEADER = b"\xff\xfb\x90\x00"
+_L3_LEN = 417
 # VVC NAL units: start code, then a two-byte header with nuh_temporal_id_plus1 = 1. Types SPS
 # (15), PPS (16) and IDR_N_LP (8) together are what FFmpeg's raw-VVC probe scores 51.
 _VVC_NALS = (b"\x00\x00\x01\x00\x79", b"\x00\x00\x01\x00\x81", b"\x00\x00\x01\x00\x41")
@@ -138,14 +142,14 @@ def _noise(length: int, seed: int) -> bytearray:
     return bytearray(hashlib.shake_256(f"noise-{seed}".encode()).digest(length))
 
 
-def _trigger_junk(length: int = _TRIGGER_JUNK_BYTES, frame_len: int = _L1_LEN) -> bytes:
-    """Noise holding 2-3-frame Layer 1 chains every few KB, starting at the first byte."""
+def _trigger_junk(length: int = _TRIGGER_JUNK_BYTES, frame_len: int = _L1_LEN, header: bytes = _L1_HEADER) -> bytes:
+    """Noise holding 2-3-frame chains of ``header`` frames (Layer 1 by default) every few KB, from the first byte."""
     junk = _noise(length, seed=1)
     choices = _noise(4096, seed=11)
     pos, i = 0, 0
     while pos < length - 200:
         count = 2 + choices[i] % 2
-        chain = b"".join(_L1_HEADER + bytes(_noise(frame_len - 4, seed=1000 + i * 3 + n)) for n in range(count))
+        chain = b"".join(header + bytes(_noise(frame_len - 4, seed=1000 + i * 3 + n)) for n in range(count))
         junk[pos : pos + len(chain)] = chain
         pos += len(chain) + 500 + int.from_bytes(choices[i + 1 : i + 3], "big") % 2500
         i += 3
@@ -183,6 +187,19 @@ def _make_mutagen_trigger(tmp_path: Path) -> _Fixture:
     frames = _encode_stream(stream, rate=44100, bitrate="320k")
     path = tmp_path / "mutagen_trigger_shape.mp3"
     path.write_bytes(_id3(_TRIGGER_ID3_END) + _trigger_junk(_MUTAGEN_JUNK_BYTES, _L1_LEN_MUTAGEN) + frames)
+    return _Fixture(path, stream, _TRIGGER_ID3_END, _TRIGGER_ID3_END + _MUTAGEN_JUNK_BYTES)
+
+
+def _make_layer3_junk(tmp_path: Path) -> _Fixture:
+    """Junk past mutagen's 1 MiB search holding short LAYER 3 chains, then a real Layer 3 stream (phaze-dn0km).
+
+    mutagen syncs on a junk chain (sketchy, layer 3, 128 kbps) so its length and bitrate are the
+    junk's; the real stream is also Layer 3 at 320 kbps, so a layer comparison cannot tell them apart.
+    """
+    stream = tmp_path / "stream_44k.mp3"
+    frames = _encode_stream(stream, rate=44100, bitrate="320k")
+    path = tmp_path / "layer3_junk_shape.mp3"
+    path.write_bytes(_id3(_TRIGGER_ID3_END) + _trigger_junk(_MUTAGEN_JUNK_BYTES, _L3_LEN, _L3_HEADER) + frames)
     return _Fixture(path, stream, _TRIGGER_ID3_END, _TRIGGER_ID3_END + _MUTAGEN_JUNK_BYTES)
 
 
