@@ -472,6 +472,8 @@ async def test_post_analysis_progress_posts_path_verb_and_counts_body(client):  
         "coarse_windows_analyzed": None,
         "coarse_windows_total": None,
         "coarse_work_percent": None,
+        "coarse_work_done": None,
+        "coarse_work_total": None,
     }, "body carries only the counts (no agent_id/file_id)"
 
 

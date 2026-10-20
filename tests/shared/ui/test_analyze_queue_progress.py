@@ -21,6 +21,8 @@ def _render(
     coarse_done: int | None,
     coarse_total: int | None,
     coarse_work_percent: int | None = None,
+    coarse_work_done: int | None = None,
+    coarse_work_total: int | None = None,
     heartbeat_lost: bool = False,
     oob: bool = False,
 ) -> BeautifulSoup:
@@ -37,6 +39,8 @@ def _render(
         coarse_done=coarse_done,
         coarse_total=coarse_total,
         coarse_work_percent=coarse_work_percent,
+        coarse_work_done=coarse_work_done,
+        coarse_work_total=coarse_work_total,
     )
     environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
     environment.globals["humanize_relative_time"] = relative_time
@@ -118,3 +122,29 @@ def test_heartbeat_column_stays_visible_below_xl() -> None:
 
     cells = soup.select("#analyze-running-table th, #analyze-running-table td")
     assert cells and all("px-3" in cell["class"] and "xl:px-4" in cell["class"] for cell in cells)
+
+
+def test_coarse_cell_shows_the_work_steps_the_percentage_counts() -> None:
+    """phaze-s03fz: ``step a/T · X% · N windows`` replaces ``0/N · X% work``; Fine, the bar and aria are unchanged."""
+    soup = _render(fine_done=141, fine_total=141, coarse_done=0, coarse_total=21, coarse_work_percent=30, coarse_work_done=8, coarse_work_total=26)
+    fine, coarse = soup.select('[role="progressbar"]')
+
+    text = soup.get_text(" ", strip=True)
+    assert "step 8/26 · 30% · 21 windows" in text
+    assert "0/21" not in text
+    assert "141/141 · 100%" in text
+    assert coarse.select_one("div")["style"] == "width: 30%"
+    assert coarse["aria-label"] == "Coarse work for <set-01>"
+    assert coarse["aria-valuenow"] == "30"
+    assert coarse["aria-valuetext"] == "step 8 of 26, 30% work, 21 windows"
+    assert "aria-valuetext" not in fine.attrs
+
+
+def test_coarse_cell_falls_back_to_the_window_text_without_step_counts() -> None:
+    """An older agent or row sends percent but no steps: today's text, unchanged."""
+    soup = _render(fine_done=141, fine_total=141, coarse_done=0, coarse_total=21, coarse_work_percent=30)
+    coarse = soup.select('[role="progressbar"]')[1]
+
+    assert "0/21 · 30% work" in soup.get_text(" ", strip=True)
+    assert "step" not in soup.get_text(" ", strip=True)
+    assert "aria-valuetext" not in coarse.attrs

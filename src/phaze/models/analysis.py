@@ -37,6 +37,10 @@ class AnalysisResult(TimestampMixin, Base):
     coarse_windows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # In-flight model-sweep/assembly progress, separate from successfully analyzed windows.
     coarse_work_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The "coarse_work" heartbeat's done/total that coarse_work_percent is computed from (migration 094,
+    # phaze-s03fz); NULL for rows written before it or by an agent that does not send them.
+    coarse_work_done: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coarse_work_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # NULL while a partial in-flight
     # row exists (D-03 upserts one at analysis START); stamped via func.now() ONLY in the
     # put_analysis completion branch that flips FileState.ANALYZED. The proposal convergence

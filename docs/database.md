@@ -231,10 +231,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-093)
+### Post-baseline chain (040-094)
 
-`alembic/versions/` holds **55** files: the `039` baseline plus a linear chain to the current
-head, **`093`**.
+`alembic/versions/` holds **56** files: the `039` baseline plus a linear chain to the current
+head, **`094`**.
 
 | Rev | Change |
 |-----|--------|
@@ -291,7 +291,8 @@ head, **`093`**.
 | `090` | Widen the `provider_source_objects` channel check to allow `remote`, so a remote provider source object (no inventory file, `source_file_id` NULL) can be stored; existing local rows untouched; refuse rollback once a remote source object exists  |
 | `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`)  |
 | `092` | Persist remote lookup batch cursors, deduplicated recording/provider work, batch memberships and bounded successful-read continuation evidence |
-| `093` | Add nullable `metadata.duration_source` (`NULL` = legacy, `tags` = the tag reader's length, `audio_frames` = recomputed from the real MPEG frames behind a junk prefix), constrained to those values; existing rows untouched — **head** |
+| `093` | Add nullable `metadata.duration_source` (`NULL` = legacy, `tags` = the tag reader's length, `audio_frames` = recomputed from the real MPEG frames behind a junk prefix), constrained to those values; existing rows untouched |
+| `094` | Add nullable `analysis.coarse_work_done` / `analysis.coarse_work_total`, the coarse work-step counters `coarse_work_percent` is computed from, so the analyze queue can show `step a/T`; `NULL` for existing rows and for agents that predate them — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

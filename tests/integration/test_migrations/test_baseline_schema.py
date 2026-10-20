@@ -381,6 +381,7 @@ def test_baseline_is_the_only_migration() -> None:
         "091_provider_source_read_seq.py",
         "092_remote_lookup_batches.py",
         "093_metadata_duration_source.py",
+        "094_coarse_work_steps.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -412,7 +413,7 @@ async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
     """A bare ``upgrade head`` lands at the current head (091: provider source read sequence)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "093"
+    assert version == "094"
 
 
 @pytest.mark.asyncio
@@ -846,7 +847,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "093"
+        assert version == "094"
     finally:
         if engine is not None:
             await engine.dispose()
