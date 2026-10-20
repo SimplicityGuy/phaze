@@ -231,10 +231,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-092)
+### Post-baseline chain (040-093)
 
-`alembic/versions/` holds **54** files: the `039` baseline plus a linear chain to the current
-head, **`092`**.
+`alembic/versions/` holds **55** files: the `039` baseline plus a linear chain to the current
+head, **`093`**.
 
 | Rev | Change |
 |-----|--------|
@@ -290,7 +290,8 @@ head, **`092`**.
 | `089` | Add the durable remote transport ledger and attempt log: reservations committed before send, pacing, rolling-window budget, Retry-After and persistent stop; refuse rollback once any ledger row exists  |
 | `090` | Widen the `provider_source_objects` channel check to allow `remote`, so a remote provider source object (no inventory file, `source_file_id` NULL) can be stored; existing local rows untouched; refuse rollback once a remote source object exists  |
 | `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`)  |
-| `092` | Persist remote lookup batch cursors, deduplicated recording/provider work, batch memberships and bounded successful-read continuation evidence — **head** |
+| `092` | Persist remote lookup batch cursors, deduplicated recording/provider work, batch memberships and bounded successful-read continuation evidence |
+| `093` | Add nullable `metadata.duration_source` (`NULL` = legacy, `tags` = the tag reader's length, `audio_frames` = recomputed from the real MPEG frames behind a junk prefix), constrained to those values; existing rows untouched — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares

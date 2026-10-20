@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import struct
-from typing import Any
+from typing import Any, NamedTuple
 import uuid
 
 import mutagen
 from mutagen.asf import ASF
+from mutagen.mp3 import MP3, MPEGInfo
 import structlog
 
 from phaze.schemas.agent_metadata import MAX_BITRATE_BPS
+from phaze.services import mpeg_frames
 from phaze.services.metadata_parsing import (
     _first_str,
     _parse_track,
@@ -122,6 +125,10 @@ class ExtractedTags:
     # them back on disk as distinct frames/comments/atoms. A single-value genre stays a plain
     # ``str``, unchanged from before. See ``_raw_genre_value``.
     raw_genre: str | list[str] | None = None
+    # phaze-v03x9: True when ``duration`` was recomputed from the real MPEG frames because mutagen
+    # parsed an MP3 behind a junk prefix wrongly (see ``_junk_prefix_corrected_stream``). The
+    # duration is then NOT mutagen's tag/header-reported length, and a display must not say so.
+    duration_corrected: bool = False
 
 
 # Compatibility alias: callers/tests historically imported the sanitizer through this module.
@@ -207,6 +214,65 @@ def _asf_audio_bitrate(audio: ASF) -> int | None:
     return None
 
 
+# mutagen layer -> the codec name :func:`mpeg_frames.detect_misdetection` expects for it.
+_LAYER_CODEC = {1: "mp1", 2: "mp2", 3: "mp3"}
+
+
+class _CorrectedStream(NamedTuple):
+    """What the real MPEG stream behind a junk prefix reports: seconds and bits per second."""
+
+    length: float
+    bitrate: int | None
+
+
+def _junk_prefix_corrected_stream(file_path: str, audio: Any) -> _CorrectedStream | None:
+    """The real duration and bitrate of an MP3 whose frames sit behind a junk prefix, or ``None`` (phaze-v03x9).
+
+    Epic ``phaze-pjkbu``: mutagen can resync into the junk as a different layer (the trigger file
+    stored 15,567 s for a 50:27 recording). The analyze lane already finds the real stream with
+    :mod:`phaze.services.mpeg_frames`; this asks the SAME detector so both stages agree on where it
+    starts.
+
+    **Gate (cheap, no ffprobe here).** The frame-chain parse reads up to 64 MiB, so it must not run
+    for the ~94k MP3s that are fine. It runs only when mutagen read an MP3 with ``sketchy`` set or a
+    layer other than 3. The measured misdetection that mutagen gets wrong (the trigger) satisfies
+    both; the three raw-VVC files mutagen reads correctly (layer 3, not sketchy) never reach the
+    parse and keep mutagen's length. A real Layer 2 file passes the gate but its chain layer equals
+    mutagen's, so the detector does not flag it and its length is unchanged.
+
+    **Duration.** ``MPEGInfo(offset=splice_offset)`` is mutagen's own reader started on the real
+    first frame: it reads an Xing/VBRI header when present (exact for VBR) and otherwise estimates
+    from the bytes after that frame (exact for CBR), with the same bounded I/O as any mutagen open.
+    The same ``MPEGInfo`` supplies the bitrate (the Xing average for VBR): mutagen's own read took
+    both from the misparsed junk frame, so correcting only the length would leave a wrong bitrate
+    beside a right duration. No separate source marker: ``duration_source`` already says the
+    stream was re-read (the implementer's decision).
+    """
+    info = getattr(audio, "info", None)
+    if not isinstance(audio, MP3) or info is None:
+        return None
+    layer = getattr(info, "layer", None)
+    if not getattr(info, "sketchy", False) and layer == 3:
+        return None
+    try:
+        window = mpeg_frames.read_scan_window(file_path)
+        if window is None:
+            return None
+        verdict = mpeg_frames.detect_misdetection(window, _LAYER_CODEC.get(layer) if isinstance(layer, int) else None)
+        if not verdict.misdetected or verdict.splice_offset is None:
+            return None
+        with Path(file_path).open("rb") as fh:
+            real = MPEGInfo(fh, offset=verdict.splice_offset)
+    except (OSError, mutagen.MutagenError):
+        # Unreadable or unparseable head: keep what mutagen reported, as before this check existed.
+        logger.warning("mpeg_duration_correction_failed", file=file_path)
+        return None
+    length = float(real.length)
+    if length <= 0:
+        return None
+    return _CorrectedStream(length=length, bitrate=_plausible_bitrate(file_path, getattr(real, "bitrate", None)))
+
+
 def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
     """Extract audio tags from a file using mutagen.
 
@@ -247,8 +313,20 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
     info = getattr(audio, "info", None)
     length = getattr(info, "length", None)
     duration = float(length) if length is not None and length > 0 else None
+    corrected = _junk_prefix_corrected_stream(file_path, audio)
     raw_bitrate = _asf_audio_bitrate(audio) if isinstance(audio, ASF) else getattr(info, "bitrate", None)
     bitrate = _plausible_bitrate(file_path, raw_bitrate)
+    if corrected is not None:
+        logger.info(
+            "mpeg_stream_corrected",
+            file=file_path,
+            mutagen_length=duration,
+            corrected_length=corrected.length,
+            mutagen_bitrate=bitrate,
+            corrected_bitrate=corrected.bitrate,
+        )
+        duration = corrected.length
+        bitrate = corrected.bitrate
 
     tags = audio.tags
     raw_tags = _serialize_tags(tags)
@@ -261,6 +339,7 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
         genre=parsed.genre,
         track_number=parsed.track_number,
         duration=duration,
+        duration_corrected=corrected is not None,
         bitrate=bitrate,
         raw_tags=raw_tags,
         raw_year=parsed.raw_year,

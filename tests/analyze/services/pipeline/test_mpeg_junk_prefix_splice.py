@@ -24,9 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import struct
-import subprocess
 import sys
 from typing import Any
 import uuid
@@ -36,160 +34,30 @@ import pytest
 from phaze.services import mpeg_frames
 import phaze.services.video_audio as video_audio
 from phaze.services.video_audio import extract_audio_track
+from tests._mpeg_junk_fixtures import (
+    _SHAPES,
+    _STREAM_SEC,
+    _TRIGGER_ID3_END,
+    _VVC_ID3_END,
+    _VVC_JUNK_BYTES,
+    _audio_codecs,
+    _encode_stream,
+    _ffprobe,
+    _Fixture,
+    _id3,
+    _make_trigger,
+    _make_vvc,
+    _noise,
+    _real_duration,
+    _run,
+    requires_libmp3lame,
+)
 
 
-_HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+pytestmark = requires_libmp3lame
 
-
-def _has_libmp3lame() -> bool:
-    if not _HAS_FFMPEG:
-        return False
-    proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-encoders"], capture_output=True, text=True, check=False)  # noqa: S607
-    return " libmp3lame " in proc.stdout
-
-
-pytestmark = pytest.mark.skipif(not _has_libmp3lame(), reason="ffmpeg/ffprobe with libmp3lame not installed on this runner")
-
-# The real stream's length in every fixture. Long enough that a duration several times too long
-# is unmistakable, short enough to encode and analyze in seconds.
-_STREAM_SEC = 30
 # The fine window analyze_file is run with below. "Within one window" is measured in these.
 _WINDOW_SEC = 5
-_TRIGGER_ID3_END = 4096
-_TRIGGER_JUNK_BYTES = 400_000
-_VVC_ID3_END = 58_648
-_VVC_JUNK_BYTES = 562
-
-# MPEG-1 Layer 1, 32 kbps, 44.1 kHz: a 32-byte frame. The trigger's junk holds short chains of
-# frames like this, which is what FFmpeg resyncs into.
-_L1_HEADER = b"\xff\xff\x10\x00"
-_L1_LEN = 32
-# VVC NAL units: start code, then a two-byte header with nuh_temporal_id_plus1 = 1. Types SPS
-# (15), PPS (16) and IDR_N_LP (8) together are what FFmpeg's raw-VVC probe scores 51.
-_VVC_NALS = (b"\x00\x00\x01\x00\x79", b"\x00\x00\x01\x00\x81", b"\x00\x00\x01\x00\x41")
-
-
-def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
-
-
-def _encode_stream(dest: Path, *, rate: int, bitrate: str) -> bytes:
-    """A real MPEG-1 Layer 3 stream with no ID3 tag of its own (the fixtures prepend one)."""
-    proc = _run(
-        [
-            "ffmpeg",
-            "-y",
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            f"sine=frequency=330:duration={_STREAM_SEC}",
-            "-ar",
-            str(rate),
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            bitrate,
-            "-id3v2_version",
-            "0",
-            str(dest),
-        ]
-    )
-    if proc.returncode != 0:  # pragma: no cover - a broken fixture, not a tested path
-        msg = f"fixture ffmpeg failed: {proc.stderr.strip()}"
-        raise RuntimeError(msg)
-    return dest.read_bytes()
-
-
-def _id3(total: int) -> bytes:
-    """An ID3v2.3 tag of exactly ``total`` bytes: one title frame plus padding."""
-    title = b"\x03synthetic"
-    frame = b"TIT2" + len(title).to_bytes(4, "big") + b"\x00\x00" + title
-    body = frame.ljust(total - 10, b"\x00")
-    size = len(body)
-    return b"ID3\x03\x00\x00" + bytes([(size >> 21) & 0x7F, (size >> 14) & 0x7F, (size >> 7) & 0x7F, size & 0x7F]) + body
-
-
-def _noise(length: int, seed: int) -> bytearray:
-    """Deterministic noise: the same bytes on every run and every runner."""
-    return bytearray(hashlib.shake_256(f"noise-{seed}".encode()).digest(length))
-
-
-def _trigger_junk() -> bytes:
-    """Noise holding 2-3-frame Layer 1 chains every few KB, starting at the first byte."""
-    junk = _noise(_TRIGGER_JUNK_BYTES, seed=1)
-    choices = _noise(4096, seed=11)
-    pos, i = 0, 0
-    while pos < _TRIGGER_JUNK_BYTES - 200:
-        count = 2 + choices[i] % 2
-        chain = b"".join(_L1_HEADER + bytes(_noise(_L1_LEN - 4, seed=1000 + i * 3 + n)) for n in range(count))
-        junk[pos : pos + len(chain)] = chain
-        pos += len(chain) + 500 + int.from_bytes(choices[i + 1 : i + 3], "big") % 2500
-        i += 3
-    return bytes(junk)
-
-
-def _vvc_junk() -> bytes:
-    junk = _noise(_VVC_JUNK_BYTES, seed=2)
-    for i, nal in enumerate(_VVC_NALS):
-        junk[20 + i * 100 : 20 + i * 100 + len(nal)] = nal
-    return bytes(junk)
-
-
-class _Fixture:
-    """One synthetic file and the facts its construction makes known exactly."""
-
-    def __init__(self, path: Path, stream: Path, id3_end: int, splice_offset: int) -> None:
-        self.path = path
-        self.stream = stream
-        self.id3_end = id3_end
-        self.splice_offset = splice_offset
-
-
-def _make_trigger(tmp_path: Path) -> _Fixture:
-    stream = tmp_path / "stream_44k.mp3"
-    frames = _encode_stream(stream, rate=44100, bitrate="320k")
-    path = tmp_path / "trigger_shape.mp3"
-    path.write_bytes(_id3(_TRIGGER_ID3_END) + _trigger_junk() + frames)
-    return _Fixture(path, stream, _TRIGGER_ID3_END, _TRIGGER_ID3_END + _TRIGGER_JUNK_BYTES)
-
-
-def _make_vvc(tmp_path: Path) -> _Fixture:
-    stream = tmp_path / "stream_48k.mp3"
-    frames = _encode_stream(stream, rate=48000, bitrate="192k")
-    path = tmp_path / "vvc_shape.mp3"
-    path.write_bytes(_id3(_VVC_ID3_END) + _vvc_junk() + frames)
-    return _Fixture(path, stream, _VVC_ID3_END, _VVC_ID3_END + _VVC_JUNK_BYTES)
-
-
-_SHAPES = [pytest.param(_make_trigger, id="trigger_shape"), pytest.param(_make_vvc, id="vvc_shape")]
-
-
-def _ffprobe(path: Path) -> dict[str, Any]:
-    proc = _run(
-        [
-            "ffprobe",
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_entries",
-            "stream=codec_name,codec_type,duration:format=format_name,probe_score,duration",
-            str(path),
-        ]
-    )
-    payload: dict[str, Any] = json.loads(proc.stdout or "{}")
-    return payload
-
-
-def _audio_codecs(probe: dict[str, Any]) -> list[str]:
-    return [s.get("codec_name", "") for s in probe.get("streams", []) if s.get("codec_type") == "audio"]
-
-
-def _real_duration(fixture: _Fixture) -> float:
-    """The real stream's duration, from ffprobe on the stream file the fixture was built from."""
-    return float(_ffprobe(fixture.stream)["format"]["duration"])
 
 
 # A child process, so a SIGSEGV is a return code rather than the end of the test run.

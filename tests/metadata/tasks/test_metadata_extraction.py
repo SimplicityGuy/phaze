@@ -73,6 +73,19 @@ async def test_extract_calls_put_metadata(mock_extract: MagicMock) -> None:
     assert body.duration == 240.5
 
 
+@pytest.mark.parametrize(("corrected", "expected"), [(True, "audio_frames"), (False, "tags")])
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_a_corrected_duration_is_posted_with_its_source(mock_extract: MagicMock, corrected: bool, expected: str | None) -> None:
+    """phaze-v03x9: the wire body names the frames as the duration's source only when they were."""
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(return_value=MagicMock())
+    mock_extract.return_value = ExtractedTags(duration=3027.0, duration_corrected=corrected)
+
+    await extract_file_metadata(_make_ctx(api_client=api), **_make_payload_kwargs(file_id=uuid.uuid4()))
+
+    assert api.put_metadata.await_args.args[1].duration_source == expected
+
+
 @patch("phaze.tasks.metadata_extraction.extract_tags")
 async def test_companion_file_skipped(mock_extract: MagicMock) -> None:
     """Companion files (.txt) are skipped per D-10 -- no extract, no HTTP."""

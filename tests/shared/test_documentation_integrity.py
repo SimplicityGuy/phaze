@@ -17,7 +17,7 @@ def test_current_maintained_documentation_passes_deterministic_checks() -> None:
     report = integrity.check_documentation(REPO_ROOT)
 
     assert report["errors"] == []
-    assert report["migration_heads"] == ["092"]
+    assert report["migration_heads"] == ["093"]
     assert report["generator_markers"] == 4
     assert report["diagrams"] > 0
     assert report["diagram_relationships"] > 0
