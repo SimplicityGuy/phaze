@@ -398,25 +398,74 @@ def test_format_failure_detail_appends_tail_and_keeps_most_recent_lines() -> Non
     assert bounded.endswith("line-19")
     assert "line-00" not in bounded
 
-    # A faulthandler dump: the Python stack outranks the long C-stack trace behind it.
-    dump = (
-        "old noise",
-        "Fatal Python error: Segmentation fault",
-        "Current thread 0x1 (most recent call first):",
-        '  File "analysis.py", line 9 in analyze_file',
-        "Current thread's C stack trace (most recent call first):",
-        *(f'  Binary file "/opt/py/bin/python3.14", at frame_{i}+0x1 [0x{i:x}]' for i in range(40)),
-    )
-    crash = AnalysisSubprocessError("child exited -11 (SIGSEGV) without a result", exit_code=-11, stderr_tail=dump)
-    squeezed = format_failure_detail(crash, 400)
-    assert len(squeezed) <= 400
-    assert "Fatal Python error: Segmentation fault" in squeezed
-    assert "in analyze_file" in squeezed
-    assert "old noise" not in squeezed
-
     assert format_failure_detail(AnalysisSubprocessError("m"), 2000) == "m"
     assert format_failure_detail(RuntimeError("boom"), 2000) == "boom"
     assert format_failure_detail(exc, 10) == "child exit"
+
+
+_REAL_DUMP = """\
+[   INFO   ] MusicExtractorSVM: no classifier models were configured by default
+Fatal Python error: Segmentation fault
+
+Thread 0x00007f6651ffc6c0 [phaze-decode-he] (most recent call first):
+  File "/usr/local/lib/python3.14/threading.py", line 373 in wait
+  File "/usr/local/lib/python3.14/threading.py", line 670 in wait
+  File "/app/src/phaze/services/analysis_decoder.py", line 437 in _watch
+  File "/usr/local/lib/python3.14/threading.py", line 1024 in run
+  File "/usr/local/lib/python3.14/threading.py", line 1082 in _bootstrap_inner
+  File "/usr/local/lib/python3.14/threading.py", line 1044 in _bootstrap
+
+Current thread 0x00007f668c1b4380 [python] (most recent call first):
+  File "/app/.venv/lib/python3.14/site-packages/essentia/__init__.py", line 148 in run
+  File "/app/src/phaze/services/analysis_decoder.py", line 405 in _decode_windows_streaming
+  File "/app/src/phaze/services/analysis.py", line 701 in _decode_windows_streaming
+  File "/app/src/phaze/services/analysis_decoder.py", line 421 in _call_streaming
+  File "/app/src/phaze/services/analysis_decoder.py", line 456 in _streaming_with_watchdog
+  File "/app/src/phaze/services/analysis_decoder.py", line 487 in _try_gated_rung
+  File "/app/src/phaze/services/analysis_decoder.py", line 532 in _try_streaming_ladder
+  File "/app/src/phaze/services/analysis_decoder.py", line 578 in _decode_windows
+  File "/app/src/phaze/services/analysis.py", line 760 in _decode_windows
+  File "/app/src/phaze/services/analysis.py", line 1113 in _analyze_fine_windows
+  File "/app/src/phaze/services/analysis.py", line 1498 in _analyze_file_traced
+  File "/app/src/phaze/services/analysis.py", line 1454 in analyze_file
+  File "/app/src/phaze/analysis_child.py", line 174 in run
+  File "/app/src/phaze/analysis_child.py", line 220 in _run_traced
+  File "/app/src/phaze/analysis_child.py", line 201 in main
+  File "/app/src/phaze/analysis_child.py", line 224 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 203 in _run_module_as_main
+
+Current thread's C stack trace (most recent call first):
+  Binary file "/usr/local/bin/../lib/libpython3.14.so.1.0", at _Py_DumpStack+0x4c [0x7f668c6057b2]
+  Binary file "/usr/local/bin/../lib/libpython3.14.so.1.0", at +0x1709e2 [0x7f668c60e9e2]
+  Binary file "/lib/x86_64-linux-gnu/libc.so.6", at +0x3fd70 [0x7f668c2e4d70]
+  Binary file "/app/.venv/lib/python3.14/site-packages/essentia/_essentia.cpython-314-x86_64-linux-gnu.so", at +0x9e3b81 [0x7f66731d3b81]
+
+Extension modules: numpy._core._multiarray_umath, numpy.linalg._umath_linalg, essentia._essentia (total: 3)
+"""
+
+
+@pytest.mark.parametrize("noise_lines", [0, 200])
+def test_format_failure_detail_keeps_the_decisive_lines_of_a_real_dump(noise_lines: int) -> None:
+    """The real production dump shape, at real length, in the real 2000-char budget: the
+    header, the faulting Python frames and the faulting native frame must all survive."""
+    from phaze.services.analysis_exec import format_failure_detail
+
+    dump = tuple(line for line in _REAL_DUMP.splitlines() if line)  # the stderr pump drops blank lines
+    noise = tuple(f"[   INFO   ] earlier child output {i}" for i in range(noise_lines))
+    exc = AnalysisSubprocessError("analysis child exited -11 (SIGSEGV) without a result", exit_code=-11, stderr_tail=(*noise, *dump))
+
+    detail = format_failure_detail(exc, 2000)
+
+    assert len(detail) <= 2000
+    assert detail.startswith("analysis child exited -11 (SIGSEGV) without a result\n")
+    assert "Fatal Python error: Segmentation fault" in detail
+    assert 'essentia/__init__.py", line 148 in run' in detail
+    assert "line 487 in _try_gated_rung" in detail
+    assert "_essentia.cpython-314-x86_64-linux-gnu.so" in detail
+    assert "+0x9e3b81" in detail
+    # innermost-first order survives the reselection
+    assert detail.index("in run") < detail.index("in _try_gated_rung") < detail.index("+0x9e3b81")
 
 
 async def test_progress_cb_error_never_fails_the_analysis(monkeypatch: pytest.MonkeyPatch) -> None:

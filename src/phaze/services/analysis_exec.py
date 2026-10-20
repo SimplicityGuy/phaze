@@ -70,49 +70,67 @@ def _describe_exit(returncode: int) -> str:
 
 
 _FATAL_MARKER = "Fatal Python error"
-_C_STACK_MARKER = "C stack trace"
+_C_STACK_MARKER = "Current thread's C stack trace"
+_CURRENT_THREAD_RE = re.compile(r"^Current thread 0x")
+_OTHER_THREAD_RE = re.compile(r"^Thread 0x")
 _BINARY_FILE_RE = re.compile(r'Binary file "[^"]*?([^/"]+)", at ')
+# Leading path noise in ``File "..."`` frames; file, line and function always survive.
+_FRAME_PATH_RE = re.compile(r'File "(?:[^"]*/(?:site-packages|src)/|/usr/local/lib/python3\.\d+/)')
+_RUNTIME_BINARY_RE = re.compile(r"^\s*(?:libpython|libc\.|libc-|ld-linux|libsystem|libpthread|dyld|python3?\.?\d*\b)")
+
+
+def _compact(line: str) -> str:
+    return _FRAME_PATH_RE.sub('File "', _BINARY_FILE_RE.sub(r"\1 ", line))
 
 
 def _fit_tail(tail: tuple[str, ...], room: int) -> str:
     """Pick the tail lines worth storing within ``room`` characters, in chronological order.
 
-    Plain tails keep the MOST RECENT lines. When a faulthandler dump is present, Python
-    3.14 follows the Python stack with a long C-stack trace, so a naive "newest lines"
-    cut would keep only C frames and drop the Python stack -- the part that names what
-    was running. The dump's header and Python stack get priority, then C frames (compacted
-    to the binary's basename) oldest-first, then whatever came before the dump.
+    Plain tails keep the MOST RECENT lines. A faulthandler dump is prioritised instead,
+    because its most useful lines are not its newest (3.14 appends a long C-stack trace
+    and other threads' stacks). In priority order: the ``Fatal Python error`` header; the
+    faulting native frame (first C-stack frame outside libpython/libc); the CURRENT
+    thread's Python frames, innermost first (trimmed from the outermost end); the other
+    C frames; the other threads; and finally whatever preceded the dump (newest first).
     """
-    lines = [_BINARY_FILE_RE.sub(r"\1 ", line) for line in tail]
+    lines = [_compact(line) for line in tail]
     fatal = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith(_FATAL_MARKER)), None)
     if fatal is None:
-        pre, critical, cstack = lines, [], []
+        groups: list[list[int]] = [list(range(len(lines) - 1, -1, -1))]
     else:
-        c_at = next((i for i in range(fatal, len(lines)) if _C_STACK_MARKER in lines[i]), len(lines))
-        pre, critical, cstack = lines[:fatal], lines[fatal:c_at], lines[c_at:]
-
-    def _cost(chosen: list[str]) -> int:
-        return sum(len(x) + 1 for x in chosen)
-
-    crit_kept: list[str] = []
-    for line in reversed(critical):
-        if _cost([line, *crit_kept]) > room:
-            break
-        crit_kept.insert(0, line)
-    used = _cost(crit_kept)
-    c_kept: list[str] = []
-    for line in cstack:
-        if used + len(line) + 1 > room:
-            break
-        c_kept.append(line)
-        used += len(line) + 1
-    pre_kept: list[str] = []
-    for line in reversed(pre) if len(c_kept) == len(cstack) else ():
-        if used + len(line) + 1 > room:
-            break
-        pre_kept.insert(0, line)
-        used += len(line) + 1
-    return "\n".join([*pre_kept, *crit_kept, *c_kept])
+        current: list[int] = []
+        cstack: list[int] = []
+        others: list[int] = []
+        block = current
+        for i in range(fatal + 1, len(lines)):
+            line = lines[i]
+            if _CURRENT_THREAD_RE.match(line):
+                block = current
+            elif line.startswith(_C_STACK_MARKER):
+                block = cstack
+            elif _OTHER_THREAD_RE.match(line) or line.startswith("Extension modules"):
+                block = others
+            block.append(i)
+        fault = [i for i in cstack[1:] if not _RUNTIME_BINARY_RE.match(lines[i].replace("Binary file ", "").lstrip())]
+        fault = fault[:1]
+        groups = [
+            [fatal],
+            fault,
+            current,
+            [i for i in cstack if i not in fault],
+            others,
+            list(range(fatal - 1, -1, -1)),
+        ]
+    chosen: set[int] = set()
+    used = 0
+    for group in groups:
+        for i in group:
+            cost = len(lines[i]) + 1
+            if used + cost > room:
+                break
+            chosen.add(i)
+            used += cost
+    return "\n".join(lines[i] for i in sorted(chosen))
 
 
 def format_failure_detail(exc: BaseException, max_len: int) -> str:
