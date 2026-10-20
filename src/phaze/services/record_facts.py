@@ -182,6 +182,7 @@ def build_record_facts(
     analysis: AnalysisResult | None,
     camelot_modal: str | None,
     metadata_duration: float | None = None,
+    metadata_duration_source: str | None = None,
     mean_vector: Sequence[float] | None = None,
     coarse_windows: Sequence[AnalysisWindow] = (),
 ) -> list[RecordFact]:
@@ -198,7 +199,10 @@ def build_record_facts(
     overrides a real analyzed extent, which is what keeps the "must not overstate" intent above
     true: a file with windows always shows what was actually analyzed, never the tag value. The
     fallback is visibly marked "from tags" in the value itself (not merely a tooltip), so it can
-    never be mistaken for an analysed extent at a glance.
+    never be mistaken for an analysed extent at a glance. ``metadata_duration_source`` is
+    ``FileMetadata.duration_source``: ``"audio_frames"`` (phaze-v03x9) means the stored value was
+    recomputed from the real MPEG frames because the tag reader misparsed the file, so the mark
+    reads "from audio frames" -- a corrected value must not claim to be what the tags said.
 
     ``analysis`` is the file's (at most one) ``AnalysisResult`` row -- ``None`` for a file never
     analyzed to completion. Median BPM and Style read ``analysis.bpm`` / ``.dominant_style``
@@ -218,8 +222,12 @@ def build_record_facts(
         duration_value = format_elapsed_time(total_sec)
         duration_title = ""
     elif metadata_duration is not None and metadata_duration > 0:
-        duration_value = f"{format_elapsed_time(metadata_duration)} (from tags)"
-        duration_title = "No analysis windows yet -- this is the tag-reported length, not an analyzed extent."
+        if metadata_duration_source == "audio_frames":
+            duration_value = f"{format_elapsed_time(metadata_duration)} (from audio frames)"
+            duration_title = "No analysis windows yet -- the tags misreport this file's length, so this is counted from its real MPEG audio frames, not an analyzed extent."
+        else:
+            duration_value = f"{format_elapsed_time(metadata_duration)} (from tags)"
+            duration_title = "No analysis windows yet -- this is the tag-reported length, not an analyzed extent."
     else:
         duration_value = ABSENT
         duration_title = ""

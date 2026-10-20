@@ -111,6 +111,20 @@ def test_duration_falls_back_to_metadata_duration_when_there_are_no_analysis_win
     assert facts["Duration"] == "2:05 (from tags)"
 
 
+def test_a_frame_derived_metadata_duration_is_not_labelled_as_read_from_tags() -> None:  # phaze-v03x9
+    """A duration recomputed from the real MPEG frames (the tags misreport the file) must not claim "from tags"."""
+    value = _facts(total_sec=0.0, metadata_duration=3027.0, metadata_duration_source="audio_frames")["Duration"]
+
+    assert value == "50:27 (from audio frames)"
+    assert "from tags" not in value
+
+
+@pytest.mark.parametrize("source", [None, "tags"])
+def test_a_tag_read_metadata_duration_keeps_the_from_tags_label(source: str | None) -> None:  # phaze-v03x9
+    """NULL (legacy) and an explicit "tags" source are the tag reader's length and say so."""
+    assert _facts(total_sec=0.0, metadata_duration=125.0, metadata_duration_source=source)["Duration"] == "2:05 (from tags)"
+
+
 def test_duration_prefers_the_analyzed_extent_over_metadata_duration_when_windows_exist(  # phaze-tuy9m
 ) -> None:
     """A file with windows must never show the tag value instead of what was actually analyzed --

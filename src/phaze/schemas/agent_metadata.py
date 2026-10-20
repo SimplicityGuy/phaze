@@ -54,6 +54,10 @@ class MetadataWriteRequest(BaseModel):
     track_number: int | None = Field(default=None, ge=0, le=9999)
     duration: float | None = Field(default=None, ge=0.0)
     bitrate: int | None = Field(default=None, ge=0, le=MAX_BITRATE_BPS)
+    # phaze-v03x9: "audio_frames" when `duration` was recomputed from the real MPEG frames behind a
+    # junk prefix; "tags" (or None) when it is the tag reader's own length. Omitted by an older agent, which
+    # (exclude_unset in put_metadata) leaves the stored value alone.
+    duration_source: Literal["tags", "audio_frames"] | None = None
     raw_tags: dict | None = None
 
 
