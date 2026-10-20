@@ -417,6 +417,48 @@ async def test_metadata_partial_put_preserves_other_fields(
 
 
 @pytest.mark.asyncio
+async def test_metadata_put_persists_duration_source_and_an_older_agent_leaves_it_alone(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-v03x9: ``duration_source`` round-trips, and a PUT that omits it (an older agent) keeps it."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r_new = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"duration": 3027.0, "duration_source": "audio_frames"})
+        r_old = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "Aphex Twin"})
+        r_bad = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"duration_source": "bogus"})
+
+    assert (r_new.status_code, r_old.status_code, r_bad.status_code) == (200, 200, 422)
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.duration == 3027.0
+    assert row.duration_source == "audio_frames"
+
+
+@pytest.mark.asyncio
+async def test_metadata_put_omitting_duration_source_on_a_fresh_row_stores_null(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-v03x9: an older agent's first PUT for a file leaves ``duration_source`` NULL (legacy), not a guess."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    app = _make_smoke_app(session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": f"Bearer {raw_token}"}) as ac:
+        response = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"duration": 125.0})
+
+    assert response.status_code == 200, response.text
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert (row.duration, row.duration_source) == (125.0, None)
+
+
+@pytest.mark.asyncio
 async def test_metadata_empty_put_is_noop_for_existing_row(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,

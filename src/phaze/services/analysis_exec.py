@@ -22,6 +22,8 @@ import asyncio
 from collections import deque
 import contextlib
 import json
+import re
+import signal
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -46,12 +48,105 @@ _CHILD_MODULE = "phaze.analysis_child"
 _STREAM_LIMIT = 1 << 25  # 32 MiB
 # How many trailing child-stderr lines ride an AnalysisSubprocessError for diagnosis.
 _STDERR_TAIL_LINES = 20
+# The analysis child's tail is wider: a faulthandler dump (Python stack + 3.14's C-stack trace)
+# runs past 20 lines, and the Python stack at its head is the part worth keeping.
+_CHILD_STDERR_TAIL_LINES = 200
 _STDERR_LINE_MAX = 500
 # How often the stall watchdog wakes to compare "now" against the last activity stamp.
 # Bounded so a very short stall_timeout (tests) is still enforced promptly, and capped as a
 # fraction of the threshold so a production-sized threshold costs a handful of wakeups an hour.
 _WATCHDOG_MIN_TICK_S = 0.05
 _WATCHDOG_TICK_FRACTION = 0.1
+
+
+def _describe_exit(returncode: int) -> str:
+    """Render an exit code, naming the signal for a negative one (``-11`` -> ``-11 (SIGSEGV)``)."""
+    if returncode < 0:
+        try:
+            return f"{returncode} ({signal.Signals(-returncode).name})"
+        except ValueError:
+            return str(returncode)
+    return str(returncode)
+
+
+_FATAL_MARKER = "Fatal Python error"
+_C_STACK_MARKER = "Current thread's C stack trace"
+_CURRENT_THREAD_RE = re.compile(r"^Current thread 0x")
+_OTHER_THREAD_RE = re.compile(r"^Thread 0x")
+_BINARY_FILE_RE = re.compile(r'Binary file "[^"]*?([^/"]+)", at ')
+# Leading path noise in ``File "..."`` frames; file, line and function always survive.
+_FRAME_PATH_RE = re.compile(r'File "(?:[^"]*/(?:site-packages|src)/|/usr/local/lib/python3\.\d+/)')
+_RUNTIME_BINARY_RE = re.compile(r"^\s*(?:libpython|libc\.|libc-|ld-linux|libsystem|libpthread|dyld|python3?\.?\d*\b)")
+
+
+def _compact(line: str) -> str:
+    return _FRAME_PATH_RE.sub('File "', _BINARY_FILE_RE.sub(r"\1 ", line))
+
+
+def _fit_tail(tail: tuple[str, ...], room: int) -> str:
+    """Pick the tail lines worth storing within ``room`` characters, in chronological order.
+
+    Plain tails keep the MOST RECENT lines. A faulthandler dump is prioritised instead,
+    because its most useful lines are not its newest (3.14 appends a long C-stack trace
+    and other threads' stacks). In priority order: the ``Fatal Python error`` header; the
+    faulting native frame (first C-stack frame outside libpython/libc); the CURRENT
+    thread's Python frames, innermost first (trimmed from the outermost end); the other
+    C frames; the other threads; and finally whatever preceded the dump (newest first).
+    """
+    lines = [_compact(line) for line in tail]
+    fatal = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith(_FATAL_MARKER)), None)
+    if fatal is None:
+        groups: list[list[int]] = [list(range(len(lines) - 1, -1, -1))]
+    else:
+        current: list[int] = []
+        cstack: list[int] = []
+        others: list[int] = []
+        block = current
+        for i in range(fatal + 1, len(lines)):
+            line = lines[i]
+            if _CURRENT_THREAD_RE.match(line):
+                block = current
+            elif line.startswith(_C_STACK_MARKER):
+                block = cstack
+            elif _OTHER_THREAD_RE.match(line) or line.startswith("Extension modules"):
+                block = others
+            block.append(i)
+        fault = [i for i in cstack[1:] if not _RUNTIME_BINARY_RE.match(lines[i].replace("Binary file ", "").lstrip())]
+        fault = fault[:1]
+        groups = [
+            [fatal],
+            fault,
+            current,
+            [i for i in cstack if i not in fault],
+            others,
+            list(range(fatal - 1, -1, -1)),
+        ]
+    chosen: set[int] = set()
+    used = 0
+    for group in groups:
+        for i in group:
+            cost = len(lines[i]) + 1
+            if used + cost > room:
+                break
+            chosen.add(i)
+            used += cost
+    return "\n".join(lines[i] for i in sorted(chosen))
+
+
+def format_failure_detail(exc: BaseException, max_len: int) -> str:
+    """Render ``exc`` for a stored ``error_message``: its message plus the child's stderr tail.
+
+    The tail carries what the child printed as it died (faulthandler's ``Fatal Python
+    error`` line and Python stack on a native crash) -- the only durable record once the
+    pod's logs are deleted. Bounded to ``max_len``; when it does not fit, the OLDEST lines
+    are dropped (see :func:`_fit_tail` for the faulthandler-aware ordering), never the message.
+    """
+    message = str(exc)
+    tail = getattr(exc, "stderr_tail", ())
+    if not tail or max_len <= len(message) + 1:
+        return message[:max_len]
+    body = _fit_tail(tuple(tail), max_len - len(message) - 1)
+    return f"{message}\n{body}" if body else message
 
 
 class AnalysisSubprocessError(RuntimeError):
@@ -334,7 +429,7 @@ async def _run_analysis_subprocess_traced(
 
     result: dict[str, Any] | None = None
     error_message: str | None = None
-    stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+    stderr_tail: deque[str] = deque(maxlen=_CHILD_STDERR_TAIL_LINES)
     loop = asyncio.get_running_loop()
     last_activity = loop.time()
     last_stage: str | None = None
@@ -448,7 +543,7 @@ async def _run_analysis_subprocess_traced(
     if error_message is not None:
         msg = f"analysis child failed (exit {returncode}): {error_message}"
     elif returncode != 0:
-        msg = f"analysis child exited {returncode} without a result"
+        msg = f"analysis child exited {_describe_exit(returncode)} without a result"
     else:
         msg = "analysis child exited 0 without a result line (malformed protocol)"
     raise AnalysisSubprocessError(msg, exit_code=returncode, stderr_tail=tail)

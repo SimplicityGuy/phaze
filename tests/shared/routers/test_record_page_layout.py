@@ -764,6 +764,29 @@ async def test_duration_falls_back_to_metadata_duration_when_there_are_no_analys
 
 
 @pytest.mark.asyncio
+async def test_a_frame_derived_metadata_duration_renders_without_the_from_tags_claim(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    make_file,
+) -> None:
+    """phaze-v03x9, on the rendered fact: a corrected duration shows its real source and a title that says so."""
+    file = await make_file(original_filename="<set-04>.mp3")
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, duration=3027.0, duration_source="audio_frames"))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    rows = {
+        row.select_one("dt").get_text(strip=True): row.select_one("dd")  # type: ignore[union-attr]
+        for row in page.select("[data-record-sidebar] [data-record-fact]")
+    }
+    duration = rows["Duration"]
+
+    assert duration.get_text(" ", strip=True) == "50:27 (from audio frames)"
+    assert "from tags" not in duration.get_text(" ", strip=True)
+    assert "tag-reported" not in str(duration)
+
+
+@pytest.mark.asyncio
 async def test_duration_still_shows_the_analyzed_extent_when_windows_exist_even_with_metadata(  # type: ignore[no-untyped-def]
     client: AsyncClient,
     session: AsyncSession,

@@ -26,6 +26,10 @@ analysis child's D-08 stall watchdog, so progress lines feed only the caller's o
 Heartbeat callbacks are spawned rather than awaited inline, keeping the ffmpeg progress pipe
 drained even when a callback stalls. D-09 keeps the module lane-agnostic and database-free.
 
+An MPEG audio file that FFmpeg misdetects because of a junk prefix (phaze-oap6y) is not
+remuxed: it is byte-spliced into a scratch ``.mp3`` of its ID3v2 tag plus its real frames, found
+by :mod:`phaze.services.mpeg_frames`. Both lanes get that through this one seam.
+
 This module must not import ``phaze.database``, ``phaze.tasks.session``, SQLAlchemy, or Essentia:
 both the agent worker and the Postgres-free one-shot job runner import it.
 """
@@ -40,11 +44,12 @@ import json
 from pathlib import Path
 import tempfile
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 import uuid
 
 import structlog
 
+from phaze.services import mpeg_frames
 from phaze.services.analysis_exec import _STDERR_LINE_MAX, _STDERR_TAIL_LINES
 
 
@@ -59,6 +64,9 @@ logger = structlog.get_logger(__name__)
 # instead need a stereo decode for Essentia, stored as compressed FLAC rather than raw PCM.
 _EXTRACTED_AUDIO_SUFFIX = ".mka"
 _DOWNMIXED_AUDIO_SUFFIX = ".flac"
+# A spliced MPEG stream (phaze-oap6y) keeps the original container: an .mp3 byte copy.
+_SPLICED_AUDIO_SUFFIX = ".mp3"
+_SPLICE_COPY_CHUNK = 1024 * 1024
 _RECOVERY_PROBE_BYTES = 10_000_000
 _RECOVERY_ANALYZE_MICROSECONDS = 60_000_000
 
@@ -150,6 +158,16 @@ async def probe_container_streams(file_path: str, *, deep: bool = False) -> list
     "is this file ALREADY just that audio" cannot -- it is a statement about what else is in
     there. One probe answers both; do not split it back into two ffprobe invocations.
     """
+    streams, _format_name = await _probe_container(file_path, deep=deep)
+    return streams
+
+
+async def _probe_container(file_path: str, *, deep: bool = False) -> tuple[list[dict[str, Any]], str | None]:
+    """:func:`probe_container_streams` plus the demuxer ffprobe chose (``format_name``).
+
+    The same single ffprobe call: phaze-oap6y needs the demuxer to scope the MPEG misdetection
+    check (:func:`_splice_if_misdetected`), and asking for one more entry costs nothing.
+    """
     argv = [
         "ffprobe",
         "-v",
@@ -157,7 +175,7 @@ async def probe_container_streams(file_path: str, *, deep: bool = False) -> list
         "-print_format",
         "json",
         "-show_entries",
-        "stream=index,codec_name,codec_type,channels,sample_rate:stream_disposition=default,attached_pic",
+        "stream=index,codec_name,codec_type,channels,sample_rate:stream_disposition=default,attached_pic:format=format_name",
     ]
     if deep:
         argv.extend(("-probesize", str(_RECOVERY_PROBE_BYTES), "-analyzeduration", str(_RECOVERY_ANALYZE_MICROSECONDS)))
@@ -177,8 +195,12 @@ async def probe_container_streams(file_path: str, *, deep: bool = False) -> list
     except ValueError as exc:
         msg = f"ffprobe produced non-JSON output probing {file_path!r}"
         raise AudioExtractionError(msg) from exc
-    streams = payload.get("streams") if isinstance(payload, dict) else None
-    return streams if isinstance(streams, list) else []
+    if not isinstance(payload, dict):
+        return [], None
+    streams = payload.get("streams")
+    fmt = payload.get("format")
+    format_name = fmt.get("format_name") if isinstance(fmt, dict) else None
+    return (streams if isinstance(streams, list) else []), (format_name if isinstance(format_name, str) else None)
 
 
 def _audio_streams(streams: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -269,7 +291,7 @@ def _log_multi_track_selection(file_path: str, file_id: str | None, selected: di
     )
 
 
-def _resolve_dest_path(scratch_dir: str | Path | None, *, downmix: bool = False) -> Path:
+def _resolve_dest_path(scratch_dir: str | Path | None, *, downmix: bool = False, suffix: str | None = None) -> Path:
     """Where the extracted-audio scratch file lands (review correction, phaze-3ea41 -- naming
     the exact mechanism here since a prior report described it only in prose elsewhere):
     ``scratch_dir``, when the caller passes one, else ``tempfile.gettempdir()``. Both real
@@ -294,7 +316,8 @@ def _resolve_dest_path(scratch_dir: str | Path | None, *, downmix: bool = False)
     """
     dest_dir = Path(scratch_dir) if scratch_dir is not None else Path(tempfile.gettempdir())
     dest_dir.mkdir(parents=True, exist_ok=True)
-    suffix = _DOWNMIXED_AUDIO_SUFFIX if downmix else _EXTRACTED_AUDIO_SUFFIX
+    if suffix is None:
+        suffix = _DOWNMIXED_AUDIO_SUFFIX if downmix else _EXTRACTED_AUDIO_SUFFIX
     return dest_dir / f"{uuid.uuid4().hex}{suffix}"
 
 
@@ -459,6 +482,138 @@ async def _settle_pending(pump: _ExtractionPump) -> None:
         await asyncio.gather(*pump.pending, return_exceptions=True)
 
 
+def _misdetection_candidate_codec(file_path: str, streams: list[dict[str, Any]], format_name: str | None) -> tuple[bool, str | None]:
+    """The prefilter of the phaze-oap6y detector: should the frame-chain parse run at all?
+
+    Returns ``(run_parse, probed_codec)``. ``probed_codec`` is the first audio stream's codec,
+    or ``None`` when ffprobe reported no audio stream.
+
+    The prefilter itself is the operator's (see :mod:`phaze.services.mpeg_frames`): the parse
+    runs when the first audio stream's codec is not ``mp3``, or there is no audio stream. That
+    decision answered a question about MP3s, and the scan behind it measured only MP3 files
+    (``file_type = 'mp3'``), while this seam sees every analyzed file. So its SCOPE here is the
+    implementer's decision, made under dispatcher direction (bead ``phaze-oap6y``), and stays
+    inside the operator's:
+
+    * an audio stream only qualifies when ffprobe read the file with its ``mp3`` demuxer, and
+    * the no-audio branch only applies to a path whose suffix is ``.mp3`` (any case).
+
+    Without the first, a Matroska file whose first audio track is AC3 or AAC but which also
+    carries a laced MP2 track holds contiguous MPEG frames and would be spliced into garbage.
+    Without the second, every video file with no audio would be scanned, and MPEG-TS/PS video
+    with muxed MP2 could false-positive. Over the measured population the scoped prefilter admits
+    the same 41 files: the 37 real MP2 files and the trigger probe through the ``mp3`` demuxer,
+    and the 3 raw-VVC misprobes are ``.mp3`` files with no audio stream. Every lane hands this
+    seam a path carrying the file's real extension: the archive original, a pushed copy named by
+    ``tasks/push.py::build_scratch_path``, or the cloud pod's download named by ``audio_ext``.
+    """
+    if not streams:
+        return Path(file_path).suffix.lower() == ".mp3", None
+    probed_codec = streams[0].get("codec_name")
+    codec = probed_codec if isinstance(probed_codec, str) else None
+    return (codec != "mp3" and format_name == "mp3"), codec
+
+
+def _copy_range(src: BinaryIO, dst: BinaryIO, length: int | None) -> None:
+    """Stream ``length`` bytes (or everything, for ``None``) from ``src``'s position to ``dst``."""
+    while length is None or length > 0:
+        chunk = src.read(_SPLICE_COPY_CHUNK if length is None else min(_SPLICE_COPY_CHUNK, length))
+        if not chunk:
+            return
+        dst.write(chunk)
+        if length is not None:
+            length -= len(chunk)
+
+
+def _write_splice(file_path: str, id3v2_end: int, splice_offset: int, dest_path: Path) -> None:
+    """Write ``file_path``'s ID3v2 tag bytes, then its bytes from ``splice_offset`` to EOF.
+
+    Both halves are streamed, so memory stays one chunk whatever the tag size. A byte copy into
+    the same ``.mp3`` container, never a remux: phaze-3ea41 is the incident where a remuxed
+    ``.mka`` read as 0 s through ``es.MetadataReader``.
+    """
+    with Path(file_path).open("rb") as src, dest_path.open("wb") as dst:
+        _copy_range(src, dst, id3v2_end)
+        src.seek(splice_offset)
+        _copy_range(src, dst, None)
+
+
+async def _splice_if_misdetected(
+    file_path: str,
+    streams: list[dict[str, Any]],
+    format_name: str | None,
+    *,
+    file_id: str | None,
+    scratch_dir: str | Path | None,
+) -> AudioSource | None:
+    """Detect, then splice -- never remux (epic ``phaze-pjkbu``, bead ``phaze-oap6y``).
+
+    Returns ``None`` for every file the detector does not flag, which then goes through the
+    unchanged probe/skip/extract path. For a flagged file it returns an :class:`AudioSource`
+    whose path is a scratch ``.mp3``: the original ID3v2 tag bytes followed by the bytes from
+    the real stream's first frame to EOF. Ownership of that file transfers to the caller exactly
+    as on the extraction branch, so both lanes' existing ``finally`` deletes it.
+
+    The splice is re-probed before it is handed on. The analysis duration probe (D-10) and
+    essentia both read it, so it must now probe as the stream the frame chain found: the same
+    layer, through the ``mp3`` demuxer. Otherwise this raises :class:`AudioExtractionError` and
+    deletes the splice.
+
+    A head that cannot be read, or whose ID3v2 region is out of bounds, is logged and treated as
+    unflagged, so the file keeps whatever outcome it had before this check existed.
+    """
+    run_parse, probed_codec = _misdetection_candidate_codec(file_path, streams, format_name)
+    if not run_parse:
+        return None
+    try:
+        window = await asyncio.to_thread(mpeg_frames.read_scan_window, file_path)
+    except OSError as exc:
+        logger.warning("mpeg_misdetection_unreadable", file=file_path, file_id=file_id, error=str(exc)[:_STDERR_LINE_MAX])
+        return None
+    if window is None:
+        # The ID3v2 region claims to run past the file, past the bound, or through too many tags.
+        logger.warning("mpeg_misdetection_tag_region_out_of_bounds", file=file_path, file_id=file_id)
+        return None
+    verdict = mpeg_frames.detect_misdetection(window, probed_codec)
+    if not verdict.misdetected or verdict.splice_offset is None:
+        return None
+
+    dest_path = _resolve_dest_path(scratch_dir, suffix=_SPLICED_AUDIO_SUFFIX)
+    try:
+        await asyncio.to_thread(_write_splice, file_path, verdict.id3v2_end, verdict.splice_offset, dest_path)
+        spliced_streams, spliced_format = await _probe_container(str(dest_path))
+    except OSError as exc:
+        dest_path.unlink(missing_ok=True)
+        msg = f"could not write the spliced MPEG stream for {file_path!r}: {exc}"
+        raise AudioExtractionError(msg) from exc
+    except BaseException:
+        # A failed re-probe or a cancellation: never hand a caller, or leave behind, a partial splice.
+        dest_path.unlink(missing_ok=True)
+        raise
+    spliced_audio = _audio_streams(spliced_streams)
+    spliced_layer = mpeg_frames.layer_for_codec(spliced_audio[0].get("codec_name")) if spliced_audio else None
+    if spliced_format != "mp3" or spliced_layer != verdict.chain_layer:
+        dest_path.unlink(missing_ok=True)
+        msg = (
+            f"spliced MPEG stream for {file_path!r} still misprobes: expected layer {verdict.chain_layer} via the mp3 demuxer, "
+            f"ffprobe read format {spliced_format!r} with layer {spliced_layer}"
+        )
+        raise AudioExtractionError(msg)
+
+    logger.info(
+        "mpeg_misdetection_spliced",
+        file=file_path,
+        file_id=file_id,
+        probed_codec=probed_codec,
+        probed_format=format_name,
+        chain_layer=verdict.chain_layer,
+        id3v2_end=verdict.id3v2_end,
+        splice_offset=verdict.splice_offset,
+        junk_bytes=verdict.splice_offset - verdict.id3v2_end,
+    )
+    return AudioSource(analysis_path=str(dest_path), cleanup_path=str(dest_path))
+
+
 async def extract_audio_track(
     file_path: str,
     *,
@@ -485,6 +640,12 @@ async def extract_audio_track(
     this is the single highest-risk line in the change and the reason the return type is a pair
     of named fields rather than a string.
 
+    **The splice branch (phaze-oap6y)** runs first. When FFmpeg misdetects an MPEG audio file
+    behind a junk prefix (:func:`_splice_if_misdetected`), this returns a scratch ``.mp3``
+    holding the ID3v2 tag and the real frames, with ``cleanup_path`` equal to ``analysis_path``
+    as on the extraction branch. A file FFmpeg read as having no audio can take this branch
+    too, so :class:`NoAudioTrackError` is raised only after it declines.
+
     On the EXTRACTION branch ``cleanup_path`` is the newly created scratch file and equals
     ``analysis_path``. This function never leaves a partial/empty file behind on its own failure
     paths (it unlinks its own output before raising), but on a successful return ownership of
@@ -502,8 +663,11 @@ async def extract_audio_track(
     lanes do) pass it so a multi-track pick is attributable to the file it was made for in the
     structured log stream without threading a DB write through an essentia/DB-free module.
     """
-    container = await probe_container_streams(file_path)
+    container, format_name = await _probe_container(file_path)
     streams = _audio_streams(container)
+    spliced = await _splice_if_misdetected(file_path, streams, format_name, file_id=file_id, scratch_dir=scratch_dir)
+    if spliced is not None:
+        return spliced
     if not streams:
         msg = f"no audio stream found in {file_path!r}"
         raise NoAudioTrackError(msg)
@@ -511,7 +675,7 @@ async def extract_audio_track(
     selected, others = _select_track(streams)
     recovered_probe = not _has_audio_parameters(selected)
     if recovered_probe:
-        container = await probe_container_streams(file_path, deep=True)
+        container, _format_name = await _probe_container(file_path, deep=True)
         streams = _audio_streams(container)
         if not streams:
             msg = f"no audio stream found after deep probe in {file_path!r}"

@@ -961,7 +961,11 @@ async def test_analysis_driver_crash_reports_reason_crashed(job_env, monkeypatch
     )
 
     def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
-        raise AnalysisSubprocessError("child exited 1", exit_code=1, stderr_tail=("segfault",))
+        raise AnalysisSubprocessError(
+            "child exited -11 (SIGSEGV) without a result",
+            exit_code=-11,
+            stderr_tail=("Fatal Python error: Segmentation fault", '  File "analysis.py", line 1 in analyze_file'),
+        )
 
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_boom))
 
@@ -972,6 +976,8 @@ async def test_analysis_driver_crash_reports_reason_crashed(job_env, monkeypatch
     assert failed.called
     body = _json.loads(failed.calls.last.request.content)
     assert body["reason"] == "crashed"
+    assert "-11 (SIGSEGV)" in body["error"]
+    assert "Fatal Python error: Segmentation fault" in body["error"]
 
 
 @respx.mock

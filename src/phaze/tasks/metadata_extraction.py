@@ -112,6 +112,7 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
                 genre=tags.genre,
                 track_number=tags.track_number,
                 duration=tags.duration,
+                duration_source="audio_frames" if tags.duration_corrected else "tags",
                 bitrate=tags.bitrate,
                 raw_tags=tags.raw_tags,
             )

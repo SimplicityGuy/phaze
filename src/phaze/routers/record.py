@@ -305,6 +305,7 @@ async def build_file_record_context(
         analysis=analysis,
         camelot_modal=set_profile.camelot_modal if set_profile is not None else None,
         metadata_duration=metadata_row.duration if metadata_row is not None else None,
+        metadata_duration_source=metadata_row.duration_source if metadata_row is not None else None,
         mean_vector=set_profile.mean_vector if set_profile is not None else None,
         coarse_windows=[window for window in windows if window.tier == "coarse"],
     )

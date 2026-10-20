@@ -217,6 +217,21 @@ def crash_analyze(
     raise RuntimeError(msg)
 
 
+def segfault_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """Dies of a REAL native SIGSEGV (no Python exception, no error line) -- the essentia crash shape."""
+    import faulthandler
+
+    faulthandler._sigsegv()  # type: ignore[attr-defined]  # private CPython test hook; the point is a genuine fault
+    return _result(file_path, models_dir, **windowing)  # pragma: no cover - the process is gone
+
+
 def noisy_analyze(
     file_path: str,
     models_dir: str,
