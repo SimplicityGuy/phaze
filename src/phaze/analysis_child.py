@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import faulthandler
 import importlib
 import json
 import os
@@ -195,6 +196,11 @@ def main(argv: list[str] | None = None) -> int:
     which is the default and the whole production path today.
     """
     args = _parse_args(argv)
+    # A native fault (essentia/TF SIGSEGV) kills the process with no Python traceback;
+    # faulthandler dumps "Fatal Python error" + the Python stack to fd 2 -- the stderr
+    # pipe the parent frames into AnalysisSubprocessError.stderr_tail. Enabled before
+    # the essentia import (deferred behind _load_target) and independent of fd 1.
+    faulthandler.enable(file=sys.stderr, all_threads=True)
     with _open_protocol_channel() as protocol:
         configure_telemetry("analysis")
         try:

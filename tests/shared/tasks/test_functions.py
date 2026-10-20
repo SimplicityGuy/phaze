@@ -878,7 +878,11 @@ async def test_process_file_subprocess_crash_is_terminal(mock_pool: AsyncMock) -
     from phaze.services.analysis_exec import AnalysisSubprocessError
 
     file_id = uuid.uuid4()
-    mock_pool.side_effect = AnalysisSubprocessError("analysis child failed (exit 1): essentia died", exit_code=1)
+    mock_pool.side_effect = AnalysisSubprocessError(
+        "analysis child failed (exit 1): essentia died",
+        exit_code=1,
+        stderr_tail=("Fatal Python error: Segmentation fault",),
+    )
     api = AsyncMock()
     api.put_analysis = AsyncMock()
     api.report_analysis_failed = AsyncMock(return_value=MagicMock())
@@ -890,6 +894,8 @@ async def test_process_file_subprocess_crash_is_terminal(mock_pool: AsyncMock) -
     api.report_analysis_failed.assert_awaited_once()
     failure = api.report_analysis_failed.await_args.args[1]
     assert failure.reason == "crashed"
+    assert failure.error is not None
+    assert "Fatal Python error: Segmentation fault" in failure.error
     # phaze-zibn: the child's terminal error line rides along as detail so the durable
     # failure marker names the actual cause (e.g. AnalysisDecodeError vs a segfault).
     assert failure.error is not None
