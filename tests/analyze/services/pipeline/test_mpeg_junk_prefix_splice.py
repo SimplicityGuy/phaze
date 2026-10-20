@@ -21,11 +21,13 @@ wherever a crash is possible, so a SIGSEGV fails one test instead of killing the
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
 import struct
 import sys
+import threading
 from typing import Any
 import uuid
 
@@ -231,6 +233,44 @@ async def test_analyze_file_on_the_splice_covers_the_real_duration_within_one_wi
 
     assert abs(result["fine_windows_total"] * _WINDOW_SEC - real) <= _WINDOW_SEC
     assert result["fine_windows_analyzed"] == result["fine_windows_total"]
+
+
+async def test_a_cancel_before_the_writer_thread_opens_the_destination_leaves_no_scratch_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling does not stop a to_thread worker, so cleanup must wait for it.
+
+    The writer is gated so the cancel provably lands before it opens the destination. Unlinking at
+    cancel time would find nothing; the thread would then create and fill the copy afterwards.
+    """
+    fixture = _make_trigger(tmp_path)
+    scratch = tmp_path / "scratch"
+    real_write = video_audio._write_splice
+    in_thread, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def gated_write(*args: Any) -> None:
+        in_thread.set()
+        release.wait(timeout=30)
+        try:
+            real_write(*args)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(video_audio, "_write_splice", gated_write)
+
+    task = asyncio.ensure_future(extract_audio_track(str(fixture.path), scratch_dir=scratch))
+    assert await asyncio.to_thread(in_thread.wait, 30), "the writer thread never started"
+    assert not scratch.exists() or not any(scratch.iterdir()), "the gate must hold the writer before it opens the destination"
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()  # a second cancel while cleanup waits must not abandon the wait
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(finished.wait, 30), "the writer thread never finished"
+
+    assert not scratch.exists() or not any(scratch.iterdir()), "a cancelled splice left its scratch file behind"
 
 
 # Negative controls: what currently works must keep working, untouched

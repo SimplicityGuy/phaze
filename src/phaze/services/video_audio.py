@@ -538,6 +538,19 @@ def _write_splice(file_path: str, id3v2_end: int, splice_offset: int, dest_path:
         _copy_range(src, dst, None)
 
 
+async def _await_thread_done(task: asyncio.Future[None]) -> None:
+    """Wait for ``task`` to finish, however many times this coroutine is cancelled meanwhile.
+
+    The thread behind a ``to_thread`` future cannot be interrupted, so the only safe moment to
+    delete what it writes is after it returns. Its own outcome is irrelevant here, and the caller
+    re-raises whatever it is already unwinding with, so a cancellation that arrives while waiting
+    is absorbed rather than propagated.
+    """
+    while not task.done():
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait([task])
+
+
 async def _splice_if_misdetected(
     file_path: str,
     streams: list[dict[str, Any]],
@@ -579,15 +592,22 @@ async def _splice_if_misdetected(
         return None
 
     dest_path = _resolve_dest_path(scratch_dir, suffix=_SPLICED_AUDIO_SUFFIX)
+    # Cancelling an awaited to_thread does not stop the worker. Hold the thread's own future so
+    # cleanup can wait for it: unlinking while it has yet to open the destination would find
+    # nothing, and the thread would then create and fill a full-size copy that nothing deletes.
+    write_task = asyncio.ensure_future(asyncio.to_thread(_write_splice, file_path, verdict.id3v2_end, verdict.splice_offset, dest_path))
     try:
-        await asyncio.to_thread(_write_splice, file_path, verdict.id3v2_end, verdict.splice_offset, dest_path)
+        await asyncio.shield(write_task)
         spliced_streams, spliced_format = await _probe_container(str(dest_path))
     except OSError as exc:
+        await _await_thread_done(write_task)
         dest_path.unlink(missing_ok=True)
         msg = f"could not write the spliced MPEG stream for {file_path!r}: {exc}"
         raise AudioExtractionError(msg) from exc
     except BaseException:
         # A failed re-probe or a cancellation: never hand a caller, or leave behind, a partial splice.
+        # On cancellation the writer thread may still be running, so let it finish before unlinking.
+        await _await_thread_done(write_task)
         dest_path.unlink(missing_ok=True)
         raise
     spliced_audio = _audio_streams(spliced_streams)
