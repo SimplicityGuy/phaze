@@ -795,14 +795,14 @@ async def test_real_recovery_remux_is_readable_by_essentia(monkeypatch: pytest.M
     )
     assert await proc.wait() == 0
     before = src.read_bytes()
-    real_probe = video_audio.probe_container_streams
+    real_probe = video_audio._probe_container
 
-    async def _initial_header_is_unusable(file_path: str, *, deep: bool = False) -> list[dict[str, Any]]:
+    async def _initial_header_is_unusable(file_path: str, *, deep: bool = False) -> tuple[list[dict[str, Any]], str | None]:
         if not deep:
-            return [{"index": 0, "codec_type": "audio", "codec_name": "mp3", "channels": 0, "sample_rate": "0"}]
+            return [{"index": 0, "codec_type": "audio", "codec_name": "mp3", "channels": 0, "sample_rate": "0"}], "mp3"
         return await real_probe(file_path, deep=True)
 
-    monkeypatch.setattr(video_audio, "probe_container_streams", _initial_header_is_unusable)
+    monkeypatch.setattr(video_audio, "_probe_container", _initial_header_is_unusable)
 
     result = await extract_audio_track(str(src), scratch_dir=tmp_path)
 
@@ -1104,3 +1104,215 @@ async def test_real_skip_branch_output_is_readable_by_the_real_consumer_es_metad
 
     duration_sec = es.MetadataReader(filename=result.analysis_path)()[8]
     assert duration_sec == pytest.approx(3.0, abs=0.5), "es.MetadataReader must read a real duration for the untouched skip-branch file"
+
+
+# phaze-oap6y: the splice branch's control flow. The real-audio side (real ffmpeg, ffprobe and
+# essentia on synthetic junk-prefixed MP3s, both lanes) is test_mpeg_junk_prefix_splice.py.
+
+# MPEG-1 Layer 3, 128 kbps, 44.1 kHz: 417-byte frames.
+_L3_FRAME = b"\xff\xfb\x90\x00" + b"\x55" * 413
+
+
+def _id3_tag(total: int) -> bytes:
+    size = total - 10
+    return b"ID3\x03\x00\x00" + bytes([(size >> 21) & 0x7F, (size >> 14) & 0x7F, (size >> 7) & 0x7F, size & 0x7F]) + b"\x00" * size
+
+
+def _write_misdetected(path: Path) -> bytes:
+    """A 100-byte ID3v2 tag, 300 junk bytes with no frame sync, then 12 real Layer 3 frames."""
+    data = _id3_tag(100) + bytes(range(1, 151)) * 2 + _L3_FRAME * 12
+    path.write_bytes(data)
+    return data
+
+
+def _probe_with_format(streams: list[dict[str, Any]], format_name: str | None) -> bytes:
+    payload: dict[str, Any] = {"streams": streams}
+    if format_name is not None:
+        payload["format"] = {"format_name": format_name}
+    return json.dumps(payload).encode()
+
+
+_MP3_AUDIO = {"index": 0, "codec_type": "audio", "codec_name": "mp3", "sample_rate": "44100", "channels": 2}
+
+
+@pytest.mark.parametrize(
+    ("path", "codecs", "format_name", "expected"),
+    [
+        ("/m/a.mp3", [], None, (True, None)),
+        ("/m/a.mp3", [], "vvc", (True, None)),
+        ("/m/A.MP3", [], "vvc", (True, None)),
+        ("/m/a.mkv", [], "matroska,webm", (False, None)),
+        ("/m/a.ts", [], "mpegts", (False, None)),
+        ("/m/a.mp3", ["mp3"], "mp3", (False, "mp3")),
+        ("/m/a.mp3", ["mp1"], "mp3", (True, "mp1")),
+        ("/m/a.mp3", ["mp2"], "mp3", (True, "mp2")),
+        ("/m/a.m4a", ["aac"], "mov,mp4,m4a,3gp,3g2,mj2", (False, "aac")),
+        ("/m/a.mkv", ["ac3", "mp2"], "matroska,webm", (False, "ac3")),
+        ("/m/a.mp3", [None], "mp3", (True, None)),
+    ],
+)
+def test_misdetection_prefilter_and_its_scope(
+    path: str, codecs: list[str | None], format_name: str | None, expected: tuple[bool, str | None]
+) -> None:
+    """Codec not mp3, or no audio stream -- scoped to the mp3 demuxer, and to a ``.mp3`` path when
+    there is no audio stream (implementer's decision under dispatcher direction, phaze-oap6y)."""
+    streams = [{"codec_type": "audio", "codec_name": c} for c in codecs]
+
+    assert video_audio._misdetection_candidate_codec(path, streams, format_name) == expected
+
+
+async def test_an_audio_less_non_mp3_file_is_never_read_for_frame_chains(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def _tripwire(_path: str) -> Any:
+        raise AssertionError("scanned an audio-less file that is not a .mp3")
+
+    monkeypatch.setattr(video_audio.mpeg_frames, "read_scan_window", _tripwire)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([_FakeCommunicateProc(0, stdout=_probe_with_format([], "mpegts"))]))
+    src = tmp_path / "broadcast.ts"
+    src.write_bytes(b"\x47" * 188)
+
+    with pytest.raises(NoAudioTrackError):
+        await extract_audio_track(str(src), scratch_dir=tmp_path / "scratch")
+
+
+def test_the_splice_streams_the_tag_and_the_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both halves are copied in bounded chunks, never read whole."""
+    monkeypatch.setattr(video_audio, "_SPLICE_COPY_CHUNK", 7)
+    src = tmp_path / "in.mp3"
+    src.write_bytes(bytes(range(100)))
+    dest = tmp_path / "out.mp3"
+
+    video_audio._write_splice(str(src), 20, 60, dest)
+
+    assert dest.read_bytes() == bytes(range(20)) + bytes(range(60, 100))
+
+
+async def test_probe_container_returns_the_demuxer_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = _FakeCommunicateProc(0, stdout=_probe_with_format([_MP3_AUDIO], "mp3"))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([proc]))
+
+    assert await video_audio._probe_container("/music/track.mp3") == ([_MP3_AUDIO], "mp3")
+
+
+@pytest.mark.parametrize("stdout", [b"[]", b'{"streams": "x", "format": "y"}'])
+async def test_probe_container_tolerates_unexpected_json_shapes(monkeypatch: pytest.MonkeyPatch, stdout: bytes) -> None:
+    proc = _FakeCommunicateProc(0, stdout=stdout)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([proc]))
+
+    assert await video_audio._probe_container("/music/track.mp3") == ([], None)
+
+
+async def test_a_non_mpeg_container_is_never_read_for_frame_chains(make_fake_exec: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scope: an AAC video container keeps its normal extraction and is never parsed."""
+
+    def _tripwire(_path: str) -> bytes:
+        raise AssertionError("parsed a file outside the detector's scope")
+
+    monkeypatch.setattr(video_audio.mpeg_frames, "read_scan_window", _tripwire)
+    make_fake_exec([{"index": 1, "codec_name": "aac"}])
+
+    result = await extract_audio_track("/video/concert.mkv")
+
+    assert Path(result.analysis_path).suffix == ".mka"
+    Path(result.analysis_path).unlink()
+
+
+async def test_an_unreadable_head_keeps_the_no_audio_outcome(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No audio stream and a head that cannot be read: the file fails exactly as it did before."""
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([_FakeCommunicateProc(0, stdout=_probe_json([]))]))
+
+    with pytest.raises(NoAudioTrackError):
+        await extract_audio_track(str(tmp_path / "gone.mp3"), scratch_dir=tmp_path / "scratch")
+
+    assert not (tmp_path / "scratch").exists()
+
+
+async def test_a_flagged_file_with_no_chain_found_is_not_spliced(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    src = tmp_path / "noise.mp3"
+    src.write_bytes(_id3_tag(100) + bytes(range(1, 151)) * 20)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([_FakeCommunicateProc(0, stdout=_probe_with_format([], "vvc"))]))
+
+    with pytest.raises(NoAudioTrackError):
+        await extract_audio_track(str(src), scratch_dir=tmp_path / "scratch")
+
+
+async def test_a_spliced_file_is_reprobed_and_handed_on(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    src = tmp_path / "junk_prefixed.mp3"
+    data = _write_misdetected(src)
+    calls: list[tuple[Any, ...]] = []
+    procs = [_FakeCommunicateProc(0, stdout=_probe_with_format([], "vvc")), _FakeCommunicateProc(0, stdout=_probe_with_format([_MP3_AUDIO], "mp3"))]
+
+    async def _fake_exec(*args: Any, **_kwargs: Any) -> Any:
+        calls.append(args)
+        return procs.pop(0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    result = await extract_audio_track(str(src), scratch_dir=tmp_path / "scratch")
+
+    assert result.cleanup_path == result.analysis_path
+    assert calls[1][-1] == result.analysis_path, "the second probe must read the splice, not the original"
+    assert Path(result.analysis_path).read_bytes() == data[:100] + data[400:]
+    assert src.read_bytes() == data
+
+
+async def test_a_splice_that_still_misprobes_is_refused_and_deleted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    src = tmp_path / "junk_prefixed.mp3"
+    _write_misdetected(src)
+    procs = [_FakeCommunicateProc(0, stdout=_probe_with_format([], "vvc")), _FakeCommunicateProc(0, stdout=_probe_with_format([], "vvc"))]
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec(procs))
+
+    with pytest.raises(AudioExtractionError, match="still misprobes"):
+        await extract_audio_track(str(src), scratch_dir=tmp_path / "scratch")
+
+    assert list((tmp_path / "scratch").iterdir()) == []
+    assert src.exists()
+
+
+async def test_a_failed_splice_write_is_reported_and_leaves_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    src = tmp_path / "junk_prefixed.mp3"
+    _write_misdetected(src)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([_FakeCommunicateProc(0, stdout=_probe_with_format([], "vvc"))]))
+
+    def _disk_full(_file_path: str, _end: int, _offset: int, dest_path: Path) -> None:
+        dest_path.write_bytes(b"partial")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(video_audio, "_write_splice", _disk_full)
+
+    with pytest.raises(AudioExtractionError, match="could not write the spliced MPEG stream"):
+        await extract_audio_track(str(src), scratch_dir=tmp_path / "scratch")
+
+    assert list((tmp_path / "scratch").iterdir()) == []
+
+
+async def test_cancellation_during_the_splice_reprobe_leaves_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    src = tmp_path / "junk_prefixed.mp3"
+    _write_misdetected(src)
+    first = _FakeCommunicateProc(0, stdout=_probe_with_format([], "vvc"))
+    calls = 0
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return first
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    with pytest.raises(asyncio.CancelledError):
+        await extract_audio_track(str(src), scratch_dir=tmp_path / "scratch")
+
+    assert list((tmp_path / "scratch").iterdir()) == []
+
+
+async def test_an_out_of_bounds_tag_region_keeps_the_no_audio_outcome(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A junk ID3v2 header claiming far past the file: not a candidate, nothing read or written."""
+    src = tmp_path / "junk_header.mp3"
+    src.write_bytes(b"ID3\x04\x00\x00\x7f\x7f\x7f\x7f" + _L3_FRAME * 12)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([_FakeCommunicateProc(0, stdout=_probe_with_format([], "vvc"))]))
+
+    with pytest.raises(NoAudioTrackError):
+        await extract_audio_track(str(src), scratch_dir=tmp_path / "scratch")
+
+    assert not (tmp_path / "scratch").exists()
