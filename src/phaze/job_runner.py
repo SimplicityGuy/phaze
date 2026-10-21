@@ -368,18 +368,22 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
     """
     # Seed to negative infinity so boot-relative monotonic time never suppresses the first post.
     state = {"last_post": float("-inf"), "last_beat": float("-inf")}
-    latest: list[tuple[int, int, int, int, int]] = []
+    latest: list[tuple[int, int, int, int, int, int | None, int | None]] = []
     coarse_work_percent = 0
+    # The same "coarse_work" done/total coarse_work_percent is derived from (phaze-s03fz); None until the first beat.
+    coarse_work_steps: tuple[int, int] | None = None
     pending: set[asyncio.Task[None]] = set()
 
-    def _post(counts: tuple[int, int, int, int, int]) -> None:
-        fine_analyzed, fine_total, coarse_analyzed, coarse_total, work_percent = counts
+    def _post(counts: tuple[int, int, int, int, int, int | None, int | None]) -> None:
+        fine_analyzed, fine_total, coarse_analyzed, coarse_total, work_percent, work_done, work_total = counts
         payload = AnalysisProgressPayload(
             fine_windows_analyzed=fine_analyzed,
             fine_windows_total=fine_total,
             coarse_windows_analyzed=coarse_analyzed,
             coarse_windows_total=coarse_total,
             coarse_work_percent=work_percent,
+            coarse_work_done=work_done,
+            coarse_work_total=work_total,
         )
         # Keep a strong reference to the fire-and-forget task until it finishes.
         task = asyncio.get_running_loop().create_task(_safe_post_progress(client, file_id, payload))
@@ -388,7 +392,7 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
 
     def _cb(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
         try:
-            latest[:] = [(fine_analyzed, fine_total, coarse_analyzed, coarse_total, coarse_work_percent)]
+            latest[:] = [(fine_analyzed, fine_total, coarse_analyzed, coarse_total, coarse_work_percent, *(coarse_work_steps or (None, None)))]
             now = time.monotonic()
             # A zero-window tier is trivially done; the tier with work still gates completion.
             is_final = fine_analyzed >= fine_total and coarse_analyzed >= coarse_total
@@ -413,12 +417,13 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
             log.debug("job_runner_progress_cb_error", file_id=str(file_id))
 
     def _heartbeat(stage: str, done: int, total: int) -> None:
-        nonlocal coarse_work_percent
+        nonlocal coarse_work_percent, coarse_work_steps
         try:
             if stage == "coarse_work" and total > 0:
                 coarse_work_percent = max(coarse_work_percent, min(99, done * 100 // total))
+                coarse_work_steps = (max(done, coarse_work_steps[0]) if coarse_work_steps else done, total)
                 if latest:
-                    latest[:] = [(*latest[0][:4], coarse_work_percent)]
+                    latest[:] = [(*latest[0][:4], coarse_work_percent, *coarse_work_steps)]
             now = time.monotonic()
             if (now - state["last_beat"]) < _HEARTBEAT_SURFACE_INTERVAL_SEC:
                 return

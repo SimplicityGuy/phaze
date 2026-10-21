@@ -59,16 +59,18 @@
                 <td class="px-3 xl:px-4 py-2 xl:min-w-64">
                     {# phaze-0r8cl: below xl the Fine/Coarse tiers STACK and the Heartbeat cell WRAPS, so the whole row fits a 900px workspace instead of scrolling the Heartbeat column out of sight; xl and up keep the side-by-side, nowrap layout. #}
                     <div class="grid grid-cols-1 gap-2 xl:grid-cols-2 xl:gap-3">
-                        {% for tier, done, total, fill, work in [("Fine", run.fine_done, run.fine_total, "bg-blue-500", none), ("Coarse", run.coarse_done, run.coarse_total, "bg-teal-500", run.coarse_work_percent)] %}
+                        {% for tier, done, total, fill, work, step, steps in [("Fine", run.fine_done, run.fine_total, "bg-blue-500", none, none, none), ("Coarse", run.coarse_done, run.coarse_total, "bg-teal-500", run.coarse_work_percent, run.coarse_work_done, run.coarse_work_total)] %}
                         {% set known = done is not none and total is not none and total > 0 %}
                         {% set window_pct = ([0, [100, done * 100 // total]|min]|max) if known else 0 %}
                         {% set pct = work if work is not none and total is not none and total > 0 else window_pct %}
+                        {# phaze-s03fz: the step counters behind the percent; an older agent or row sends none and falls back to the done/total windows text. #}
+                        {% set has_steps = work is not none and known and step is defined and step is not none and steps is defined and steps is not none and steps > 0 %}
                         <div class="min-w-0">
                             <div class="mb-1 text-[10px] font-jura font-medium uppercase tracking-wider text-muted">{{ tier }}</div>
-                            <div class="h-1.5 w-full rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="{{ tier }} {{ 'work' if work is not none else 'windows analyzed' }} for {{ run.label }}" aria-valuemin="0"{% if work is not none %} aria-valuemax="100" aria-valuenow="{{ pct }}"{% elif total is not none %} aria-valuemax="{{ total | thousands }}"{% if known or (total == 0 and done is not none) %} aria-valuenow="{{ ([done, total]|min) | thousands }}"{% else %} aria-valuetext="Progress unavailable"{% endif %}{% else %} aria-valuetext="Sizing windows"{% endif %}>
+                            <div class="h-1.5 w-full rounded-full bg-gray-200 dark:bg-phaze-border" role="progressbar" aria-label="{{ tier }} {{ 'work' if work is not none else 'windows analyzed' }} for {{ run.label }}" aria-valuemin="0"{% if work is not none %} aria-valuemax="100" aria-valuenow="{{ pct }}"{% if has_steps %} aria-valuetext="step {{ step | thousands }} of {{ steps | thousands }}, {{ pct }}% work, {{ total | thousands }} windows"{% endif %}{% elif total is not none %} aria-valuemax="{{ total | thousands }}"{% if known or (total == 0 and done is not none) %} aria-valuenow="{{ ([done, total]|min) | thousands }}"{% else %} aria-valuetext="Progress unavailable"{% endif %}{% else %} aria-valuetext="Sizing windows"{% endif %}>
                                 <div class="h-full rounded-full {{ fill }}" style="width: {{ pct }}%"></div>
                             </div>
-                            <div class="mt-1 whitespace-nowrap font-mono text-xs tabular-nums">{{ done | thousands }}/{{ total | thousands }}{% if work is not none and known %} · {{ pct }}% work{% elif known %} · {{ pct }}%{% elif total == 0 %} · no windows{% elif total is none %} · sizing…{% else %} · unavailable{% endif %}</div>
+                            <div class="mt-1 whitespace-nowrap font-mono text-xs tabular-nums">{% if has_steps %}step {{ step | thousands }}/{{ steps | thousands }} · {{ pct }}% · {{ total | thousands }} windows{% else %}{{ done | thousands }}/{{ total | thousands }}{% if work is not none and known %} · {{ pct }}% work{% elif known %} · {{ pct }}%{% elif total == 0 %} · no windows{% elif total is none %} · sizing…{% else %} · unavailable{% endif %}{% endif %}</div>
                         </div>
                         {% endfor %}
                     </div>

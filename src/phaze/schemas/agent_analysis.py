@@ -250,6 +250,9 @@ class AnalysisProgressPayload(BaseModel):
     coarse_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
     coarse_windows_total: int | None = Field(default=None, ge=0, le=50000)
     coarse_work_percent: int | None = Field(default=None, ge=0, le=99)
+    # The coarse_work heartbeat's done/total behind coarse_work_percent (phaze-s03fz); additive, an older agent sends neither.
+    coarse_work_done: int | None = Field(default=None, ge=0, le=1000000)
+    coarse_work_total: int | None = Field(default=None, ge=0, le=1000000)
 
 
 class AnalysisProgressResponse(BaseModel):

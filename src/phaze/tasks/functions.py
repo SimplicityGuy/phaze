@@ -100,7 +100,7 @@ _ANALYZABLE_FILE_TYPES = frozenset(ext.lstrip(".") for ext, cat in EXTENSION_MAP
 # unchanged.
 
 
-async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count: tuple[int, int, int, int, int]) -> None:
+async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count: tuple[int, int, int, int, int, int | None, int | None]) -> None:
     """Best-effort counter-only POST of a single fine+coarse count tuple (Phase 57.1, D-16; widened phaze-bp9kz).
 
     Swallows ANY error (the ``AgentApiError`` hierarchy from the client's single-attempt,
@@ -108,7 +108,7 @@ async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count:
     progress POST can never fail the analysis job — the completion ``put_analysis`` writes
     the final count regardless, so the bar still reaches 100% from completion.
     """
-    fine_analyzed, fine_total, coarse_analyzed, coarse_total, coarse_work_percent = count
+    fine_analyzed, fine_total, coarse_analyzed, coarse_total, coarse_work_percent, coarse_work_done, coarse_work_total = count
     try:
         await api.post_analysis_progress(
             file_id,
@@ -118,6 +118,8 @@ async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count:
                 coarse_windows_analyzed=coarse_analyzed,
                 coarse_windows_total=coarse_total,
                 coarse_work_percent=coarse_work_percent,
+                coarse_work_done=coarse_work_done,
+                coarse_work_total=coarse_work_total,
             ),
         )
     except Exception:  # best-effort progress; never fail the job (mirrors report_analysis_failed discipline)
@@ -229,9 +231,10 @@ async def _run_analysis_with_progress(
     if interval_sec > 0.0:
         touch_interval_sec = min(interval_sec, touch_interval_sec)
     last_post: float | None = None
-    last_count: tuple[int, int, int, int, int] | None = None
-    last_posted: tuple[int, int, int, int, int] | None = None
+    last_count: tuple[int, int, int, int, int, int | None, int | None] | None = None
+    last_posted: tuple[int, int, int, int, int, int | None, int | None] | None = None
     coarse_work_percent = 0
+    coarse_work_steps: tuple[int, int] | None = None  # the heartbeat's done/total behind the percent (phaze-s03fz)
     last_touch: float | None = None
     pending: set[asyncio.Task[None]] = set()
 
@@ -244,7 +247,7 @@ async def _run_analysis_with_progress(
 
     def _progress(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
         nonlocal last_post, last_count, last_posted
-        count = (fine_analyzed, fine_total, coarse_analyzed, coarse_total, coarse_work_percent)
+        count = (fine_analyzed, fine_total, coarse_analyzed, coarse_total, coarse_work_percent, *(coarse_work_steps or (None, None)))
         last_count = count
         now = time.monotonic()
         if interval_sec > 0.0 and last_post is not None and (now - last_post) < interval_sec:
@@ -254,9 +257,10 @@ async def _run_analysis_with_progress(
         _spawn(_post_progress_count(api, file_id, count))
 
     def _heartbeat(_stage: str, _done: int, _total: int) -> None:
-        nonlocal last_touch, coarse_work_percent
+        nonlocal last_touch, coarse_work_percent, coarse_work_steps
         if _stage == "coarse_work" and _total > 0:
             coarse_work_percent = max(coarse_work_percent, min(99, _done * 100 // _total))
+            coarse_work_steps = (max(_done, coarse_work_steps[0]) if coarse_work_steps else _done, _total)
             if last_count is not None:
                 _progress(*last_count[:4])
         if job is None:

@@ -547,6 +547,11 @@ async def post_analysis_progress(
         payload["coarse_windows_total"] = body.coarse_windows_total
     if body.coarse_work_percent is not None:
         payload["coarse_work_percent"] = body.coarse_work_percent
+    # phaze-s03fz: the step counters behind the percent, only when BOTH arrive (an older agent sends neither).
+    include_steps = body.coarse_work_done is not None and body.coarse_work_total is not None
+    if include_steps:
+        payload["coarse_work_done"] = body.coarse_work_done
+        payload["coarse_work_total"] = body.coarse_work_total
     stmt = pg_insert(AnalysisResult).values([payload])
     set_: dict[str, Any] = {
         "fine_windows_analyzed": stmt.excluded.fine_windows_analyzed,
@@ -566,6 +571,11 @@ async def post_analysis_progress(
             if body.coarse_work_percent == 0 and body.fine_windows_analyzed == 0 and body.coarse_windows_analyzed == 0
             else func.greatest(AnalysisResult.coarse_work_percent, stmt.excluded.coarse_work_percent)
         )
+    if include_steps:
+        # Same reset/monotonic rule as the percent: a new run's initial zero clears stale steps, later posts only advance.
+        new_run = body.coarse_work_done == 0 and body.fine_windows_analyzed == 0 and body.coarse_windows_analyzed == 0
+        set_["coarse_work_done"] = 0 if new_run else func.greatest(AnalysisResult.coarse_work_done, stmt.excluded.coarse_work_done)
+        set_["coarse_work_total"] = stmt.excluded.coarse_work_total
     stmt = stmt.on_conflict_do_update(index_elements=["file_id"], set_=set_)
     # phaze-wn1l: same concurrently-deleted-FileRecord race as put_analysis (module
     # docstring) -- this is the START-of-analysis progress POST, so it fires at the
