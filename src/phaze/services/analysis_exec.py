@@ -51,6 +51,11 @@ _STDERR_TAIL_LINES = 20
 # The analysis child's tail is wider: a faulthandler dump (Python stack + 3.14's C-stack trace)
 # runs past 20 lines, and the Python stack at its head is the part worth keeping.
 _CHILD_STDERR_TAIL_LINES = 200
+# Once the ``Fatal Python error`` header is seen, the dump that follows is captured into its own
+# buffer instead of the rolling tail: faulthandler writes the header FIRST and every thread's stack
+# after it, so a many-thread dump would otherwise evict the header, the faulting frame and the
+# Python stack. Capped, so a runaway child still cannot grow memory without bound.
+_CHILD_DUMP_MAX_LINES = 2000
 _STDERR_LINE_MAX = 500
 # How often the stall watchdog wakes to compare "now" against the last activity stamp.
 # Bounded so a very short stall_timeout (tests) is still enforced promptly, and capped as a
@@ -77,6 +82,26 @@ _BINARY_FILE_RE = re.compile(r'Binary file "[^"]*?([^/"]+)", at ')
 # Leading path noise in ``File "..."`` frames; file, line and function always survive.
 _FRAME_PATH_RE = re.compile(r'File "(?:[^"]*/(?:site-packages|src)/|/usr/local/lib/python3\.\d+/)')
 _RUNTIME_BINARY_RE = re.compile(r"^\s*(?:libpython|libc\.|libc-|ld-linux|libsystem|libpthread|dyld|python3?\.?\d*\b)")
+
+
+class _StderrCapture:
+    """Bounded child-stderr capture that never lets a long faulthandler dump evict its own header."""
+
+    def __init__(self) -> None:
+        self._tail: deque[str] = deque(maxlen=_CHILD_STDERR_TAIL_LINES)
+        self._dump: list[str] | None = None
+
+    def append(self, line: str) -> None:
+        if line.startswith(_FATAL_MARKER):
+            # A (newer) fatal header restarts the dump; what preceded it stays in the rolling tail.
+            self._dump = [line]
+        elif self._dump is None:
+            self._tail.append(line)
+        elif len(self._dump) < _CHILD_DUMP_MAX_LINES:
+            self._dump.append(line)
+
+    def lines(self) -> tuple[str, ...]:
+        return (*self._tail, *(self._dump or ()))
 
 
 def _compact(line: str) -> str:
@@ -429,7 +454,7 @@ async def _run_analysis_subprocess_traced(
 
     result: dict[str, Any] | None = None
     error_message: str | None = None
-    stderr_tail: deque[str] = deque(maxlen=_CHILD_STDERR_TAIL_LINES)
+    stderr_tail = _StderrCapture()
     loop = asyncio.get_running_loop()
     last_activity = loop.time()
     last_stage: str | None = None
@@ -539,7 +564,7 @@ async def _run_analysis_subprocess_traced(
     if returncode == 0 and result is not None:
         return result
 
-    tail = tuple(stderr_tail)
+    tail = stderr_tail.lines()
     if error_message is not None:
         msg = f"analysis child failed (exit {returncode}): {error_message}"
     elif returncode != 0:

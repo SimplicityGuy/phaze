@@ -232,6 +232,25 @@ def segfault_analyze(
     return _result(file_path, models_dir, **windowing)  # pragma: no cover - the process is gone
 
 
+def many_threads_segfault_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """A REAL SIGSEGV with 40 idle threads alive, so faulthandler's dump runs far past the stderr tail cap."""
+    import faulthandler
+    import threading
+
+    stop = threading.Event()
+    for _ in range(40):
+        threading.Thread(target=stop.wait, daemon=True).start()
+    faulthandler._sigsegv()  # type: ignore[attr-defined]  # private CPython test hook; the point is a genuine fault
+    return _result(file_path, models_dir, **windowing)  # pragma: no cover - the process is gone
+
+
 def noisy_analyze(
     file_path: str,
     models_dir: str,

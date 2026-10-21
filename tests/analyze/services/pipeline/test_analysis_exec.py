@@ -383,6 +383,38 @@ async def test_native_segfault_records_faulthandler_stack_and_names_the_signal(m
     assert "segfault_analyze" in tail
 
 
+async def test_long_faulthandler_dump_keeps_header_native_frame_and_python_stack(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-98gfi: a REAL dump from a many-thread child exceeds the rolling tail cap, yet the stored
+    detail still carries the header, a Python frame of the faulting thread, and the C stack."""
+    from phaze.services.analysis_exec import _CHILD_DUMP_MAX_LINES, _CHILD_STDERR_TAIL_LINES, format_failure_detail
+
+    _point_child_at(monkeypatch, "many_threads_segfault_analyze")
+
+    with pytest.raises(AnalysisSubprocessError) as excinfo:
+        await run_analysis_subprocess("/fake/audio.mp3", "/fake/models")
+
+    lines = excinfo.value.stderr_tail
+    detail = format_failure_detail(excinfo.value, 4000)
+    assert "Fatal Python error: Segmentation fault" in detail
+    assert "many_threads_segfault_analyze" in detail  # current-thread Python frame
+    assert "C stack trace" in detail  # the native frames follow the header
+    # Guard the premise: the dump really did outgrow the rolling tail, and is still bounded.
+    assert _CHILD_STDERR_TAIL_LINES < len(lines) <= _CHILD_STDERR_TAIL_LINES + _CHILD_DUMP_MAX_LINES
+
+
+def test_stderr_capture_bounds_a_runaway_dump() -> None:
+    from phaze.services.analysis_exec import _CHILD_DUMP_MAX_LINES, _StderrCapture
+
+    capture = _StderrCapture()
+    capture.append("Fatal Python error: Segmentation fault")
+    for i in range(_CHILD_DUMP_MAX_LINES * 3):
+        capture.append(f"frame-{i}")
+
+    kept = capture.lines()
+    assert kept[0].startswith("Fatal Python error")
+    assert len(kept) == _CHILD_DUMP_MAX_LINES
+
+
 def test_format_failure_detail_appends_tail_and_keeps_most_recent_lines() -> None:
     from phaze.services.analysis_exec import format_failure_detail
 
