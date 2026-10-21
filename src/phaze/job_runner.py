@@ -419,13 +419,14 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
     def _heartbeat(stage: str, done: int, total: int) -> None:
         nonlocal coarse_work_percent, coarse_work_steps
         try:
+            initializing_steps = stage == "coarse_work" and total > 0 and coarse_work_steps is None
             if stage == "coarse_work" and total > 0:
                 coarse_work_percent = max(coarse_work_percent, min(99, done * 100 // total))
                 coarse_work_steps = (max(done, coarse_work_steps[0]) if coarse_work_steps else done, total)
                 if latest:
                     latest[:] = [(*latest[0][:4], coarse_work_percent, *coarse_work_steps)]
             now = time.monotonic()
-            if (now - state["last_beat"]) < _HEARTBEAT_SURFACE_INTERVAL_SEC:
+            if not initializing_steps and (now - state["last_beat"]) < _HEARTBEAT_SURFACE_INTERVAL_SEC:
                 return
             state["last_beat"] = now
             log.info("job_runner_heartbeat", file_id=str(file_id), stage=stage, done=done, total=total)

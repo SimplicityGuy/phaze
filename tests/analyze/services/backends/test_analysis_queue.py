@@ -302,7 +302,7 @@ async def test_page_renders_the_operators_backlog_as_a_queue_not_an_alarm(client
     assert "5/20 · 25%" in queue_view
     assert 'aria-label="Fine windows analyzed for set-20.mp3"' in queue_view
     assert 'aria-label="Coarse work for set-20.mp3"' in queue_view
-    assert "0/20 · 37% work" in queue_view
+    assert "step unavailable · 37% work · 20 windows" in queue_view
     assert 'aria-valuemax="100" aria-valuenow="37"' in queue_view
     assert "15m ago" in queue_view
     assert re.search(r">1</span> running · <span[^>]*>694</span> waiting", queue_view)

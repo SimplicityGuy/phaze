@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from bs4 import BeautifulSoup
 from jinja2 import Environment, FileSystemLoader
+import pytest
 
 from phaze.utils.humanize import relative_time
 from phaze.web.template_globals import register_format_filters
@@ -64,7 +65,7 @@ def test_fine_and_coarse_bars_advance_independently() -> None:
     ]
     assert [bar.select_one("div")["style"] for bar in bars] == ["width: 71%", "width: 15%"]
     assert "101/141 · 71%" in soup.get_text(" ", strip=True)
-    assert "3/20 · 15%" in soup.get_text(" ", strip=True)
+    assert "step unavailable · 20 windows" in soup.get_text(" ", strip=True)
 
 
 def test_overdue_heartbeat_names_the_missing_progress_update() -> None:
@@ -90,7 +91,8 @@ def test_unknown_and_zero_totals_do_not_claim_completion() -> None:
     assert coarse["aria-valuemax"] == "0"
     assert coarse.select_one("div")["style"] == "width: 0%"
     assert "5/— · sizing…" in soup.get_text(" ", strip=True)
-    assert "0/0 · no windows" in soup.get_text(" ", strip=True)
+    assert "step unavailable · no windows" in soup.get_text(" ", strip=True)
+    assert coarse["aria-valuetext"] == "step unavailable, no windows"
 
 
 def test_known_total_with_unknown_count_is_indeterminate() -> None:
@@ -101,7 +103,7 @@ def test_known_total_with_unknown_count_is_indeterminate() -> None:
     assert "aria-valuenow" not in fine.attrs
     assert fine["aria-valuetext"] == "Progress unavailable"
     assert "—/141 · unavailable" in soup.get_text(" ", strip=True)
-    assert coarse["aria-valuetext"] == "Sizing windows"
+    assert coarse["aria-valuetext"] == "step sizing…, sizing windows…"
 
 
 def test_heartbeat_column_stays_visible_below_xl() -> None:
@@ -140,11 +142,44 @@ def test_coarse_cell_shows_the_work_steps_the_percentage_counts() -> None:
     assert "aria-valuetext" not in fine.attrs
 
 
-def test_coarse_cell_falls_back_to_the_window_text_without_step_counts() -> None:
-    """An older agent or row sends percent but no steps: today's text, unchanged."""
+def test_coarse_cell_marks_missing_steps_separately_from_known_windows() -> None:
+    """An older agent or row sends percent but no steps; window counts cannot stand in for steps."""
     soup = _render(fine_done=141, fine_total=141, coarse_done=0, coarse_total=21, coarse_work_percent=30)
     coarse = soup.select('[role="progressbar"]')[1]
 
-    assert "0/21 · 30% work" in soup.get_text(" ", strip=True)
-    assert "step" not in soup.get_text(" ", strip=True)
-    assert "aria-valuetext" not in coarse.attrs
+    assert "step unavailable · 30% work · 21 windows" in soup.get_text(" ", strip=True)
+    assert "0/21" not in soup.get_text(" ", strip=True)
+    assert coarse["aria-valuetext"] == "step unavailable, 30% work, 21 windows"
+
+
+def test_coarse_cell_shows_zero_steps_before_any_window_completes() -> None:
+    soup = _render(fine_done=141, fine_total=141, coarse_done=0, coarse_total=9, coarse_work_percent=0, coarse_work_done=0, coarse_work_total=13)
+    coarse = soup.select('[role="progressbar"]')[1]
+
+    assert "step 0/13 · 0% · 9 windows" in soup.get_text(" ", strip=True)
+    assert coarse["aria-valuetext"] == "step 0 of 13, 0% work, 9 windows"
+    assert coarse["aria-valuenow"] == "0"
+    assert coarse.select_one("div")["style"] == "width: 0%"
+
+
+def test_known_coarse_steps_do_not_require_a_known_window_total() -> None:
+    soup = _render(fine_done=0, fine_total=141, coarse_done=None, coarse_total=None, coarse_work_percent=15, coarse_work_done=2, coarse_work_total=13)
+    coarse = soup.select('[role="progressbar"]')[1]
+
+    assert "step 2/13 · 15% · sizing windows…" in soup.get_text(" ", strip=True)
+    assert coarse["aria-valuetext"] == "step 2 of 13, 15% work, sizing windows…"
+    assert coarse["aria-valuenow"] == "15"
+
+
+@pytest.mark.parametrize("windows", [None, 0, 9])
+@pytest.mark.parametrize("percent", [None, 0])
+def test_coarse_cell_never_invents_steps_for_missing_or_zero_denominator(windows: int | None, percent: int | None) -> None:
+    soup = _render(
+        fine_done=0, fine_total=141, coarse_done=0, coarse_total=windows, coarse_work_percent=percent, coarse_work_done=0, coarse_work_total=0
+    )
+    coarse = soup.select('[role="progressbar"]')[1]
+    text = coarse.find_next_sibling("div").get_text(" ", strip=True)
+    assert "step sizing…" in text if windows is None else "step unavailable" in text
+    assert "sizing windows…" in text if windows is None else ("no windows" in text if windows == 0 else "9 windows" in text)
+    assert "0/0" not in text and "None" not in text
+    assert "step" in coarse["aria-valuetext"]

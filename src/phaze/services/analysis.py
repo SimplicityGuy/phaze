@@ -1265,6 +1265,9 @@ def _analyze_coarse_windows(
     models_per_chunk = sum(len(model_set.models) for model_set in MODEL_SETS) + 1
     work_per_chunk = models_per_chunk + 1  # model sweeps, then assembly
     work_total = len(chunks) * work_per_chunk
+    # Publish the real step denominator before decoding or sweeping the first chunk.
+    # Window totals are already visible during Fine; windows and work steps are different units.
+    signals.beat("coarse_work", 0, work_total)
     # THE COARSE-TIER BLIND SPOT (phaze-zaf2l section 3b, and its 2026-08-28 forward note).
     # 94.69% of wall clock on the 4,761.835 s file that spike measured -- a DURATION-DEPENDENT
     # share, 50.7% on a 10 h 03 m file -- but blind at any length. Everything below was, until

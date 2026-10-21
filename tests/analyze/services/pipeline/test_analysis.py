@@ -828,6 +828,8 @@ def test_one_chunk_coarse_sweep_reports_work_before_windows_complete(_mock_es: M
 
     work = [(done, total) for stage, done, total in events if stage == "coarse_work"]
     assert len(work) > 2
+    assert work[0] == (0, work[-1][1])
+    assert events.index(("coarse_work", *work[0])) < next(i for i, (stage, _, _) in enumerate(events) if stage == "coarse_decode")
     assert all(total == work[0][1] for _, total in work)
     assert [done for done, _ in work] == sorted(done for done, _ in work)
     assert work[-1] == (work[-1][1], work[-1][1])

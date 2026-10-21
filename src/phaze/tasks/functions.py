@@ -257,8 +257,10 @@ async def _run_analysis_with_progress(
         _spawn(_post_progress_count(api, file_id, count))
 
     def _heartbeat(_stage: str, _done: int, _total: int) -> None:
-        nonlocal last_touch, coarse_work_percent, coarse_work_steps
+        nonlocal last_touch, last_post, coarse_work_percent, coarse_work_steps
         if _stage == "coarse_work" and _total > 0:
+            if coarse_work_steps is None:
+                last_post = None  # Initial step sizing must reach the UI before expensive coarse work.
             coarse_work_percent = max(coarse_work_percent, min(99, _done * 100 // _total))
             coarse_work_steps = (max(_done, coarse_work_steps[0]) if coarse_work_steps else _done, _total)
             if last_count is not None:
