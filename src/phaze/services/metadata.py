@@ -238,7 +238,13 @@ def _junk_prefix_corrected_stream(file_path: str, audio: Any) -> _CorrectedStrea
     layer other than 3. The measured misdetection that mutagen gets wrong (the trigger) satisfies
     both; the three raw-VVC files mutagen reads correctly (layer 3, not sketchy) never reach the
     parse and keep mutagen's length. A real Layer 2 file passes the gate but its chain layer equals
-    mutagen's, so the detector does not flag it and its length is unchanged.
+    mutagen's and its first frame IS the chain's start, so it is not flagged and its length is unchanged.
+
+    **Layer-agnostic case (phaze-dn0km).** When the junk holds a short chain that parses as Layer 3
+    and the real stream is Layer 3 too, the layer comparison cannot tell them apart. mutagen's
+    ``info.frame_offset`` can: a flagged file is one whose first frame sits before the first
+    8-frame chain. Blast radius: the corpus scan (``docs/spikes/phaze-di48m-mp3-junk-prefix-scan.md``)
+    measured 0 files of this shape, so this closes a coverage gap and changes no stored value today.
 
     **Duration.** ``MPEGInfo(offset=splice_offset)`` is mutagen's own reader started on the real
     first frame: it reads an Xing/VBRI header when present (exact for VBR) and otherwise estimates
@@ -259,7 +265,13 @@ def _junk_prefix_corrected_stream(file_path: str, audio: Any) -> _CorrectedStrea
         if window is None:
             return None
         verdict = mpeg_frames.detect_misdetection(window, _LAYER_CODEC.get(layer) if isinstance(layer, int) else None)
-        if not verdict.misdetected or verdict.splice_offset is None:
+        if verdict.splice_offset is None:
+            return None
+        # A different layer is one proof that mutagen synced inside the junk. The other is that mutagen's first frame
+        # starts BEFORE the real chain: a short junk chain that parses as Layer 3 beside a real Layer 3 stream.
+        frame_offset = getattr(info, "frame_offset", None)
+        started_in_junk = isinstance(frame_offset, int) and frame_offset < verdict.splice_offset
+        if not (verdict.misdetected or started_in_junk):
             return None
         with Path(file_path).open("rb") as fh:
             real = MPEGInfo(fh, offset=verdict.splice_offset)
