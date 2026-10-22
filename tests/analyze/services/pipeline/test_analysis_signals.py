@@ -226,7 +226,7 @@ def test_analyze_file_heartbeat_stage_sequence_is_the_watchdog_contract(
     coarse_chunk_sizes = [len(c) for c in _chunked(list(range(coarse_total)), analysis_mod._COARSE_CHUNK_WINDOWS)]
     # One on_model_done() per individual model sweep (11 sets x 3 variants), plus one for genre.
     model_ticks_per_chunk = sum(len(model_set.models) for model_set in MODEL_SETS) + 1
-    expected_coarse_stages: list[str] = []
+    expected_coarse_stages: list[str] = ["coarse_work"]  # zero-step initialization before the first decode
     for _size in coarse_chunk_sizes:
         expected_coarse_stages.append("coarse_decode")
         for _ in range(model_ticks_per_chunk):

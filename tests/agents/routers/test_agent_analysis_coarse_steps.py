@@ -106,6 +106,47 @@ async def _saq_lane() -> tuple[list[AnalysisProgressPayload], list[tuple[int, in
     return recorder.progress, raw
 
 
+@pytest.mark.parametrize("lane", ["job_runner", "saq"])
+async def test_zero_steps_publish_before_coarse_work_even_inside_both_throttles(lane: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The initialization POST must happen before decode, rather than only during the final flush."""
+    import phaze.job_runner as jr
+    from phaze.tasks import functions as fn
+
+    recorder = _Recorder()
+
+    async def _before_decode(progress_cb: Any, heartbeat_cb: Any) -> None:
+        progress_cb(0, 200, 0, _COARSE_WINDOWS)
+        heartbeat_cb("fine", 0, 200)  # consume the heartbeat throttle, too
+        await asyncio.sleep(0)
+        progress_cb(200, 200, 0, _COARSE_WINDOWS)
+        heartbeat_cb("coarse_work", 0, _WORK_TOTAL)
+        await asyncio.sleep(0)
+        assert recorder.progress[-1].coarse_work_done == 0
+        assert recorder.progress[-1].coarse_work_total == _WORK_TOTAL
+        assert recorder.progress[-1].fine_windows_analyzed == 200
+        assert recorder.progress[-1].coarse_work_percent == 0
+        count = len(recorder.progress)
+        heartbeat_cb("coarse_work", 1, _WORK_TOTAL)
+        await asyncio.sleep(0)
+        assert len(recorder.progress) == count, "subsequent work updates must still obey the throttle"
+
+    if lane == "job_runner":
+        monkeypatch.setattr(jr, "_HEARTBEAT_SURFACE_INTERVAL_SEC", 3600.0)
+        progress_cb, heartbeat_cb, pending = jr._make_progress_cb(recorder, uuid.uuid4(), 3600.0)  # type: ignore[arg-type]
+        await _before_decode(progress_cb, heartbeat_cb)
+        await asyncio.gather(*list(pending))
+    else:
+
+        async def _child(_path: str, _models: str, *, progress_cb: Any, heartbeat_cb: Any, **_kw: Any) -> dict[str, Any]:
+            await _before_decode(progress_cb, heartbeat_cb)
+            return {}
+
+        cfg = MagicMock(analysis_progress_interval_sec=3600.0)
+        runtime_cfg = MagicMock(analysis_job_heartbeat_sec=600, analysis_stall_timeout_sec=1800)
+        with patch.object(fn, "run_analysis_subprocess", _child):
+            await fn._run_analysis_with_progress(recorder, cfg, uuid.uuid4(), "/fake/audio.mp3", "/fake/models", None, runtime_cfg=runtime_cfg)  # type: ignore[arg-type]
+
+
 def _coarse_cell_text(run: Any) -> str:
     now = datetime(2026, 10, 20, 12, tzinfo=UTC)
     environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
@@ -128,6 +169,10 @@ async def test_coarse_cell_steps_follow_the_real_heartbeat_on_both_lanes(
     payloads, raw = await (_job_runner_lane(monkeypatch) if lane == "job_runner" else _saq_lane())
     # The analysis itself reports the denominator we expect: 2 chunks x every model + genre + assembly.
     assert raw[-1] == (_WORK_TOTAL, _WORK_TOTAL)
+    assert raw[0] == (0, _WORK_TOTAL)
+    # The first Fine START already carries the natural Coarse window total, without decoding it.
+    assert payloads[0].fine_windows_analyzed == 0
+    assert payloads[0].coarse_windows_total == _COARSE_WINDOWS
     assert {total for _done, total in raw} == {_WORK_TOTAL}
     raw_done = {done for done, _total in raw}
 
@@ -166,7 +211,7 @@ async def test_coarse_cell_steps_follow_the_real_heartbeat_on_both_lanes(
     assert steps == sorted(steps), "a must never run backwards"
     assert set(steps) <= raw_done, "a must never show a step the analysis did not complete"
     assert steps[-1] == _WORK_TOTAL, "a == T when the coarse tier ends"
-    assert steps[0] < _WORK_PER_CHUNK, "a is visible mid-chunk, long before the first chunk's windows assemble"
+    assert steps[0] == 0, "zero steps must be published before the first coarse decode/model operation"
 
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
     assert (row.coarse_work_done, row.coarse_work_total) == (_WORK_TOTAL, _WORK_TOTAL)
@@ -176,10 +221,10 @@ async def test_coarse_cell_steps_follow_the_real_heartbeat_on_both_lanes(
 
 
 @pytest.mark.asyncio
-async def test_progress_without_step_counts_leaves_them_alone_and_renders_the_old_text(
+async def test_progress_without_step_counts_leaves_them_alone_and_renders_unknown_steps(
     seed_test_agent: tuple[Agent, str], session: AsyncSession
 ) -> None:
-    """An older agent sends no step fields: nothing is clobbered, and the cell falls back to the old text."""
+    """An older agent sends no step fields: nothing is clobbered, and missing steps stay explicit."""
     agent, token = seed_test_agent
     file_id = await _seed_file(session, agent.id)
     session.add(
@@ -201,7 +246,7 @@ async def test_progress_without_step_counts_leaves_them_alone_and_renders_the_ol
         session.expire_all()
         (run,) = await _kueue_running(session, [_BACKEND], datetime(2026, 10, 20, 12, tzinfo=UTC))
         assert (run.coarse_work_done, run.coarse_work_total) == (None, None)
-        assert _coarse_cell_text(run) == "0/21 · 30% work"
+        assert _coarse_cell_text(run) == "step unavailable · 30% work · 21 windows"
 
         steps = {**base, "coarse_work_percent": 30, "coarse_work_done": 4, "coarse_work_total": 13}
         assert (await ac.post(f"/api/internal/agent/analysis/{file_id}/progress", json=steps)).status_code == 200
