@@ -13,13 +13,13 @@ dependencies = [
     # PUT + just-in-time GET URLs and to delete/abort staged objects. The control plane never
     # reads file bytes (DIST-01); it only orchestrates presigned URLs the agent/pod transfer over.
     # aioboto3 stopped at aiobotocore 2.x, so use aiobotocore's native session API directly.
-    "aiobotocore>=3.9.2",
-    "alembic>=1.20.0",
+    "aiobotocore>=3.10.0",
+    "alembic>=1.20.1",
     "asyncpg>=0.32.0",
     "beautifulsoup4>=4.15.0",
     "cryptography>=50.0.2",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.143.3",
+    "fastapi>=0.161.1",
     "httpx>=0.28.1",
 
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
@@ -80,7 +80,7 @@ dependencies = [
     "opentelemetry-sdk>=1.45.1",
 
     "psycopg[binary]>=3.3.6",
-    "pydantic-settings>=2.16.0",
+    "pydantic-settings>=2.16.1",
 
     # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
     # secret resolution. Already installed transitively via pydantic-settings' env_file
@@ -108,7 +108,7 @@ dependencies = [
     # phaze-dixnj: the [asyncio] extra is what installs `greenlet` at runtime. SQLAlchemy's asyncio
     # bridge raises ImportError without it; patchright used to pull it in transitively and its removal
     # (phaze-7muoo) left the api image without it, because the dev-group pin never reaches the image.
-    "sqlalchemy[asyncio]>=2.1.4",
+    "sqlalchemy[asyncio]>=2.1.6",
     "sse-starlette>=3.5.0",
     "structlog>=26.1.0",
     "tenacity>=9.2.1",
@@ -415,7 +415,7 @@ constraint-dependencies = [
 
 [dependency-groups]
 browser = [
-    "playwright==1.64.0",
+    "playwright==1.64.1",
 ]
 dev = [
     "bandit>=1.9.4",
@@ -466,7 +466,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.17.1",
+    "ruff>=0.17.2",
     "types-defusedxml>=0.7.0.20260504",
     "vulture>=2.16",
 ]
