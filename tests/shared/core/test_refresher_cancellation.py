@@ -10,9 +10,12 @@ error, so the cancel came out as a ``RuntimeError``. The loop's ``except Excepti
 back to sleep, and nothing cancelled it again. The orphan loop, cancelled only after the review loop,
 kept polling every 4 s, which is the Postgres-log signature of all three CI hangs.
 
-The first two tests use the REAL SQLAlchemy + asyncpg + Postgres stack: one pins the library behaviour
-the fix depends on, the other runs the real review loop through it. The parametrized test covers
-every loop on the api shutdown path with a stand-in for the same conversion, so it needs no database.
+SQLAlchemy 2.1.5 narrowed that cleanup to ``except Exception``, so the cancel now propagates. The guard
+stays: any library that converts or swallows a cancel reproduces the hang.
+
+The first two tests use the REAL SQLAlchemy + asyncpg + Postgres stack: one pins how the library treats
+that cancel, the other runs the real review loop through it. The parametrized test covers every loop
+on the api shutdown path with a stand-in for the 2.1.4 conversion, so it needs no database.
 """
 
 from __future__ import annotations
@@ -86,9 +89,9 @@ async def stranded_close_engine(async_engine: AsyncEngine, monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_sqlalchemy_turns_a_cancel_during_the_stranded_close_into_the_connect_error(stranded_close_engine: _StrandedCloseEngine) -> None:
-    """Pins the library behaviour the fix exists for. If SQLAlchemy starts propagating the cancel,
-    this fails, and the guard in ``phaze.utils`` is no longer load-bearing."""
+async def test_sqlalchemy_propagates_a_cancel_during_the_stranded_close(stranded_close_engine: _StrandedCloseEngine) -> None:
+    """Pins the library behaviour since SQLAlchemy 2.1.5. If SQLAlchemy goes back to converting the
+    cancel into the connect error, this fails, and the guard in ``phaze.utils`` is load-bearing again."""
 
     async def _query() -> None:
         async with stranded_close_engine.engine.connect() as conn:
@@ -98,15 +101,13 @@ async def test_sqlalchemy_turns_a_cancel_during_the_stranded_close_into_the_conn
     async with asyncio.timeout(_STOP_WITHIN_SEC):
         await stranded_close_engine.closing.wait()
     task.cancel()
-    with pytest.raises(RuntimeError, match="connect event failed"):
-        async with asyncio.timeout(_STOP_WITHIN_SEC):
-            await task
-    # The cancel request is still outstanding: nothing called uncancel(), the error was simply replaced.
-    assert task.cancelling() == 1
+    done, _ = await asyncio.wait({task}, timeout=_STOP_WITHIN_SEC)
+    assert task in done
+    assert task.cancelled(), f"the cancel was replaced by {task.exception()!r}"
 
 
 @pytest.mark.asyncio
-async def test_the_real_review_loop_stops_when_its_cancel_is_converted(
+async def test_the_real_review_loop_stops_when_cancelled_during_the_stranded_close(
     stranded_close_engine: _StrandedCloseEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The exact CI hang, on the real stack: before the fix this task never finished."""
@@ -136,7 +137,7 @@ async def _reap(task: asyncio.Task[None]) -> None:
 
 def _converting_read(entered: asyncio.Event) -> Callable[..., Awaitable[Any]]:
     """A read that parks until cancelled, then raises an ordinary error in place of the FIRST cancel,
-    as SQLAlchemy's stranded-connection cleanup does (pinned by the first test above). Later reads
+    as SQLAlchemy 2.1.4's stranded-connection cleanup did. Later reads
     return at once, so a loop that survived can still be reaped."""
     converted = False
 
