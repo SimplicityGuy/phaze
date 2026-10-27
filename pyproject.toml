@@ -19,7 +19,7 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "cryptography>=50.0.2",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.161.1",
+    "fastapi>=0.162.0",
     "httpx>=0.28.1",
 
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
@@ -109,7 +109,7 @@ dependencies = [
     # bridge raises ImportError without it; patchright used to pull it in transitively and its removal
     # (phaze-7muoo) left the api image without it, because the dev-group pin never reaches the image.
     "sqlalchemy[asyncio]>=2.1.6",
-    "sse-starlette>=3.5.0",
+    "sse-starlette>=3.6.0",
     "structlog>=26.1.0",
     "tenacity>=9.2.1",
     "uvicorn>=0.54.0",
@@ -462,11 +462,11 @@ dev = [
     "pip-audit>=2.10.1",
     "pre-commit>=4.7.0",
     "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
+    "pytest-asyncio>=1.4.1",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.17.2",
+    "ruff>=0.17.3",
     "types-defusedxml>=0.7.0.20260504",
     "vulture>=2.16",
 ]
