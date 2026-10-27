@@ -25,7 +25,8 @@ def raise_if_cancel_requested() -> None:
     query as an ordinary ``Exception``; the loop logs it, sleeps, and runs again. Nothing cancels it a
     second time, so the shutdown awaiting it waits forever. Measured on the real test harness: the api
     lifespan hung in ``await review_counts_task`` while the orphan loop kept polling every 4 s, the same
-    signature as the CI shard hangs.
+    signature as the CI shard hangs. SQLAlchemy 2.1.5 narrowed that catch to ``Exception``, so the
+    cancel now propagates there; this guard stays for any library that converts or swallows one.
 
     ``Task.cancelling()`` counts the cancel requests the task has not cleared with ``uncancel()``.
     ``asyncio.timeout`` and ``TaskGroup`` clear their own, and a library that swallows the error clears
