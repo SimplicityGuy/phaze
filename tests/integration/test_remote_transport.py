@@ -15,8 +15,8 @@ from typing import Any
 
 from pydantic import SecretStr
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import event, text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from phaze.services.remote_transport import OutboundRequest, RemoteTransport, clear_stop
 from phaze.tracklist_providers import ProviderRegistry
@@ -43,6 +43,7 @@ from phaze.tracklist_providers.domain import (
 )
 from phaze.tracklist_providers.host_profile import CredentialSlot, RemoteFetchRoute, RemoteHostProfile, RemoteSearchRoute
 from phaze.tracklist_providers.port import AuthorizedEffects
+from tests._lock_barrier import POLL_INTERVAL_SEC, WEDGED_CONTENDER_CEILING_SEC
 
 
 pytestmark = pytest.mark.integration
@@ -795,9 +796,9 @@ async def test_profiles_are_unique_and_robots_without_crawl_delay_keeps_the_gap(
 
 HELD_SQL = text(
     "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted "
-    "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+    "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) AND pid = ANY(:pids)"
 )
-OTHER_BACKENDS_SQL = text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()")
+OWNED_BACKENDS_SQL = text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid = ANY(:pids)")
 
 
 class HangingSocket(FakeSocket):
@@ -816,9 +817,61 @@ class HangingSocket(FakeSocket):
             yield response
 
 
-async def held_locks_and_backends(engine: AsyncEngine) -> tuple[int, int]:
-    async with engine.connect() as conn:
-        return int(await conn.scalar(HELD_SQL) or 0), int(await conn.scalar(OTHER_BACKENDS_SQL) or 0)
+@asynccontextmanager
+async def transport_backend_probe(engine: AsyncEngine, *transports: RemoteTransport) -> AsyncIterator[tuple[AsyncConnection, set[int]]]:
+    """Observe only connections opened by this test, through one untracked live-catalogue probe.
+
+    NullPool's client-side close can finish before Postgres removes the backend row. Counting all
+    database backends makes a previous fixture/observer close look like a leaked connection. Record
+    identities from each transport's dedicated engine after opening the observer instead. Neither
+    the session guard nor the fixture/observer engine is registered with the listener.
+    AUTOCOMMIT refreshes pg_stat_activity's transaction-scoped snapshot on every poll.
+    """
+    async with engine.connect() as raw:
+        probe = await raw.execution_options(isolation_level="AUTOCOMMIT")
+        pids: set[int] = set()
+
+        def record_backend(connection: Any, _record: object) -> None:
+            pids.add(connection.driver_connection.get_server_pid())
+
+        targets = [transport._engine.sync_engine for transport in transports]
+        for target in targets:
+            event.listen(target, "connect", record_backend)
+        try:
+            yield probe, pids
+        finally:
+            for target in targets:
+                event.remove(target, "connect", record_backend)
+
+
+async def held_locks_and_backends(probe: AsyncConnection, pids: set[int]) -> tuple[int, int]:
+    params = {"pids": list(pids)}
+    return int(await probe.scalar(HELD_SQL, params) or 0), int(await probe.scalar(OWNED_BACKENDS_SQL, params) or 0)
+
+
+async def assert_transport_connections_released(probe: AsyncConnection, pids: set[int]) -> None:
+    """Wait for actual server-side termination, with the shared finite hang-protection ceiling."""
+    assert pids, "the probe must have observed a real transport connection"
+    held: tuple[int, int] | None = None
+    try:
+        async with asyncio.timeout(WEDGED_CONTENDER_CEILING_SEC):
+            while (held := await held_locks_and_backends(probe, pids)) != (0, 0):
+                await asyncio.sleep(POLL_INTERVAL_SEC)
+    except TimeoutError:
+        pytest.fail(f"transport connections did not terminate: last (advisory locks, backends) observation was {held}")
+
+
+async def test_backend_probe_ignores_an_unrelated_connection_closing(committed_db: Any) -> None:
+    engine, _ = committed_db
+    clock = FakeClock()
+    transport = worker(engine, clock, FakeSocket(clock))
+    async with engine.connect() as unrelated, transport_backend_probe(engine, transport) as (probe, pids):
+        async with transport._engine.connect() as owned:
+            await owned.execute(text("SELECT pg_advisory_lock(2147483001)"))
+            assert await held_locks_and_backends(probe, pids) == (1, 1)
+            await unrelated.close()
+            assert await held_locks_and_backends(probe, pids) == (1, 1)
+        await assert_transport_connections_released(probe, pids)
 
 
 async def test_cancellation_and_timeout_release_the_lock_and_its_connection(committed_db: Any) -> None:
@@ -826,24 +879,32 @@ async def test_cancellation_and_timeout_release_the_lock_and_its_connection(comm
     clock = FakeClock()
     socket = HangingSocket(clock, {PROFILE.host})
     transport = worker(engine, clock, socket)
-    # The session's own exclusivity lock and guard connection are the baseline, not ours.
-    baseline = await held_locks_and_backends(engine)
-    # Cancelled by its caller mid-send: the reservation stands, the lock and the connection do not.
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(transport.run().read(fetch_reference(), DiscoveryBudget()), 0.5)
-    assert len(socket.requests) == 1
-    assert await held_locks_and_backends(engine) == baseline
-    assert [row["outcome"] for row in (await ledger(engine))["attempts"]] == ["interrupted"]
-    # Timed out by the profile: a typed retry, and again nothing is left held.
     impatient = worker(engine, clock, socket, PROFILE.model_copy(update={"request_timeout_seconds": 0.2}))
-    clock.advance(GAP)
-    read = await impatient.run().read(fetch_reference(), DiscoveryBudget())
-    assert (read.status, read.code) == (OutcomeStatus.RETRY, "timeout")
-    assert await held_locks_and_backends(engine) == baseline
-    socket.hang.clear()
-    clock.advance(GAP)
-    assert (await asyncio.wait_for(worker(engine, clock, socket).run().read(fetch_reference(), DiscoveryBudget()), 10)).status == OutcomeStatus.FOUND
-    await transport.aclose()
+    succeeding = worker(engine, clock, socket)
+    async with transport_backend_probe(engine, transport, impatient, succeeding) as (probe, pids):
+        # Cancelled by its caller mid-send: the reservation stands, the lock and the connection do not.
+        request = asyncio.create_task(transport.run().read(fetch_reference(), DiscoveryBudget()))
+        try:
+            async with asyncio.timeout(WEDGED_CONTENDER_CEILING_SEC):
+                while not socket.requests:
+                    await asyncio.sleep(POLL_INTERVAL_SEC)
+            assert await held_locks_and_backends(probe, pids) == (1, 1)
+        finally:
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        assert len(socket.requests) == 1
+        await assert_transport_connections_released(probe, pids)
+        assert [row["outcome"] for row in (await ledger(engine))["attempts"]] == ["interrupted"]
+        # Timed out by the profile: a typed retry, and again nothing is left held.
+        clock.advance(GAP)
+        read = await impatient.run().read(fetch_reference(), DiscoveryBudget())
+        assert (read.status, read.code) == (OutcomeStatus.RETRY, "timeout")
+        await assert_transport_connections_released(probe, pids)
+        socket.hang.clear()
+        clock.advance(GAP)
+        assert (await asyncio.wait_for(succeeding.run().read(fetch_reference(), DiscoveryBudget()), 10)).status == OutcomeStatus.FOUND
+        await transport.aclose()
 
 
 async def test_two_providers_never_wait_on_each_other(committed_db: Any) -> None:
@@ -852,16 +913,18 @@ async def test_two_providers_never_wait_on_each_other(committed_db: Any) -> None
     other = PROFILE.model_copy(update={"provider_id": "other_catalog", "host": "other.example.invalid"})
     socket = HangingSocket(clock, {PROFILE.host})
     transport = RemoteTransport(profiles=(PROFILE, other), engine=engine, socket=socket, clock=clock)
-    baseline = await held_locks_and_backends(engine)
-    stuck = asyncio.create_task(transport.run().read(fetch_reference(), DiscoveryBudget()))
-    while not socket.requests:
-        await asyncio.sleep(0.01)
-    other_reference = fetch_reference().model_copy(update={"identity": SourceIdentity(provider_id="other_catalog", native_id="set-01")})
-    read = await asyncio.wait_for(transport.run().read(other_reference, DiscoveryBudget()), 10)
-    assert read.status == OutcomeStatus.FOUND and socket.requests[-1].host == "other.example.invalid"
-    async with engine.connect() as conn:
-        assert await conn.scalar(HELD_SQL) == baseline[0] + 1, "only the stuck provider's lock is held"
-    stuck.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await stuck
-    assert await held_locks_and_backends(engine) == baseline
+    async with transport_backend_probe(engine, transport) as (probe, pids):
+        stuck = asyncio.create_task(transport.run().read(fetch_reference(), DiscoveryBudget()))
+        try:
+            async with asyncio.timeout(WEDGED_CONTENDER_CEILING_SEC):
+                while not socket.requests:
+                    await asyncio.sleep(POLL_INTERVAL_SEC)
+            other_reference = fetch_reference().model_copy(update={"identity": SourceIdentity(provider_id="other_catalog", native_id="set-01")})
+            read = await asyncio.wait_for(transport.run().read(other_reference, DiscoveryBudget()), 10)
+            assert read.status == OutcomeStatus.FOUND and socket.requests[-1].host == "other.example.invalid"
+            assert (await held_locks_and_backends(probe, pids))[0] == 1, "only the stuck provider's lock is held"
+        finally:
+            stuck.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stuck
+        await assert_transport_connections_released(probe, pids)
