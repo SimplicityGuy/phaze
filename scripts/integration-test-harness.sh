@@ -10,12 +10,12 @@ docker_bin="${DOCKER_BIN:-docker}"
 just_bin="${JUST_BIN:-just}"
 pg_image="${PHAZE_INTEGRATION_POSTGRES_IMAGE:-postgres:18-alpine}"
 pg_shm_size="${PHAZE_INTEGRATION_POSTGRES_SHM_SIZE:-256m}"
-redis_image="${PHAZE_INTEGRATION_VALKEY_IMAGE:-valkey/valkey:9-alpine}"
+valkey_image="${PHAZE_INTEGRATION_VALKEY_IMAGE:-valkey/valkey:9-alpine}"
 bind_ip="${PHAZE_INTEGRATION_BIND_IP:-127.0.0.1}"
 fixed_pg_port="${PHAZE_INTEGRATION_DB_PORT:-0}"
-fixed_redis_port="${PHAZE_INTEGRATION_VALKEY_PORT:-0}"
+fixed_valkey_port="${PHAZE_INTEGRATION_VALKEY_PORT:-0}"
 pg_prefix="${PHAZE_INTEGRATION_DB_PREFIX:-phaze-integration-test-db}"
-redis_prefix="${PHAZE_INTEGRATION_VALKEY_PREFIX:-phaze-integration-test-valkey}"
+valkey_prefix="${PHAZE_INTEGRATION_VALKEY_PREFIX:-phaze-integration-test-valkey}"
 
 die() {
   echo "❌ $*" >&2
@@ -48,11 +48,11 @@ container_exists() {
 
 cleanup_run() {
   local run_id="$1" expected_owner="$2" allowed_pid="${3:-}"
-  local db_container="${pg_prefix}-${run_id}" redis_container="${redis_prefix}-${run_id}"
+  local db_container="${pg_prefix}-${run_id}" valkey_container="${valkey_prefix}-${run_id}"
   local found=0 container actual_run actual_owner owner_pid
 
   validate_run_id "$run_id"
-  for container in "$db_container" "$redis_container"; do
+  for container in "$db_container" "$valkey_container"; do
     container_exists "$container" || continue
     found=1
     actual_run="$(container_label "$container" com.phaze.integration.run-id)"
@@ -65,7 +65,7 @@ cleanup_run() {
     fi
   done
   ((found == 1)) || die "no dedicated integration containers found for run ${run_id}"
-  "$docker_bin" rm -f "$db_container" "$redis_container" >/dev/null 2>&1 || true
+  "$docker_bin" rm -f "$db_container" "$valkey_container" >/dev/null 2>&1 || true
   echo "🧹 Removed owned stale integration run ${run_id}"
 }
 
@@ -109,7 +109,7 @@ wait_for_postgres() {
   die "${container} did not become ready within 30s"
 }
 
-wait_for_redis() {
+wait_for_valkey() {
   local container="$1"
   echo "⏳ Waiting for Valkey to accept connections..."
   for _ in $(seq 1 30); do
@@ -124,7 +124,7 @@ wait_for_redis() {
 
 run_suite() {
   validate_port "$fixed_pg_port" PHAZE_INTEGRATION_TEST_DB_PORT
-  validate_port "$fixed_redis_port" PHAZE_INTEGRATION_TEST_VALKEY_PORT
+  validate_port "$fixed_valkey_port" PHAZE_INTEGRATION_TEST_VALKEY_PORT
 
   # run_id and owner are GLOBALS on purpose (phaze-aje5d): the EXIT trap below expands them after
   # run_suite has returned, when a `local` is already gone. With `local`, a green suite ended in
@@ -132,9 +132,9 @@ run_suite() {
   run_id="${PHAZE_INTEGRATION_RUN_ID:-$$_${RANDOM}}"
   validate_run_id "$run_id"
   owner="$(owner_id)"
-  local db_container redis_container pg_port redis_port
+  local db_container valkey_container pg_port valkey_port
   db_container="${pg_prefix}-${run_id}"
-  redis_container="${redis_prefix}-${run_id}"
+  valkey_container="${valkey_prefix}-${run_id}"
 
   trap 'cleanup_run "$run_id" "$owner" "$$" >/dev/null 2>&1 || true' EXIT
   # phaze-aje5d: an interrupt must leave nothing behind either. bash defers a trapped signal until
@@ -157,46 +157,46 @@ run_suite() {
     --label "com.phaze.integration.owner=${owner}"
     --label "com.phaze.integration.pid=$$"
   )
-  local pg_publish redis_publish
+  local pg_publish valkey_publish
   if [[ "$fixed_pg_port" == "0" ]]; then
     pg_publish="${bind_ip}::5432"
   else
     pg_publish="${bind_ip}:${fixed_pg_port}:5432"
   fi
-  if [[ "$fixed_redis_port" == "0" ]]; then
-    redis_publish="${bind_ip}::6379"
+  if [[ "$fixed_valkey_port" == "0" ]]; then
+    valkey_publish="${bind_ip}::6379"
   else
-    redis_publish="${bind_ip}:${fixed_redis_port}:6379"
+    valkey_publish="${bind_ip}:${fixed_valkey_port}:6379"
   fi
 
   echo "🐘 Starting ${db_container} (${pg_image})..."
   "$docker_bin" run -d --name "$db_container" "${labels[@]}" \
     -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB=phaze_test \
     --shm-size "$pg_shm_size" -p "$pg_publish" "$pg_image" >/dev/null
-  echo "🟥 Starting ${redis_container} (${redis_image})..."
-  "$docker_bin" run -d --name "$redis_container" "${labels[@]}" \
-    -p "$redis_publish" "$redis_image" >/dev/null
+  echo "🟥 Starting ${valkey_container} (${valkey_image})..."
+  "$docker_bin" run -d --name "$valkey_container" "${labels[@]}" \
+    -p "$valkey_publish" "$valkey_image" >/dev/null
 
   if [[ "$fixed_pg_port" == "0" ]]; then
     pg_port="$("$docker_bin" port "$db_container" 5432/tcp | head -n1 | sed -E 's/.*:([0-9]+)$/\1/')"
   else
     pg_port="$fixed_pg_port"
   fi
-  if [[ "$fixed_redis_port" == "0" ]]; then
-    redis_port="$("$docker_bin" port "$redis_container" 6379/tcp | head -n1 | sed -E 's/.*:([0-9]+)$/\1/')"
+  if [[ "$fixed_valkey_port" == "0" ]]; then
+    valkey_port="$("$docker_bin" port "$valkey_container" 6379/tcp | head -n1 | sed -E 's/.*:([0-9]+)$/\1/')"
   else
-    redis_port="$fixed_redis_port"
+    valkey_port="$fixed_valkey_port"
   fi
 
   wait_for_postgres "$db_container"
-  wait_for_redis "$redis_container"
+  wait_for_valkey "$valkey_container"
   bash scripts/ensure-pg-database.sh "$db_container" phaze_migrations_test
 
   export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${pg_port}/phaze_test"
   export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${pg_port}/phaze_migrations_test"
   # DB 0 is safe here because every run owns a separate Valkey container and host port.
-  export PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"
-  echo "🧪 Dedicated run ${run_id}: Postgres ${pg_port}, Redis ${redis_port}; running the validation-grade coverage suite."
+  export PHAZE_REDIS_URL="redis://localhost:${valkey_port}/0"
+  echo "🧪 Dedicated run ${run_id}: Postgres ${pg_port}, Valkey ${valkey_port}; running the validation-grade coverage suite."
   "$just_bin" test-cov &
   suite_pid=$!
   wait "$suite_pid"
