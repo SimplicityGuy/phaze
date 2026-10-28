@@ -34,7 +34,7 @@ THROWAWAY_FIXTURES = (
 )
 
 _JUSTFILE_VAR_RE = re.compile(r'^test_valkey_image\s*:=\s*"([^"]+)"\s*$', re.MULTILINE)
-_HARNESS_DEFAULT_RE = re.compile(r'^redis_image="\$\{PHAZE_INTEGRATION_VALKEY_IMAGE:-([^}]+)\}"$', re.MULTILINE)
+_HARNESS_DEFAULT_RE = re.compile(r'^valkey_image="\$\{PHAZE_INTEGRATION_VALKEY_IMAGE:-([^}]+)\}"$', re.MULTILINE)
 # A literal image reference: the official `redis:<tag>` image or `valkey/valkey:<tag>`. A tag must
 # start with a digit (so the justfile's `redis:*)` case pattern is not one), and `@redis:6379` -- the
 # compose service's host:port inside a DSN -- is excluded by the `@` in the lookbehind.

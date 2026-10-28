@@ -228,7 +228,7 @@ def test_each_run_labels_unique_postgres_and_valkey_containers_and_uses_the_real
     assert 'run_id="${PHAZE_INTEGRATION_RUN_ID:-$$_${RANDOM}}"' in source
     assert "com.phaze.integration.run-id" in source
     assert 'db_container="${pg_prefix}-${run_id}"' in source
-    assert 'redis_container="${redis_prefix}-${run_id}"' in source
+    assert 'valkey_container="${valkey_prefix}-${run_id}"' in source
     assert '"$just_bin" test-cov' in source
     assert "pytest tests/ -q" not in source
 
@@ -236,6 +236,13 @@ def test_each_run_labels_unique_postgres_and_valkey_containers_and_uses_the_real
 def test_dedicated_redis_db_zero_cannot_be_shared_between_runs() -> None:
     source = HARNESS.read_text(encoding="utf-8")
 
-    assert '-p "$redis_publish" "$redis_image"' in source
-    assert 'PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"' in source
+    assert '-p "$valkey_publish" "$valkey_image"' in source
+    assert 'PHAZE_REDIS_URL="redis://localhost:${valkey_port}/0"' in source
     assert "every run owns a separate Valkey container" in source
+
+
+def test_the_run_banner_names_the_server_valkey_not_redis() -> None:
+    source = HARNESS.read_text(encoding="utf-8")
+
+    assert "Postgres ${pg_port}, Valkey ${valkey_port};" in source
+    assert "Redis ${" not in source
