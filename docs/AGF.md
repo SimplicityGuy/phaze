@@ -97,13 +97,13 @@ a seat and copy all three exports exactly as printed; the recipe starts the shar
 needed:
 
 ```bash
-just test-db-for <seat>
+just provision-test-db-seat <seat>
 ```
 
 Do not run two pytest processes against one seat. The session advisory lock refuses the second
 process, while separate seats can validate concurrently. Do not stop the shared test containers
-while another seat is active. When the worktree is finished, run `just test-db-release <seat>`;
-never use `just test-db-down` as seat cleanup because it targets the shared containers.
+while another seat is active. When the worktree is finished, run `just release-test-db-seat <seat>`;
+never use `just down-test-db` as seat cleanup because it targets the shared containers.
 
 Isolation is not only about services. Any writable path two seats can open is a collision surface,
 and the scratchpad the harness advertises as "session-specific" is per-session, not per-seat —

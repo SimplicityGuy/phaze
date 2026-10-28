@@ -6,7 +6,7 @@ count. At Postgres's default 4096 that was ~12 ms of a ~17-18 ms connect (measur
 the macOS host against the 5433 harness); at one iteration the same connect took ~5 ms. The script
 re-hashes the harness role once, and these tests hold three things in place:
 
-* both harness entry points still call it -- ``just test-db`` for the local 5433 container and the
+* both harness entry points still call it -- ``just up-test-db`` for the local 5433 container and the
   CI matrix job for its ``services.postgres`` container -- so the saving cannot silently regress;
 * against a real throwaway ``postgres:18-alpine``, it leaves the role at one iteration, keeps the
   password ``phaze`` working over real SCRAM, and is a no-op the second time;
@@ -54,7 +54,7 @@ def _recipe_body(name: str) -> str:
 
 
 def test_just_test_db_rehashes_the_harness_role() -> None:
-    body = _recipe_body("test-db")
+    body = _recipe_body("up-test-db")
     assert 'bash scripts/harness-scram-iterations.sh "$container"' in body
     assert 'container="{{test_db_container}}"' in body
 
@@ -86,7 +86,7 @@ def _env_flags(env: tuple[str, ...]) -> list[str]:
 
 @pytest.fixture(scope="module")
 def harness_postgres() -> Iterator[str]:
-    """A throwaway Postgres configured exactly like the harness ``just test-db`` starts."""
+    """A throwaway Postgres configured exactly like the harness ``just up-test-db`` starts."""
     container = f"phaze-scram-test-pg-{uuid4().hex[:10]}"
     started = _docker("run", "-d", "--name", container, *_env_flags(_HARNESS_ENV), _PG_IMAGE)
     if started.returncode != 0:

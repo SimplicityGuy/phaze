@@ -22,8 +22,8 @@ The whole ``tests/integration/`` package is auto-marked ``integration`` by
 contract for Plan 37-03).
 
 ``stage_env`` probes connectivity first; if Postgres is not up the fixture ``pytest.skip``s, so a bare
-``uv run pytest`` (no ``just test-db``) skips rather than errors. Run the suite with real PG
-via ``just integration-test`` (ephemeral Postgres + Redis on host ports 5433 / 6380).
+``uv run pytest`` (no ``just up-test-db``) skips rather than errors. Run the suite with real PG
+via ``just test-integration`` (ephemeral Postgres + Redis on host ports 5433 / 6380).
 """
 
 from __future__ import annotations
@@ -173,7 +173,7 @@ async def committed_db(async_engine: AsyncEngine) -> AsyncGenerator[tuple[AsyncE
     GLOBAL committed counts -- e.g. per-backend in-flight ``cloud_job`` rows -- are accurate regardless of
     prior committed leftovers) and teardown (so no committed row leaks into the next test). This is safe
     because the ``integration`` bucket runs SERIALLY in its own process against a DEDICATED ephemeral
-    Postgres (``just test-db``, port 5433) -- never a shared/parallel DB; a ``*_test`` DB guard refuses to
+    Postgres (``just up-test-db``, port 5433) -- never a shared/parallel DB; a ``*_test`` DB guard refuses to
     TRUNCATE anything else.
 
     CRITICAL: the session-scoped ``async_engine`` fixture seeds ONE committed ``test-fileserver`` Agent for

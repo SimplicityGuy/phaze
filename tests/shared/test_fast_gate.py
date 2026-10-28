@@ -973,7 +973,7 @@ def test_a_test_file_the_map_names_but_a_landed_reorganisation_moved_escalates(t
     assert excinfo.value.verdict == "escalate"
     assert "no longer exist" in excinfo.value.reason
     assert "tests/old_location/test_x.py" in excinfo.value.reason
-    assert "just repowise-coverage" in excinfo.value.reason
+    assert "just refresh-repowise-coverage" in excinfo.value.reason
 
 
 # The recipes. (The config half is unreachable from here — see the module docstring.)
@@ -1036,9 +1036,9 @@ def test_the_fast_step_produces_no_coverage() -> None:
     """No coverage gate on the fast run -- operator decision 2026-08-25, durable record bead phaze-pv3kk.
 
     A subset's figure is meaningless against the 95% line floor and must not be quotable as one; and
-    a ``coverage.json`` written here would overwrite the artifact ``just branch-check`` and
+    a ``coverage.json`` written here would overwrite the artifact ``just check-branch-coverage`` and
     ``scripts/coverage_floor.py`` compare against. repowise is unaffected either way: its coverage
-    comes from ``just repowise-coverage`` and ``just repowise-coverage-ci``, so this bead READS the
+    comes from ``just refresh-repowise-coverage`` and ``just refresh-repowise-coverage-ci``, so this bead READS the
     map and writes nothing to it.
     """
     recipe = _dry_run("test-fast")

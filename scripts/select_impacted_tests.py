@@ -116,7 +116,7 @@ pins that one.
 
 **A. THE COVERAGE MAP GOES STALE, AND `repowise update` DOES NOT FIX IT.** This is the one that
 looks handled and is not. The map is built by ``repowise coverage add`` from a
-``pytest --cov --cov-context=test`` run -- ``just repowise-coverage``, about 21 minutes -- and is a
+``pytest --cov --cov-context=test`` run -- ``just refresh-repowise-coverage``, about 21 minutes -- and is a
 DIFFERENT artifact from the wiki/health index that ``repowise update`` refreshes. Running
 ``repowise update`` in this path would produce a freshly-updated index over an untouched map, which
 reads as fixed and is not.
@@ -132,7 +132,7 @@ measured it -- ``git log <map_sha>..<base> -- <file>`` -- because then the recor
 longer point at the same code and the line intersection is arithmetic on stale coordinates.
 
 *Consequence worth stating out loud:* this gate's usefulness is a direct function of how recently
-``just repowise-coverage`` ran. At 103 commits of drift, a lot of changes escalate. That makes the
+``just refresh-repowise-coverage`` ran. At 103 commits of drift, a lot of changes escalate. That makes the
 21-minute refresh a periodic maintenance obligation rather than an optional nicety, and it is the
 honest price of change-driven selection.
 
@@ -199,11 +199,11 @@ source, not just "enough of them"), and it is the honest one: the full suite cos
 where a silently-shrunk selection costs nothing and is never visible in the transcript that reports
 it green. So: any missing test id escalates the WHOLE diff, unconditionally -- never a per-id drop --
 with a message naming the count and the fix: *"the coverage map names N test file(s) that no longer
-exist -- run `just repowise-coverage`"*.
+exist -- run `just refresh-repowise-coverage`"*.
 
 **Operational remedy, recorded so the next seat does not rediscover it.** The dispatcher that hit this
-live ran ``just repowise-coverage-ci <run>`` against the last GREEN ``main`` run to refresh the shared
-map out of band, rather than paying the full ~21-minute local ``just repowise-coverage`` per seat.
+live ran ``just refresh-repowise-coverage-ci <run>`` against the last GREEN ``main`` run to refresh the shared
+map out of band, rather than paying the full ~21-minute local ``just refresh-repowise-coverage`` per seat.
 That is the fix for the map once it is known stale; this failure mode is what makes the staleness
 show up as a verdict instead of a silent miscount.
 
@@ -641,7 +641,7 @@ def select(repo: Path, base_ref: str) -> tuple[list[str], list[str]]:
     test_map = status.get("test_map") or {}
     map_sha = str(test_map.get("ingested_commit_sha") or "")
     if not test_map.get("pair_count"):
-        raise Refuse("escalate", "the per-test coverage map is empty — run `just repowise-coverage`")
+        raise Refuse("escalate", "the per-test coverage map is empty — run `just refresh-repowise-coverage`")
     if not map_sha:
         raise Refuse("escalate", "the coverage map records no commit, so its freshness cannot be established")
     notes.append(f"map: {test_map['pair_count']} pairs at {map_sha[:8]} ({test_map.get('ingested_at', 'unknown')})")
@@ -662,7 +662,7 @@ def select(repo: Path, base_ref: str) -> tuple[list[str], list[str]]:
     if missing:
         raise Refuse(
             "escalate",
-            f"the coverage map names {len(missing)} test file(s) that no longer exist \u2014 run `just repowise-coverage`: "
+            f"the coverage map names {len(missing)} test file(s) that no longer exist \u2014 run `just refresh-repowise-coverage`: "
             f"{', '.join(missing[:5])}" + (" \u2026" if len(missing) > 5 else ""),
         )
 

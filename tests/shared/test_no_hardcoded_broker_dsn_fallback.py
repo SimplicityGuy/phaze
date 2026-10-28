@@ -15,7 +15,7 @@ Eight test modules independently derived a SAQ/psycopg broker DSN with a copy-pa
 
 That fallback bypasses ``tests/db_guard.py`` entirely -- it is not a ``TEST_DATABASE_URL`` default,
 it is a SEPARATE, independently-hardcoded default naming the wrong port. With ``TEST_DATABASE_URL``
-unset (a bare ``uv run pytest``, no ``just test-db-for`` seat exported) these modules aimed straight
+unset (a bare ``uv run pytest``, no ``just provision-test-db-seat`` seat exported) these modules aimed straight
 at 5432. Measured impact: 5 failures across two modules as psycopg pools spent 30s timing out against
 nothing on 5432 -- and on a machine where 5432 DOES hold a live ``phaze`` database, SAQ's ``init_db()``
 would have created its tables in the developer's real data, the exact live-data-shape ``db_guard``

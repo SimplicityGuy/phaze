@@ -29,7 +29,7 @@ tier ever drop a report in the same directory, two runner-named files merge corr
 files both called ``report.xml`` would collide.
 
 *An explicit* ``--junitxml`` *always wins.* Two recipes in this repo already pass one --
-``just test-bucket`` (``--junitxml=junit.xml``, the CI shards) and ``just repowise-coverage`` --
+``just test-bucket`` (``--junitxml=junit.xml``, the CI shards) and ``just refresh-repowise-coverage`` --
 and silently redirecting their report because a validation happened to be the caller would break
 a working path to serve a diagnostic one.
 

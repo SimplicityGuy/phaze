@@ -1,6 +1,6 @@
 """Unit tests for the per-module coverage floor gate (Phase 64-01, COV-01 / COV-02).
 
-``scripts/coverage_floor.py`` is a CI-load-bearing script: it runs inside ``just coverage-combine``
+``scripts/coverage_floor.py`` is a CI-load-bearing script: it runs inside ``just combine-coverage``
 on the COMBINED ``coverage.json`` and fails the required check if any tracked ``phaze/**`` module
 falls below the uniform 90% floor. Because it gates merges, it gets its own tests -- the same
 precedent as ``scripts/classify-changed-files.sh`` / ``tests/shared/test_change_gate.py`` (Phase 63).

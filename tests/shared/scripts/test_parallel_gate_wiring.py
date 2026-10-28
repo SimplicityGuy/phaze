@@ -46,5 +46,5 @@ def test_parallel_path_has_no_shared_or_forced_cleanup_escape_hatch() -> None:
     assert 'environment.pop("PHAZE_TEST_DB_ALLOW_SHARED", None)' in _RUNNER
     assert 'environment.pop("PYTEST_ADDOPTS", None)' in _RUNNER
     assert "PHAZE_TEST_DB_FORCE_DOWN" not in _RUNNER
-    assert "test-db-down" not in _RUNNER
+    assert "down-test-db" not in _RUNNER
     assert "--force" not in _RUNNER

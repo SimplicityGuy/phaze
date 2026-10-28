@@ -1,8 +1,8 @@
 """Real-Postgres integration tests for the Phase 36 queue-backend migration.
 
 Every test in this package opens a real :class:`saq.queue.postgres.PostgresQueue`
-against the ephemeral integration-test Postgres broker (``just test-db`` /
-``just integration-test``, host port 5433). They prove the migration-target
+against the ephemeral integration-test Postgres broker (``just up-test-db`` /
+``just test-integration``, host port 5433). They prove the migration-target
 behaviors that are ONLY verifiable against a live Postgres broker:
 
 * ``test_pg_queue_priority`` -- native ``ORDER BY priority, scheduled`` dequeue

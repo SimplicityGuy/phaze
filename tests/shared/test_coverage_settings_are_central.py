@@ -53,7 +53,7 @@ PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 REPOWISE_SCRIPT_PATH = REPO_ROOT / "scripts" / "repowise-coverage.sh"
 
 # The recipes that measure the WHOLE suite and must therefore leave a report every consumer can
-# read. `just branch-check` and scripts/coverage_floor.py read coverage.json; Codecov reads
+# read. `just check-branch-coverage` and scripts/coverage_floor.py read coverage.json; Codecov reads
 # coverage.xml. Neither should depend on which of these the developer happened to run (AC4).
 WHOLE_SUITE_RECIPES = ("test-cov",)
 
@@ -239,11 +239,11 @@ def test_coverage_combine_emits_both_artifacts_before_it_gates() -> None:
     otherwise just an argument. The pre-jktlb form (`xml` / `json` / `report`, no `--fail-under=0`
     on the artifact steps) exited at `coverage xml`: a report writer writes its file and only then
     exits on the inherited floor, so coverage.xml survived and `coverage json` never ran at all.
-    coverage.json is what `scripts/coverage_floor.py` and `just branch-check` read, so a sub-floor
+    coverage.json is what `scripts/coverage_floor.py` and `just check-branch-coverage` read, so a sub-floor
     combine destroyed the artifact naming the module that dropped. The current form wrote both in
     full and then failed at `coverage report --fail-under=95`.
     """
-    steps = [line.strip() for line in _dry_run("coverage-combine").splitlines() if line.strip()]
+    steps = [line.strip() for line in _dry_run("combine-coverage").splitlines() if line.strip()]
     subcommands = [re.sub(r"^uv run coverage ", "", step).split()[0] for step in steps if step.startswith("uv run coverage ")]
 
     assert subcommands == ["combine", "json", "xml", "report"], subcommands
@@ -254,8 +254,8 @@ def _all_coverage_sites() -> dict[str, str]:
     """Every command line in the repo that measures or reports coverage."""
     sites = {recipe: _pytest_command(recipe) for recipe in WHOLE_SUITE_RECIPES}
     sites[SHARD_RECIPE] = _pytest_command(SHARD_RECIPE, "shard", "tests/shared")
-    sites["coverage-combine"] = _dry_run("coverage-combine")
-    # The sixth site, and the one the bead's own inventory missed: `just repowise-coverage`.
+    sites["combine-coverage"] = _dry_run("combine-coverage")
+    # The sixth site, and the one the bead's own inventory missed: `just refresh-repowise-coverage`.
     script = REPOWISE_SCRIPT_PATH.read_text(encoding="utf-8")
     sites["repowise-coverage.sh"] = "\n".join(
         line
@@ -281,7 +281,7 @@ def test_no_coverage_site_overrides_a_setting_that_lives_in_pyproject(site: str)
         assert not pattern.search(command), f"{site} passes {flag}, which overrides {home}:\n{command}"
 
 
-@pytest.mark.parametrize("site", ["coverage-combine", *WHOLE_SUITE_RECIPES, SHARD_RECIPE])
+@pytest.mark.parametrize("site", ["combine-coverage", *WHOLE_SUITE_RECIPES, SHARD_RECIPE])
 def test_every_coverage_site_orders_its_cov_flags_alphabetically(site: str) -> None:
     """Operator instruction, phaze-jktlb, 2026-08-22: "preferably in alphabetical order".
 
@@ -291,8 +291,8 @@ def test_every_coverage_site_orders_its_cov_flags_alphabetically(site: str) -> N
     default; a deviation needs a stated reason (coverage-combine's artifacts-before-gates split
     has one, and is asserted separately above).
     """
-    if site == "coverage-combine":
-        pytest.skip("coverage-combine passes subcommands, not --cov flags; its order is asserted above")
+    if site == "combine-coverage":
+        pytest.skip("combine-coverage passes subcommands, not --cov flags; its order is asserted above")
     command = _pytest_command(site) if site in WHOLE_SUITE_RECIPES else _pytest_command(SHARD_RECIPE, "shard", "tests/shared")
     flags = _cov_flags(command)
 
@@ -311,7 +311,7 @@ def test_the_ci_shard_stays_report_free_and_keeps_its_two_deliberate_overrides()
       variable this recipe does not reference, rather than in ``addopts``.
     * ``COVERAGE_FILE`` redirects only the binary DATA file. A shard emitting reports would write
       them to the SHARED coverage.json/coverage.xml names, overwriting a full run's -- and
-      ``just branch-check`` reads exactly that coverage.json.
+      ``just check-branch-coverage`` reads exactly that coverage.json.
     * ``--cov-fail-under=0`` and ``--cov-context=test`` are per-recipe by design (AC7). The
       context flag has no working central equivalent: ``dynamic_context = "test_function"`` records
       function names instead of nodeids and, set alongside this flag, wins while emitting only a

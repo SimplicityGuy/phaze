@@ -14,7 +14,7 @@ Summaries report n, median and maximum only; no tail percentile is inferred from
 Use identical corpus, backend configuration, active tabs and source base for before/after runs.
 The idle case is not evidence about active production workload or infrastructure saturation.
 
-Example (after ``just test-db-for dashboard-latency`` and copying its exports)::
+Example (after ``just provision-test-db-seat dashboard-latency`` and copying its exports)::
 
     uv run python scripts/perf_dashboard.py --dsn "$TEST_DATABASE_URL" \\
         --redis-url "$PHAZE_REDIS_URL" --iterations 10 --tabs 1 > profile.json

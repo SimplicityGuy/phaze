@@ -11,7 +11,7 @@ Pins behaviors only observable against SAQ's real Postgres dequeue
   below 0 falls outside SAQ's ``priority BETWEEN 0 AND 32767`` dequeue window and the job
   silently never dequeues (Pitfall 2), while priority 0 is the safe, dequeueable floor.
 
-Run with real PG via ``just integration-test``. Package auto-marked ``integration`` by
+Run with real PG via ``just test-integration``. Package auto-marked ``integration`` by
 ``tests/conftest.py``; the explicit ``pytestmark`` is the Plan 37-03 artifact contract.
 """
 

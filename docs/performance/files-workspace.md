@@ -136,7 +136,7 @@ drop the application schema.
 
 ## Repeat the reads
 
-Allocate a dedicated local seat with `just test-db-for <name>` and copy its printed exports.
+Allocate a dedicated local seat with `just provision-test-db-seat <name>` and copy its printed exports.
 Migrate and prepare a synthetic corpus with the distributions above. Keep that database separate
 from all pytest and migration-test sessions. Set an explicit synthetic backend registry when
 reproducing the exact local-only configuration.

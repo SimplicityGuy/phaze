@@ -89,7 +89,7 @@ def test_a_set_variable_aims_pytest_at_the_drop_zone(monkeypatch: pytest.MonkeyP
 
 
 def test_an_explicit_junitxml_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """``just test-bucket`` (the CI shards) and ``just repowise-coverage`` both pass their own
+    """``just test-bucket`` (the CI shards) and ``just refresh-repowise-coverage`` both pass their own
     ``--junitxml``. Redirecting a working path to serve a diagnostic one would be a regression,
     so the caller's choice is never overwritten."""
     monkeypatch.setenv(bh_test_report.ENV_VAR, str(tmp_path))

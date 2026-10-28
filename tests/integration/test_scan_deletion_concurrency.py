@@ -31,7 +31,7 @@ own connection.
 A blocked waiter is observed via ``pg_locks`` (deterministic), not guessed via a sleep duration -- the
 same style as ``test_scan_reaper_concurrency.py`` / ``test_stage_pause_resume_lock.py``.
 
-Run with real PG via ``just integration-test``. Package auto-marked ``integration`` by
+Run with real PG via ``just test-integration``. Package auto-marked ``integration`` by
 ``tests/conftest.py``; the explicit ``pytestmark`` is the Plan 37-03 artifact contract.
 """
 

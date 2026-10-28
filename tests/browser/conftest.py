@@ -223,7 +223,7 @@ _BROWSER_DB_SUFFIX_ENV = "PHAZE_BROWSER_DB_SUFFIX"
 def _browser_dsn() -> str:
     """A dedicated database for the live app, derived from this seat's DSN.
 
-    The length check is not defensive padding. ``just test-db-for`` builds seat names as
+    The length check is not defensive padding. ``just provision-test-db-seat`` builds seat names as
     ``phaze_<derived>_test`` where ``<derived>`` carries the worktree name plus a hash, so appending
     ``_browser`` can push a long seat past Postgres's 63-byte identifier limit -- and Postgres
     truncates rather than failing. Two seats whose names differ only past byte 63 would then resolve
@@ -239,7 +239,7 @@ def _browser_dsn() -> str:
             f"browser database name {browser_name!r} is {len(browser_name.encode())} bytes, over Postgres's "
             f"{_PG_MAX_IDENTIFIER_BYTES}-byte identifier limit. Postgres would truncate it silently, so two seats "
             "could collide on one database and DROP each other's. Use a shorter worktree/seat name for "
-            "`just test-db-for`."
+            "`just provision-test-db-seat`."
         )
     return f"{base}/{browser_name}"
 

@@ -35,7 +35,7 @@ pre-reorg baseline the reorg must preserve (CI-03).
 
 | Metric | Value | How captured |
 |--------|-------|--------------|
-| Full-suite passed | **2566 passed** | `just integration-test` (ephemeral PG 5433 + Redis 6380), 0 failed |
+| Full-suite passed | **2566 passed** | `just test-integration` (ephemeral PG 5433 + Redis 6380), 0 failed |
 | Combined coverage | **96.89%** | `coverage report` over a full covered `--cov=phaze` run |
 | Collected test files | 213 | `find tests \( -name 'test_*.py' -o -name '*_test.py' \)` |
 
@@ -58,7 +58,7 @@ That reorganization required the same **2566 passed** (no test lost, none double
 > `tests/buckets.json` to home `tests/services/` — regression tests for the top-level
 > `services/` FastAPI sidecars (audfprint, panako), which live OUTSIDE `src/phaze` and so
 > were previously outside every bucket and the whole pytest testpath. It rides the same
-> matrix-shard → coverage-combine → single Codecov upload flow as every other bucket
+> matrix-shard → combine-coverage → single Codecov upload flow as every other bucket
 > (`just test-bucket services`, `--cov=phaze`); the sidecars' own code stays out of the
 > `source=["phaze"]` coverage gates by design.
 >

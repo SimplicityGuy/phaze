@@ -41,7 +41,7 @@ task payloads that cross this seam, and for each one it:
 Every one of those models declares at least one ``uuid.UUID`` field, so step 1 is load-bearing:
 :func:`test_a_raw_uuid_kwarg_is_refused_by_the_real_broker` shows what happens without it.
 
-Runs against the ephemeral integration-test Postgres broker (``just test-db``, host port 5433);
+Runs against the ephemeral integration-test Postgres broker (``just up-test-db``, host port 5433);
 the DSN is derived via ``tests.db_guard.integration_dsns`` (phaze-yxklc) and the module skips
 cleanly when the broker is down, mirroring ``test_pg_dedup``.
 """
@@ -262,7 +262,7 @@ async def pg_queue() -> AsyncGenerator[PostgresQueue]:
     """Yield a connected real ``PostgresQueue`` with a per-test-unique name.
 
     Same shape as ``test_pg_dedup``'s fixture: probe first and ``pytest.skip`` when the broker is
-    down (so a bare ``uv run pytest`` with no ``just test-db`` skips rather than errors),
+    down (so a bare ``uv run pytest`` with no ``just up-test-db`` skips rather than errors),
     ``connect()`` opens the psycopg3 pool and runs ``init_db()``, teardown deletes this queue's
     rows. The unique name keeps concurrent seats off each other's rows in the shared ``saq_jobs``
     table.

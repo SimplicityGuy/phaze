@@ -3,7 +3,7 @@
 Alpine v3 does not inject `[x-cloak]{display:none}` itself — the app must define it. Without it every
 `x-cloak` in the templates is inert and flashes fallback content before `x-show` initializes. The rule
 lives in the source `assets/src/app.css`; the compiled `src/phaze/static/css/app.css` is gitignored and
-rebuilt via `just tailwind`, so we assert the source (the durable artifact), not the build output.
+rebuilt via `just build-tailwind`, so we assert the source (the durable artifact), not the build output.
 """
 
 from __future__ import annotations

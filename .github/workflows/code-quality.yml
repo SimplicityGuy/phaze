@@ -78,11 +78,11 @@ jobs:
         run: just setup
 
       - name: 🧪 Run pre-commit hooks
-        run: just pre-commit
+        run: just run-pre-commit
 
       # phaze-jjjy8: promtool is the REAL consumer of alerts/phaze-alerts.yml and its unit
       # tests (alerts/phaze-alerts.test.yml) -- see tests/shared/telemetry/test_alert_rules.py's
-      # module docstring. `just alerts-test` loudly SKIPS when promtool is absent, which is
+      # module docstring. `just test-alerts` loudly SKIPS when promtool is absent, which is
       # right for a local dev machine but wrong for CI: this step installs the binary so CI
       # always runs the real check rather than exercising the skip path.
       #
@@ -102,4 +102,4 @@ jobs:
           promtool --version
 
       - name: 🔔 Run alert rule unit tests (promtool test rules)
-        run: just alerts-test
+        run: just test-alerts

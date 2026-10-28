@@ -5,7 +5,7 @@ skew the suite did not cover and CLAUDE.md carried as a "Known gap". phaze-8o294
 them onto ONE ``valkey/valkey`` image. The pin lives in several places, only some of which can share
 a source of truth:
 
-1. ``justfile``'s ``test_redis_image :=`` variable, interpolated by ``test-db`` and passed to
+1. ``justfile``'s ``test_valkey_image :=`` variable, interpolated by ``test-db`` and passed to
    ``scripts/integration-test-harness.sh`` (whose own default must agree for direct invocations).
 2. ``docker-compose.yml``'s ``redis`` service ``image:`` -- production.
 3. Both ``redis`` service containers in ``.github/workflows/tests.yml``.
@@ -33,8 +33,8 @@ THROWAWAY_FIXTURES = (
     REPO_ROOT / "tests" / "shared" / "test_test_db_gc.py",
 )
 
-_JUSTFILE_VAR_RE = re.compile(r'^test_redis_image\s*:=\s*"([^"]+)"\s*$', re.MULTILINE)
-_HARNESS_DEFAULT_RE = re.compile(r'^redis_image="\$\{PHAZE_INTEGRATION_REDIS_IMAGE:-([^}]+)\}"$', re.MULTILINE)
+_JUSTFILE_VAR_RE = re.compile(r'^test_valkey_image\s*:=\s*"([^"]+)"\s*$', re.MULTILINE)
+_HARNESS_DEFAULT_RE = re.compile(r'^redis_image="\$\{PHAZE_INTEGRATION_VALKEY_IMAGE:-([^}]+)\}"$', re.MULTILINE)
 # A literal image reference: the official `redis:<tag>` image or `valkey/valkey:<tag>`. A tag must
 # start with a digit (so the justfile's `redis:*)` case pattern is not one), and `@redis:6379` -- the
 # compose service's host:port inside a DSN -- is excluded by the `@` in the lookbehind.
@@ -43,7 +43,7 @@ _LITERAL_IMAGE_RE = re.compile(r"(?<![\w/.@-])(?:redis:[0-9][0-9A-Za-z_.-]*|valk
 
 def _justfile_image() -> str:
     matches = _JUSTFILE_VAR_RE.findall(JUSTFILE_PATH.read_text())
-    assert len(matches) == 1, f"expected exactly one `test_redis_image :=` declaration in the justfile; found {matches!r}"
+    assert len(matches) == 1, f"expected exactly one `test_valkey_image :=` declaration in the justfile; found {matches!r}"
     return matches[0]
 
 
@@ -57,13 +57,13 @@ def _workflow_images() -> list[str]:
 def test_every_pin_names_the_same_valkey_image() -> None:
     """Production, CI, the local harness and the real-server test fixtures run ONE image."""
     image = _justfile_image()
-    assert image.startswith("valkey/valkey:"), f"test_redis_image must be a valkey/valkey image (phaze-8o294); got {image!r}"
+    assert image.startswith("valkey/valkey:"), f"test_valkey_image must be a valkey/valkey image (phaze-8o294); got {image!r}"
 
     compose_image = yaml.safe_load(COMPOSE_PATH.read_text())["services"]["redis"]["image"]
     harness_default = _HARNESS_DEFAULT_RE.findall(HARNESS_PATH.read_text())
     fixture_images = {path.name: _LITERAL_IMAGE_RE.findall(path.read_text()) for path in THROWAWAY_FIXTURES}
 
-    assert compose_image == image, f"docker-compose.yml redis image {compose_image!r} != justfile test_redis_image {image!r}"
+    assert compose_image == image, f"docker-compose.yml redis image {compose_image!r} != justfile test_valkey_image {image!r}"
     assert _workflow_images() == [image, image], f"tests.yml redis service images {_workflow_images()!r} != {image!r}"
     assert harness_default == [image], f"integration-test-harness.sh default {harness_default!r} != {image!r}"
     for name, found in fixture_images.items():
@@ -74,7 +74,7 @@ def test_no_other_redis_image_is_pinned_anywhere_that_launches_one() -> None:
     """No literal image other than the one pin survives in the files that start a server.
 
     The justfile's own declaration is stripped first -- that line legitimately names the tag once.
-    Every other site must go through ``{{test_redis_image}}``; a leftover literal is exactly the
+    Every other site must go through ``{{test_valkey_image}}``; a leftover literal is exactly the
     partial-bump hazard ``test_postgres_image_pin.py`` names: it would run the old tag while every
     other site moved on.
     """
@@ -88,4 +88,4 @@ def test_no_other_redis_image_is_pinned_anywhere_that_launches_one() -> None:
     offenders = {path.name: found for path, text in sources.items() if (found := [m for m in _LITERAL_IMAGE_RE.findall(text) if m != image])}
     justfile_literals = _LITERAL_IMAGE_RE.findall(sources[JUSTFILE_PATH])
     assert not offenders, f"image literals that are not {image!r}: {offenders!r}"
-    assert not justfile_literals, f"justfile names {justfile_literals!r} outside `test_redis_image :=`; use {{{{test_redis_image}}}}"
+    assert not justfile_literals, f"justfile names {justfile_literals!r} outside `test_valkey_image :=`; use {{{{test_valkey_image}}}}"

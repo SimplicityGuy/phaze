@@ -67,7 +67,7 @@ cannot read a `justfile` variable.
 #### The `redis` service runs Valkey
 
 The `redis` service runs `valkey/valkey:9-alpine`  — the same image as the
-local test harness (`test_redis_image` in the `justfile`), both CI service containers, and the
+local test harness (`test_valkey_image` in the `justfile`), both CI service containers, and the
 real-server test fixtures; `tests/agents/deployment/test_redis_image_pin.py` fails the build if any
 of them drift. The service keeps its name, port and `REDIS_PASSWORD`, and the app keeps redis-py, so
 nothing that connects to it changes.
@@ -145,7 +145,7 @@ where they differ:
 - **[cloud-burst.md](cloud-burst.md)** — the `kind=compute` agent: the `docker-compose.cloud-agent.yml`
   walkthrough, the OCI A1 provisioning runbook (OpenTofu spec, Tailscale grants ACL, least-privilege
   `phaze_broker` Postgres role), and the smoke test. On the file-server/agent host, bring the compute
-  agent up/down with **`just cloud-agent-up`** / **`just cloud-agent-down`** (standalone
+  agent up/down with **`just up-cloud-agent`** / **`just down-cloud-agent`** (standalone
   `docker-compose.cloud-agent.yml`).
 - **[k8s-burst.md](k8s-burst.md)** — the `kind=kueue` clusters: the cluster-admin Kueue objects
   (ResourceFlavor / ClusterQueue / LocalQueue), the namespaced RBAC Role phaze's ServiceAccount needs
@@ -631,7 +631,7 @@ version-pinnable image tags; keep the deployment pin aligned with a published re
 
 The `Dockerfile` is multi-stage. A `css-builder` stage (`FROM python:3.14-slim AS css-builder`) compiles `assets/src/app.css` → `src/phaze/static/css/app.css` with the pinned standalone Tailwind v4 binary (`TAILWIND_VERSION=v4.3.2`, kept in sync with the justfile `tailwind` recipe — no Node, no CDN); the final `base` stage (`FROM python:3.14-slim AS base`) copies only the generated CSS. `base` installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
 
-You can also build/push manually with `just`: `just docker-build`, `just docker-validate` (hadolint), `just docker-compose-validate`, and `just image-push` (requires a `gh` token with `packages:write`).
+You can also build/push manually with `just`: `just build-docker`, `just validate-dockerfiles` (hadolint), `just validate-compose`, and `just push-image` (requires a `gh` token with `packages:write`).
 
 ### Static asset caching
 
@@ -755,7 +755,7 @@ production outages the ADR cites.
 
 - **API health endpoint:** `GET /health` returns `{"status":"ok"}` and checks database connectivity (`SELECT 1`). It requires Postgres to be reachable. Use it as the app-server liveness probe: `curl --cacert ./certs/phaze-ca.crt https://<app-server>:8000/health`.
 - **Agent heartbeat / liveness:** **every** lane worker (`worker-analyze`/`worker-meta`/`worker-io`, all with `PHAZE_AGENT_HEARTBEAT=true`) runs an asyncio background task (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`, gated by `PHAZE_AGENT_HEARTBEAT`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth, lane}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs. Each beat carries its own lane tag and that lane's depth; the control plane keeps the per-lane breakdown and sums an honest all-lane `queue_depth`, while `last_seen_at` is inherently `max(last_seen)` across lanes. This replaced the former single-heartbeat convention: pinning liveness to `worker-analyze` alone meant one stalled process marked the whole agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other lanes were busy. Only the transitional `worker-drain` sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, and an untagged beat would wipe the per-lane breakdown (see [agent-queue-lanes.md](agent-queue-lanes.md)). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
-- **Worker health:** `just worker-health` runs the SAQ `--check` against the controller worker; `just worker-logs` follows its logs.
+- **Worker health:** `just check-worker-health` runs the SAQ `--check` against the controller worker; `just logs-worker` follows its logs.
 - **Logging and optional telemetry:** services log to stdout/stderr (`docker compose logs -f <service>`). The cert-bootstrap banner additionally lands in `docker compose logs api` via `logger.warning()`. OpenTelemetry export is disabled when no OTLP endpoint is configured; set the standard `OTEL_EXPORTER_OTLP_*` variables to push metrics and traces to the operator-owned collector. `docker-compose.telemetry.example.yml` is a development illustration only, not part of the production topology. See [telemetry/exporter.md](telemetry/exporter.md).
 
 ## Filesystem-Isolation Smoke
@@ -841,7 +841,7 @@ Before shipping a file-server host to production:
 - `.env.example.agent` — file-server agent environment template
 - `docker-compose.yml` — app-server compose
 - `docker-compose.agent.yml` — file-server agent compose
-- `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (`just cloud-agent-up` / `cloud-agent-down`)
+- `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (`just up-cloud-agent` / `down-cloud-agent`)
 - `docker-compose.dev.yml` — dev-only overlay (live reload; `just up-dev`, explicit `-f`, never auto-merged)
 - `backends.toml` — the cloud-backend registry (mounted at `PHAZE_BACKENDS_CONFIG_FILE`; absent ⇒ implicit local-only)
 - [docs/cloud-burst.md](cloud-burst.md) — `kind=compute` agent deploy + runbook (deep-dive; config surface is `backends.toml`)

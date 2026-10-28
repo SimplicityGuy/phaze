@@ -175,8 +175,8 @@ cross-compile is prohibitively slow).
 
 ```bash
 # Operator fallback (mirrors the CI build-arm64 job):
-just image-build-arm64            # builds ghcr.io/<owner>/phaze:latest-arm64
-just image-build-arm64 2026.8.4   # builds ...:2026.8.4-arm64
+just build-image-arm64            # builds ghcr.io/<owner>/phaze:latest-arm64
+just build-image-arm64 2026.8.4   # builds ...:2026.8.4-arm64
 
 # Raw docker:
 docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 \
@@ -214,7 +214,7 @@ sha256 verified before it is made executable (the same discipline as the Tailwin
   configure's preprocessor probes and are expected. Measured 2026-09-04 on colima (native
   aarch64, Docker 29.5.2): cold **338 misses, compile layer 417.8 s**; layer-bust rebuild
   **338 hits, 55.0 s**; the cache is 15 MiB.
-- **Locally** (`just image-build-arm64`, which now forces `DOCKER_BUILDKIT=1` because the
+- **Locally** (`just build-image-arm64`, which now forces `DOCKER_BUILDKIT=1` because the
   legacy builder rejects `RUN --mount`) the mount persists in colima's builder across
   builds. `docker builder prune` discards it, and `--no-cache` replaces it with an empty one.
 - **In CI** a hosted runner's builder is empty every run, so `build-arm64` restores the
@@ -245,13 +245,13 @@ The arm64 image is built, parity-checked against an x86 golden, and pushed to GH
 | `scripts/parity/dump_analysis.py` | shared CLI — runs the real `analyze_file` over `reference.wav` + `/models` and emits the parity-projected JSON (run **inside** each image) |
 | `scripts/parity/compare_analysis.py` | compares golden vs actual — **BPM/key exact**, model scores within `--atol` epsilon; **non-zero exit on any break** |
 | `scripts/parity/reference.wav` | committed deterministic synthetic reference clip (the shared input both sides analyze) |
-| `just parity-dump IMAGE [MODELS] [OUT] [RUNTIME]` | the shared dump path both CI jobs delegate to; the closed `RUNTIME` enum selects `x86` (`uv run python`) or `arm64` (`python3` on the `--system` 3.13 image) |
-| `just parity-check [TAG]` | operator mirror of the CI parity-guard (provision models → dump arm64 actual → compare against golden) |
-| `just parity-golden-regen [TAG]` | regenerate `golden-x86.json` from the x86 api image (CI is authoritative) |
+| `just dump-parity IMAGE [MODELS] [OUT] [RUNTIME]` | the shared dump path both CI jobs delegate to; the closed `RUNTIME` enum selects `x86` (`uv run python`) or `arm64` (`python3` on the `--system` 3.13 image) |
+| `just check-parity [TAG]` | operator mirror of the CI parity-guard (provision models → dump arm64 actual → compare against golden) |
+| `just regen-parity-golden [TAG]` | regenerate `golden-x86.json` from the x86 api image (CI is authoritative) |
 
 > **`scripts/parity/golden-x86.json` is NOT committed** (only `reference.wav` and the two
-> scripts are). On a clean checkout `just parity-check` has nothing to compare against —
-> run `just parity-golden-regen` first, or download the `golden-x86.json` artifact from the
+> scripts are). On a clean checkout `just check-parity` has nothing to compare against —
+> run `just regen-parity-golden` first, or download the `golden-x86.json` artifact from the
 > CI `parity-golden-x86` job.
 
 ### The CI gate (`docker-publish.yml`)

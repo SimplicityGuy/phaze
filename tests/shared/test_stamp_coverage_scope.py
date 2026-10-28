@@ -1,8 +1,8 @@
 """Unit tests for `scripts/stamp_coverage_scope.py` (phaze-vad6y).
 
-CLAUDE.md documented `just branch-check` as "free after any `check`", but nothing recorded which
+CLAUDE.md documented `just check-branch-coverage` as "free after any `check`", but nothing recorded which
 TREE a full-suite `coverage.json` was measured against, so `scripts/branch_coverage_check.py` had
-no way to tell a same-tree report from a stale one and `just branch-check`'s recipe never even
+no way to tell a same-tree report from a stale one and `just check-branch-coverage`'s recipe never even
 tried to reuse one -- it unconditionally re-ran real tests on every invocation regardless (a
 cheaper selected subset, or a full-suite escalation), and every invocation the 2026-09-22/23
 dispatch actually recorded escalated, costing a genuine ~20-24 minutes each time. This script is
@@ -280,7 +280,7 @@ def test_the_marker_is_one_shot_and_does_not_survive_a_second_stamp_call(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `--record-start` marker is consumed by the FIRST stamp attempt that reads it -- a second,
-    unrelated `just branch-check` (or a re-run of the stamp step) must not silently reuse it.
+    unrelated `just check-branch-coverage` (or a re-run of the stamp step) must not silently reuse it.
     """
     module = _load()
     marker = tmp_path / "start.json"

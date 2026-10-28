@@ -44,14 +44,14 @@ uv run python scripts/render_documentation_diagrams.py
 uv run python scripts/verify_diagram_design.py
 uv run --group browser python scripts/verify_documentation_diagrams.py \
   --output /tmp/phaze-diagram-review --export
-just docs-check
+just check-docs
 ```
 
 The browser command retains light/dark screenshots and detailed receipts in the selected
 scratch directory, refreshes committed PNGs and records exact source/export digests. Review
 representative and dense images at readable size before committing. Static geometry checks do
 not replace browser BBoxes, offline font checks, mobile scrolling, print review or a semantic
-review of relationships. `just docs-check` deterministically checks asset digests, orphan assets,
+review of relationships. `just check-docs` deterministically checks asset digests, orphan assets,
 accessible identities, source paths, original-relationship dispositions, links and anchors. It
 rejects newly introduced Mermaid fences in maintained guides. It has no Node dependency.
 

@@ -18,7 +18,7 @@ An import-identity test additionally pins that every consumer references the SAM
 
 Harness idiom mirrors ``tests/integration/`` (auto-marked ``integration`` by ``tests/conftest.py``)
 and reuses the shared hermetic ``client`` / ``session`` / ``make_file`` / ``backends_toml_env``
-fixtures. Run with real PG via ``just integration-test`` (ephemeral Postgres :5433).
+fixtures. Run with real PG via ``just test-integration`` (ephemeral Postgres :5433).
 """
 
 from __future__ import annotations

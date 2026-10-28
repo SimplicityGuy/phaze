@@ -22,7 +22,7 @@ safe default with NO raise, and ``in_flight`` still resolves ``True`` from the d
 (INFLIGHT-02).
 
 The root session fixture owns the real-Postgres schema lifecycle and guards the test-only DSN.
-Run with real PG via ``just integration-test`` (ephemeral PG ``:5433``).
+Run with real PG via ``just test-integration`` (ephemeral PG ``:5433``).
 
 NOTE: ``phaze.services.stage_status`` is imported lazily INSIDE the runtime helpers (not at module
 top) so ``pytest --co`` collects the matrix even before Task 2 lands the builders -- the file is

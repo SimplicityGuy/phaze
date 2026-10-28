@@ -1,6 +1,6 @@
 """Unit tests for the per-bead branch-coverage gate (phaze-bk9el.21).
 
-``scripts/branch_coverage_check.py`` is what `just branch-check` runs, and it is the ONLY place
+``scripts/branch_coverage_check.py`` is what `just check-branch-coverage` runs, and it is the ONLY place
 branch coverage is gated in this repo: the repo-wide floors stay on lines (95% total, 90% per
 module -- ``scripts/coverage_floor.py``). That narrow scope is an operator decision recorded on
 bead phaze-bk9el.21, 2026-08-21. Question as put: "Branch coverage is off, and runs 4-8 points
@@ -436,7 +436,7 @@ def test_a_branchless_baseline_entry_does_not_read_as_a_regression(tmp_path: Pat
     assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/constants.py") == 0
 
 
-# phaze-vad6y: CLAUDE.md documented `just branch-check` as "free after any `check`", but nothing
+# phaze-vad6y: CLAUDE.md documented `just check-branch-coverage` as "free after any `check`", but nothing
 # ever checked for a reusable artifact -- it unconditionally re-ran real tests on every
 # invocation regardless (a cheaper selected subset, or a full-suite escalation), and every
 # invocation the 2026-09-22/23 dispatch actually recorded escalated, costing a genuine ~20-24
@@ -486,7 +486,7 @@ def test_auto_reuses_a_fresh_full_report_without_running_any_tests(
 def test_auto_reuses_a_fresh_scoped_report_without_running_any_tests_when_no_full_report_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A prior `just branch-check` invocation's own `.fast-coverage.json` is reusable too."""
+    """A prior `just check-branch-coverage` invocation's own `.fast-coverage.json` is reusable too."""
     module = _load()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "_git", lambda *args: "deadbeef" if args == ("rev-parse", "HEAD") else "")

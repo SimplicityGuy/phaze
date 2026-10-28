@@ -18,7 +18,7 @@ not a mock that merely fails to exercise it. Both tests fail to even COLLECT bef
 lands (``enforce_stage_pause_on_process`` / ``repark_if_stage_paused`` do not exist yet), and
 the first fails its assertions outright once those names exist but the wiring is skipped.
 
-Run with real PG via ``just integration-test``; the package is auto-marked ``integration``.
+Run with real PG via ``just test-integration``; the package is auto-marked ``integration``.
 """
 
 from __future__ import annotations

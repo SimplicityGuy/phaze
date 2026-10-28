@@ -38,7 +38,7 @@ failure recurring under a new cause: a change-selected run cited as though it we
 | `just test-validate` | — | — | whole suite | yes, 95% line floor | yes | **M** — executed as `check`'s delegate in the red-gate run below, and as `check-fast`'s escalation delegate |
 | `just check` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — the red-gate run below. Since phaze-pv3kk this is no longer any per-bead boundary's default recipe — it survives as the `postland`/`union` recipe, as `check-fast`'s escalation target, and as the manual escape hatch |
 | `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% line floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish`. The only *routinely traversed* full-suite boundary — `postland`/`union` (below) also run a full suite, but conditionally |
-| `just check-fast` | yes | yes | **change-selected subset + a fixed always-run floor**, escalating to the whole suite when the coverage map cannot speak for the change; **`tests/docs_floor.txt` only** when every changed path is tracked prose (phaze-fqfds) | no on a selected run (a subset's figure is meaningless against the 95% floor and would overwrite the artifact `just branch-check` reads); no on a docs run, for the same two reasons; the full 95% floor on an escalated run, because escalation delegates to `just test-validate` | yes | **M** — measured 2026-08-25 (dev/fastsuite): RUN verdict 417 passed, 1 skipped, 35.57s; ESCALATE verdict on this bead's (phaze-pv3kk's) own diff — 5 changed files with no coverage-map rows — exit 3, deferring to `just check`'s 19:37; FAIL verdict on a dirty worktree, exit 1. DOCS verdict measured 2026-08-25 (phaze-fqfds): 193 passed in 9.88s, no coverage line. Every outcome, with real transcripts: "A gate is green only if its own pytest summary line says so" below |
+| `just check-fast` | yes | yes | **change-selected subset + a fixed always-run floor**, escalating to the whole suite when the coverage map cannot speak for the change; **`tests/docs_floor.txt` only** when every changed path is tracked prose (phaze-fqfds) | no on a selected run (a subset's figure is meaningless against the 95% floor and would overwrite the artifact `just check-branch-coverage` reads); no on a docs run, for the same two reasons; the full 95% floor on an escalated run, because escalation delegates to `just test-validate` | yes | **M** — measured 2026-08-25 (dev/fastsuite): RUN verdict 417 passed, 1 skipped, 35.57s; ESCALATE verdict on this bead's (phaze-pv3kk's) own diff — 5 changed files with no coverage-map rows — exit 3, deferring to `just check`'s 19:37; FAIL verdict on a dirty worktree, exit 1. DOCS verdict measured 2026-08-25 (phaze-fqfds): 193 passed in 9.88s, no coverage line. Every outcome, with real transcripts: "A gate is green only if its own pytest summary line says so" below |
 
 **M** = the command itself was executed and its transcript read; the cell says which run.
 **I** = inferred from the phaze block in `~/.beadhive/config.yaml` plus `bh`'s documented phase
@@ -292,7 +292,7 @@ can answer.
 
 **The coverage map is a standing maintenance obligation, not a one-time cost.** `repowise update`
 does **not** refresh it — that command's own `--help` scopes it to re-parsing files, the dependency
-graph, and git/dead-code artifacts; only `just repowise-coverage` (~21 min: a full `pytest --cov
+graph, and git/dead-code artifacts; only `just refresh-repowise-coverage` (~21 min: a full `pytest --cov
 --cov-context=test` run plus `repowise coverage add`) rebuilds the test-to-code map, and nothing
 else does. Measured 2026-08-25: the map (ingested 2026-08-22 at `a3fd169a`) was **105 commits**
 behind tip `ec87a670`, with **47 of 272** `src/phaze` files and **48** test files changed since it
@@ -548,7 +548,7 @@ counts for wall-clock at the boundaries where completeness is the entire point.
 "always fast."** Before phaze-pv3kk, "a submit costs a full suite run" was unconditionally true.
 Since 2026-08-25 it is change-selected — typically well under the old ~20 minutes — unless the
 diff escalates, in which case it costs exactly what it always did. Export a per-worktree seat
-(`just test-db-for <name>`) before submitting either way, or the gate falls back to the shared
+(`just provision-test-db-seat <name>`) before submitting either way, or the gate falls back to the shared
 `phaze_test` seat and two concurrent submits collide on the session advisory lock described below.
 
 **Evidencing seat isolation.** The gate now prints its own header, so the transcript of the gate
@@ -568,7 +568,7 @@ The test suite resolves its target from `TEST_DATABASE_URL`, validated by a sing
   `phaze_<bead>_test` are all accepted; `phaze` and `phaze_prod` are not. A name that fails this
   check **errors the run**. It does not skip. A skip would silently drop ~18 integration tests
   while pytest still reported green, which is exactly the defect this guard replaced.
-- **Port 5433, never 5432.** 5433 is the ephemeral test harness (`just test-db`); 5432 is
+- **Port 5433, never 5432.** 5433 is the ephemeral test harness (`just up-test-db`); 5432 is
   reserved for the developer's own database. The fixtures create and drop schema, so a default
   pointing at 5432 is a live-data-loss shape, not just a confusing error. An unset
   `TEST_DATABASE_URL` defaults to `postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_test`,
@@ -592,9 +592,9 @@ concurrency.
 `TEST_DATABASE_URL` unset, `just test-validate` — the test step both gates run, and therefore what
 `bh work check` and `bh work submit` run — derives a seat from the worktree (the branch name for
 legibility plus a digest of the absolute worktree root for uniqueness) and provisions it through
-the same `scripts/provision-test-seat.sh` that `just test-db-for` runs. Derived seats are named
-`auto_<branch>_<hash>_<hash>`, show up in `just test-db-seats`, and are reclaimed by
-`just test-db-reclaim` under the usual rules — O1 frees them when the worktree that minted them is
+the same `scripts/provision-test-seat.sh` that `just provision-test-db-seat` runs. Derived seats are named
+`auto_<branch>_<hash>_<hash>`, show up in `just list-test-db-seats`, and are reclaimed by
+`just reclaim-test-db-seats` under the usual rules — O1 frees them when the worktree that minted them is
 removed, which is the normal end of `bh work merge`.
 
 Two things follow, and they pull in opposite directions:
@@ -604,26 +604,26 @@ Two things follow, and they pull in opposite directions:
   that forgot to export its own rig collided there. phaze-ieqg's advisory lock refuses the second
   pytest rather than corrupting both — a red run that passes on isolated re-run, the shape named
   below as the worst possible one.
-- **This is a floor, not a substitute for `just test-db-for <name>`.** Export your seat anyway.
-  The derived name is opaque, which makes a `just test-db-seats` listing harder to read back to a
+- **This is a floor, not a substitute for `just provision-test-db-seat <name>`.** Export your seat anyway.
+  The derived name is opaque, which makes a `just list-test-db-seats` listing harder to read back to a
   bead, and a seat you did not name is a seat you will not think to release.
 
 An exported triplet is still honoured **verbatim** and provisions nothing — CI depends on that,
 since it exports its own DSN against a 5432 service container — with **one narrow exception**
-(phaze-qov36). A triplet of exactly the shape `just test-db-for` prints (`phaze_<seat>_test` and
+(phaze-qov36). A triplet of exactly the shape `just provision-test-db-seat` prints (`phaze_<seat>_test` and
 `phaze_<seat>_migrations_test` on `localhost:5433`, `redis://localhost:6380/<n>`), whose `<n>` is the
 Redis DB the registry holds for that seat, with `CI` unset and `PHAZE_TEST_PARALLEL` unset or `1`, is
 split by `just test-validate` into two lane seats, `<seat>-lane-a` and `<seat>-lane-b`. Both are
-provisioned through the real `test-db-for` and released after the run, including on failure and on
+provisioned through the real `provision-test-db-seat` and released after the run, including on failure and on
 SIGHUP/SIGINT/SIGTERM (SIGKILL is left to the lease and O1 reclaim, as for every other seat).
 
-**Known gap, not fixed here:** an interrupt that lands while a lane's `just test-db-for` is still
+**Known gap, not fixed here:** an interrupt that lands while a lane's `just provision-test-db-seat` is still
 running can leave that lane's Redis index allocated but not yet known to the runner, so it is not
 released; the lease and O1 reclaim free it like any abandoned seat.
 
 **The caller's own seat is handed to neither lane**: each lane overrides all three variables. The
 steps that DO run under the caller's environment are record-start (`stamp_coverage_scope.py
---record-start`), `pytest --collect-only`, `just test-db-for` / `just test-db-release` for the two lane
+--record-start`), `pytest --collect-only`, `just provision-test-db-seat` / `just release-test-db-seat` for the two lane
 seats, `coverage combine` / `json` / `xml` / `report`, the `--expect-token` stamp and
 `coverage_floor.py`. None of them opens the caller's schema or its Redis DB. The one connection to the
 caller's database is the runner's **caller-seat lock**: the same session advisory lock pytest takes
@@ -637,7 +637,7 @@ other's seats; with it the second gate is refused before record-start, collectio
 seat is no longer registered (released or reclaimed), the exported Redis DB differs from the one the
 registry holds for it, or the registry cannot be read, nothing runs — not even the serial
 `test-cov`, and not under the opt-out either — because that Redis DB may now belong to another live
-seat. The remedy is printed: re-run `just test-db-for <your seat name>` and re-export.
+seat. The remedy is printed: re-run `just provision-test-db-seat <your seat name>` and re-export.
 
 Why: phaze-7kc20 measured the full suite at 864 s serial against 622 s on the two-lane runner, and
 the serial path was exactly the one CLAUDE.md sends every dispatched seat down by telling it to
@@ -652,7 +652,7 @@ What stays verbatim, and what pins it (`tests/shared/scripts/test_caller_seat_la
   and must decline it without a single registry probe. Separately, no recipe any workflow runs can
   reach the classifier, the lane runner or a provisioner, transitively through `just` calls and
   recipe dependencies. CI never runs `test-validate`: it runs `test-bucket` shards, then
-  `coverage-combine`, then `test-browser`.
+  `combine-coverage`, then `test-browser`.
 - **A hand-built DSN, the shared `phaze_test`, another port, or Redis DB 0**: each is declined, and
   the gate log names the condition that declined it.
 - **`PHAZE_TEST_PARALLEL` set to anything but `1`**: the explicit opt-out, run through the real CLI.
@@ -668,7 +668,7 @@ allocatable; one with nothing exported holds two. `tests/shared/scripts/test_cal
 borrows three more (a probe caller and its two lanes) for a few seconds inside every full run, so a
 gating seat peaks at six, and a five-seat dispatch gating at once at 30, plus whatever idle seats
 hold. Exhaustion fails the gate with a message naming the cause and both remedies (`just
-test-db-reclaim --apply`, or `PHAZE_TEST_PARALLEL=0`), pinned against the allocator's real refusal
+reclaim-test-db-seats --apply`, or `PHAZE_TEST_PARALLEL=0`), pinned against the allocator's real refusal
 text. It never falls back to serial behind the caller's back.
 
 **Never share Postgres OR Redis between concurrent agents.** Both are stateful, both are shared by
@@ -678,12 +678,12 @@ That mistake has a general form, and a third instance — see "Every writable pa
 concurrent seats is a collision surface" below.
 
 ```bash
-just test-db-for <name>    # derives <derived> from <name> (see below), creates
+just provision-test-db-seat <name> # derives <derived> from <name> (see below), creates
                            # phaze_<derived>_test + phaze_<derived>_migrations_test,
                            # allocates a dedicated Redis logical DB, and prints all three exports
 ```
 
-`<name>` is not used verbatim (phaze-fmfk): `test-db-for` normalizes it into `<derived>` by
+`<name>` is not used verbatim (phaze-fmfk): `provision-test-db-seat` normalizes it into `<derived>` by
 turning hyphens into underscores and appending a short hash of the original `<name>`, e.g.
 `review-polite` → `phaze_review_polite_7a21035a_test`. The hash exists so that `my-seat` and
 `my_seat` — which normalize to identical text — don't silently collide onto one shared seat, the
@@ -707,24 +707,24 @@ indistinguishable from a real regression that passes on isolated re-run — the 
 because it trains reviewers to dismiss red runs.
 
 Redis DB indices are allocated from an atomic registry on the test container (DB 0 holds the
-registry; seats get 1 upward), so re-running `test-db-for` for the same worktree is idempotent and
+registry; seats get 1 upward), so re-running `provision-test-db-seat` for the same worktree is idempotent and
 two worktrees can never collide. The container is started with 64 logical databases; allocation
 past that fails loudly rather than wrapping onto a shared index. **Leaving `PHAZE_REDIS_URL` unset
 is still valid for single-agent and CI runs** — it defaults to DB 0.
 
 **Give the index back when a worktree is done — and never tear the harness down to free one
 (phaze-68wky).** Allocation used to be a monotonic counter with no reclaim, so every seat that ever
-ran `test-db-for` burned an index permanently; the counter walked past the cap (68, 73, 74 and 80
-were seen live) and then refused every new seat, offering only `just test-db-down` as the way out.
+ran `provision-test-db-seat` burned an index permanently; the counter walked past the cap (68, 73, 74 and 80
+were seen live) and then refused every new seat, offering only `just down-test-db` as the way out.
 Five separate agents hit that wall, and each worked around it differently — one by dropping Redis
 isolation altogether, i.e. straight back into the defect above. Three recipes replace that, none of
 which stops, clears or recreates anything:
 
 ```bash
-just test-db-seats                 # who holds which logical DB, and the evidence for each verdict
-just test-db-release <name>        # hand ONE finished seat's index back (run this when a worktree is done)
-just test-db-reclaim               # dry run: which seats a sweep would free
-just test-db-reclaim --apply       # free every seat that is no longer in use
+just list-test-db-seats            # who holds which logical DB, and the evidence for each verdict
+just release-test-db-seat <name>   # hand ONE finished seat's index back (run this when a worktree is done)
+just reclaim-test-db-seats         # dry run: which seats a sweep would free
+just reclaim-test-db-seats --apply # free every seat that is no longer in use
 ```
 
 A seat is in use, and left alone, while **any** of three signals holds:
@@ -736,13 +736,14 @@ A seat is in use, and left alone, while **any** of three signals holds:
   cannot be reached, the sweep *refuses* rather than reading unknown as free (phaze-gmkua).
   `--no-postgres-check` waives the refusal, not the evidence — it warns, and a reachable Postgres
   is still consulted and still protects a seat.
-- **L3** — its lease is unexpired. `test-db-for` stamps the lease on every call and it runs
-  `PHAZE_TEST_REDIS_SEAT_LEASE_HOURS`, default 72.
+- **L3** — its lease is unexpired. `provision-test-db-seat` stamps the lease on every call and it runs
+  `PHAZE_TEST_VALKEY_SEAT_LEASE_HOURS` (pre-rename fallback `PHAZE_TEST_REDIS_SEAT_LEASE_HOURS`),
+  default 72.
 
 **Two conditions override L3 — a live lease is not on its own enough to keep a seat.** Neither ever
 overrides L1 or L2; nothing reclaims a seat that is demonstrably in use.
 
-- **O1 — its origin worktree is gone.** The sweep records the directory that ran `test-db-for` and
+- **O1 — its origin worktree is gone.** The sweep records the directory that ran `provision-test-db-seat` and
   frees the seat once that directory no longer exists, *however much lease is left*. A seat with 60
   hours still on its 72-hour lease is reclaimable the moment its worktree is removed — which is the
   normal end of `bh work merge`, so this is the common case, not the exotic one. Read it as the
@@ -753,19 +754,19 @@ overrides L1 or L2; nothing reclaims a seat that is demonstrably in use.
 Allocations made before this existed have no lease stamp, so their age is genuinely unknown; the
 sweep reports them and leaves them alone unless you pass `--include-unstamped`.
 
-`test-db-release <name>` is the operator-driven path and deliberately ignores L3/O1/O2 — naming a
+`release-test-db-seat <name>` is the operator-driven path and deliberately ignores L3/O1/O2 — naming a
 seat *is* the assertion that it is finished — but it still refuses on L1/L2 unless you add
 `--force`. A registry value that is not an index is reported and released: no logical database can
 correspond to it (phaze-nbfuc).
 
 A freed index is not first in line for the next seat. The allocator prefers an index no seat has
 ever held over recycling one, because a shell with a stale `PHAZE_REDIS_URL` still exported is the
-one hazard no liveness check can see — so **after a sweep, expect the next `test-db-for` to hand out
+one hazard no liveness check can see — so **after a sweep, expect the next `provision-test-db-seat` to hand out
 a fresh index rather than one it just freed** (phaze-08sww). Recycling happens only once the space
 genuinely demands it.
 
 `scripts/redis-seat-registry.sh` documents the full rule set. **A full registry is never a reason to
-run `test-db-down`** — reclaim first, and only consider raising `PHAZE_TEST_REDIS_DATABASES` if the
+run `down-test-db`** — reclaim first, and only consider raising `PHAZE_TEST_VALKEY_DATABASES` if the
 sweep frees nothing.
 
 ## One database, one pytest process (phaze-ieqg)
@@ -789,7 +790,7 @@ and the fix, instead of silently corrupting both runs. `PHAZE_TEST_DB_ALLOW_SHAR
 pytest-xdist against one database is this exact defect and is not a reason to set it (CI keeps every
 DB bucket serial for the same reason).
 
-Two suites in two worktrees with their own `test-db-for` databases are unaffected — that is the
+Two suites in two worktrees with their own `provision-test-db-seat` databases are unaffected — that is the
 supported way to run concurrently, and it is verified green.
 
 ## The advisory lock holds, and the tool-timeout hazard is what is left (phaze-cpn5k)
@@ -927,7 +928,7 @@ thousands of DB-free tests. `--collect-only` stays exempt (unchanged), and
 5 s with no added retry — the operator was not asked to choose a number, and inventing a retry loop
 would only move the same fail-open/fail-closed trade to a different elapsed time without changing
 which side of it a slow harness lands on. The refusal message names the DSN, the underlying
-`OperationalError`, and both remedies (`just test-db` / `just test-db-for <name>` to bring the
+`OperationalError`, and both remedies (`just up-test-db` / `just provision-test-db-seat <name>` to bring the
 harness up, or unset `TEST_DATABASE_URL` for a database-free run).
 
 **Verified against a real connect failure**, the same address this section's measurement above
@@ -969,18 +970,18 @@ Scope every such query with `current_database()`. For an advisory-lock count use
 `tests/db_guard.BLOCKED_WAITER_SQL` is the shared correct form.
 `tests/shared/test_cluster_wide_catalog_scoping.py` fails the build on an unscoped query.
 
-## Never `just test-db-down` while another seat is running
+## Never `just down-test-db` while another seat is running
 
-`phaze-test-db` and `phaze-test-redis` are **one shared pair of containers**; `test-db-for` carves
-seats out of them rather than giving each seat its own. On 2026-07-29 a `test-db-down` + recreate
+`phaze-test-db` and `phaze-test-valkey` are **one shared pair of containers**; `provision-test-db-seat` carves
+seats out of them rather than giving each seat its own. On 2026-07-29 a `down-test-db` + recreate
 mid-round destroyed 89 per-worktree databases and reset the Redis allocation registry while five
-suites were in flight, producing the same false-red signature from a different cause. `test-db-down`
+suites were in flight, producing the same false-red signature from a different cause. `down-test-db`
 now refuses while any client is connected to a `phaze%test` database, listing the seats it is
 protecting; `PHAZE_TEST_DB_FORCE_DOWN=1` overrides for genuinely stale connections.
 
 If you got here because Redis logical-DB allocation ran out, this is the wrong tool entirely: use
-`just test-db-reclaim` (above), which frees the seats nobody is using and touches neither
-container. Reaching for `test-db-down` to free an index was the phaze-68wky defect, and it is how
+`just reclaim-test-db-seats` (above), which frees the seats nobody is using and touches neither
+container. Reaching for `down-test-db` to free an index was the phaze-68wky defect, and it is how
 the 2026-07-29 incident starts.
 
 ## Every writable path shared by concurrent seats is a collision surface (phaze-rlshw)
@@ -1098,10 +1099,10 @@ and that line decides what the pytest header(s) must say:
 
 | `test-validate` line | what ran | pytest header(s) |
 |---|---|---|
-| `🛣️  CALLER SEAT '<seat>': running two lanes …` | the exported `test-db-for` seat, split into two lanes | two summaries, one per lane, each naming a lane database derived from the caller's seat (below) — **not** its own database — then one combined coverage line |
+| `🛣️  CALLER SEAT '<seat>': running two lanes …` | the exported `provision-test-db-seat` seat, split into two lanes | two summaries, one per lane, each naming a lane database derived from the caller's seat (below) — **not** its own database — then one combined coverage line |
 | `⚡ TWO-WORKER COVERAGE` | nothing exported: two self-provisioned lanes derived from `auto-<branch>-<hash>-parallel` | two summaries, then one combined coverage line |
 | `↩️  caller seat not split into lanes: <reason>`, then `↩️  SERIAL FALLBACK` | the exported triplet, verbatim | one summary naming the exported database |
-| `❌ caller seat refused, and nothing was run on it: <reason>` (exit 5) | nothing: the export has the shape of a seat the registry contradicts (released, reclaimed, a stale Redis index, or an unreadable registry) | none — fix the seat (`just test-db-for <name>`, re-export) |
+| `❌ caller seat refused, and nothing was run on it: <reason>` (exit 5) | nothing: the export has the shape of a seat the registry contradicts (released, reclaimed, a stale Redis index, or an unreadable registry) | none — fix the seat (`just provision-test-db-seat <name>`, re-export) |
 | `❌ caller seat busy -- refusing before collection` (exit 4) | nothing: another gate or pytest already holds the seat | none — UNMEASURED; wait for the holder the message names |
 
 Lane seat names come from `derive-seat-name.sh`: the prefix plus `-lane-a` / `-lane-b`, hyphens turned into underscores, **truncated to 32 characters**, then an 8-hex hash of the full name. So a lane database reads `phaze_<seat>_lane_a_<hash>_test` only while the seat id is at most 25 characters; past that, `lane` is truncated away and the two lanes differ only by their hash (every `auto-…-parallel` prefix is past it).
@@ -1167,7 +1168,7 @@ A green **ESCALATE** — `bh work check`, 2026-09-22, bead phaze-cohbr (1,118 li
 phaze test database: 'phaze_phaze_cohbr_18c8ff13_test' on localhost:5433 (from TEST_DATABASE_URL, exclusive)
 Required test coverage of 95.0% reached. Total coverage: 98.63%
 == 9086 passed, 6 skipped, 189 deselected, 39 warnings in 1362.76s (0:22:42) ===
-✅ Repo-wide LINE coverage 99.13% ≥ 95%; all tracked modules ≥ 90% lines.  (branch coverage 96.32%, measured but not gated repo-wide — see `just branch-check`)
+✅ Repo-wide LINE coverage 99.13% ≥ 95%; all tracked modules ≥ 90% lines.  (branch coverage 96.32%, measured but not gated repo-wide — see `just check-branch-coverage`)
 GATE_EXIT=0
 ```
 
@@ -1700,7 +1701,7 @@ itself, and neither is repaired by trusting the label harder.
 ## Testing
 
 - Minimum **95% LINE coverage** repo-wide, plus a **90% per-module line floor**. Both are
-  enforced by `scripts/coverage_floor.py`, which `just test-cov` and `just coverage-combine` run.
+  enforced by `scripts/coverage_floor.py`, which `just test-cov` and `just combine-coverage` run.
 - Upload coverage to Codecov with service-specific flags
 - Codecov config: precision 2, round down, range 70-100%, project target auto with 1% threshold, patch target 80% with 5% threshold
 
@@ -1718,7 +1719,7 @@ branches and the number is visible everywhere. The **gate** is deliberately narr
   the line figure on most files here, so a repo-wide branch floor would fail on day one and the
   backfill would dwarf whatever work it was meant to protect. Do **not** raise `fail_under` against
   branches.
-- **Per bead, branch coverage is gated on the files that bead touched.** `just branch-check` reuses
+- **Per bead, branch coverage is gated on the files that bead touched.** `just check-branch-coverage` reuses
   a `coverage.json` / `.fast-coverage.json` a prior gate run left behind **only when it was stamped
   for this exact tree** — a clean working tree at the START of that run, and HEAD unchanged for its
   whole duration (`scripts/stamp_coverage_scope.py`, `find_reusable_report` in `scripts/
@@ -1733,7 +1734,7 @@ branches and the number is visible everywhere. The **gate** is deliberately narr
   produces one itself — but reuse never trusts a DIRTY tree, and neither does a selected-subset
   fallback (exit 2, not a pass: the check needs an exact, git-addressable tree to compare
   against). An escalation to the full suite is the one path that still judges a dirty tree — its
-  coverage.json goes unstamped, so `branch-check` scores it as measured rather than refusing it
+  coverage.json goes unstamped, so `check-branch-coverage` scores it as measured rather than refusing it
   outright. It checks only the
   `src/phaze/**.py` files changed against `--base-ref` (committed, staged *and* unstaged, so the
   FILE SELECTION itself is useful mid-flight even though artifact reuse is not), names every file
@@ -1744,7 +1745,7 @@ branches and the number is visible everywhere. The **gate** is deliberately narr
   untested branches while adding the same number of new untested ones holds the count steady and
   passes. A file the bead did not touch is out of scope for that bead's check.
 - **It fails closed on a missing baseline** — if the check could not perform a comparison, it did
-  not pass. The baseline is written by `phaze-bk9el.1` (`just branch-check --write-baseline`); that
+  not pass. The baseline is written by `phaze-bk9el.1` (`just check-branch-coverage --write-baseline`); that
   bead alone passes `--allow-missing-baseline`, because it cannot be blocked by a check that
   consumes the artifact it exists to produce. **No other bead should pass that flag** — seeing it
   in one is a signal something is wrong. An exemption written at the call site is auditable; a
@@ -1765,23 +1766,23 @@ num_branches)`, not lines, and offers no option to select the metric (verified a
 7.15.4). Enabling branch measurement therefore silently re-points every floor left on that knob —
 which is why both repo-wide floors read `percent_statements_covered` explicitly in
 `scripts/coverage_floor.py`, why the two ARTIFACT WRITERS — `coverage json` and `coverage xml` —
-carry `--fail-under=0` in `coverage-combine` while `coverage report` carries the real floor
+carry `--fail-under=0` in `combine-coverage` while `coverage report` carries the real floor
 (`--fail-under=95`), and why every line the gate prints names the metric it measured. `fail_under
 = 95` remains in `pyproject.toml` purely as a backstop for an ad-hoc `uv run pytest --cov=phaze`
 outside those recipes.
 
 The two writers are disarmed for a measured reason, not a stylistic one (`phaze-jktlb`). Before
-that bead, `coverage-combine` ran `xml` / `json` / `report` in that order with no `--fail-under`
+that bead, `combine-coverage` ran `xml` / `json` / `report` in that order with no `--fail-under`
 overrides on the first two, so each writer inherited pyproject's `fail_under = 95` — and a writer
 that fails its own floor still **writes its file first**, then exits nonzero. Measured over
 deliberately partial shards: that ordering aborted at `coverage xml`, which wrote `coverage.xml`
 and then exited on the floor, so `coverage json` never ran and `coverage.json` was never
-written — the exact file `scripts/coverage_floor.py` and `just branch-check` read to find which
+written — the exact file `scripts/coverage_floor.py` and `just check-branch-coverage` read to find which
 module dropped. `--fail-under=0` on `coverage json` and `coverage xml` forces both artifacts to
 be written in full regardless of the score; `coverage report --fail-under=95`, last and on
 purpose, is where the run actually fails.
 
 `tests/shared/test_coverage_gate.py` pins the half of this that prose cannot: it asserts
-`coverage-combine`'s `coverage report --fail-under=<N>` equals `pyproject.toml`'s
+`combine-coverage`'s `coverage report --fail-under=<N>` equals `pyproject.toml`'s
 `[tool.coverage.report] fail_under`, so `coverage report` carrying the real floor is not something
 a future edit can quietly relax — the two sites must move together or the guard fails the build.

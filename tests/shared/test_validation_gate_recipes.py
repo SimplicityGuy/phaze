@@ -217,7 +217,7 @@ def test_the_repo_wide_line_floor_is_enforced_explicitly_not_via_fail_under() ->
     statements, 75.00% on branches and 88.59% combined, so a per-module floor on the combined
     number fails a module that has regressed nothing.
     """
-    combine = _dry_run("coverage-combine")
+    combine = _dry_run("combine-coverage")
 
     assert "scripts/coverage_floor.py" in combine
     assert "coverage json" in combine, "coverage_floor.py's input must still be produced"
@@ -230,7 +230,7 @@ def test_the_validation_test_step_enforces_the_line_floor_and_writes_a_json_repo
     Two gates run on this path and both are armed: pytest-cov enforces pyproject's `fail_under`
     (the combined figure since branch coverage went on), then `coverage_floor.py` enforces the LINE
     floors. Dropping the second line would leave `just check` with no line-metric gate; dropping
-    the json report would make `just branch-check` cost a second full suite.
+    the json report would make `just check-branch-coverage` cost a second full suite.
     """
     step = _dry_run("test-cov")
 
@@ -244,7 +244,7 @@ def test_the_validation_test_step_enforces_the_line_floor_and_writes_a_json_repo
 
 def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
     """Criterion 4: a developer must be able to run it against the files their bead touched."""
-    assert "scripts/branch_coverage_check.py" in _dry_run("branch-check")
+    assert "scripts/branch_coverage_check.py" in _dry_run("check-branch-coverage")
 
 
 def test_branch_gate_falls_back_to_a_separate_scoped_branch_report_only_when_needed() -> None:
@@ -255,7 +255,7 @@ def test_branch_gate_falls_back_to_a_separate_scoped_branch_report_only_when_nee
     so it can be unit-tested directly rather than only asserted against `just --dry-run`'s
     text -- see `tests/shared/test_branch_coverage_check.py` for those tests.
     """
-    step = _dry_run("branch-check")
+    step = _dry_run("check-branch-coverage")
     assert "scripts/branch_coverage_check.py" in step
     script = (REPO_ROOT / "scripts" / "branch_coverage_check.py").read_text(encoding="utf-8")
     assert '"_test-branch-scoped"' in script, "the fallback must still shell out to the existing scoped/escalated evidence recipe"
@@ -276,8 +276,8 @@ def test_branch_check_recipe_body_never_calls_test_branch_scoped_directly_again(
     `just` would actually run are checked.
     """
     justfile = JUSTFILE_PATH.read_text(encoding="utf-8")
-    body = re.search(r"^branch-check \*flags:\n((?:[ \t]+.*\n?)*)", justfile, re.MULTILINE)
-    assert body is not None, "branch-check recipe not found"
+    body = re.search(r"^check-branch-coverage \*flags:\n((?:[ \t]+.*\n?)*)", justfile, re.MULTILINE)
+    assert body is not None, "check-branch-coverage recipe not found"
     commands = "\n".join(line for line in body.group(1).splitlines() if not line.strip().startswith("#"))
     assert "_test-branch-scoped" not in commands, f"branch-check's own recipe body must never invoke _test-branch-scoped directly again:\n{commands}"
 
@@ -291,7 +291,7 @@ def test_every_full_coverage_writer_reachable_from_test_validate_stamps_its_outp
     `coverage.json` itself via its own `coverage combine` / `coverage json` and does NOT go
     through `test-cov` at all. That third path went unstamped initially because the reviewing
     gate run happened to have a seat exported, taking the SERIAL FALLBACK branch and hiding the
-    gap -- `just branch-check` on the default (unexported) path would have kept costing the full
+    gap -- `just check-branch-coverage` on the default (unexported) path would have kept costing the full
     ~20-24 minute rerun this bead exists to kill.
 
     A second review round found this test itself was too weak: it only checked that
@@ -310,9 +310,9 @@ def test_every_full_coverage_writer_reachable_from_test_validate_stamps_its_outp
     # not by the stamp text appearing a second time.
     assert "just test-cov" in _dry_run("test-validate-serial")
 
-    combine = _dry_run("coverage-combine")
+    combine = _dry_run("combine-coverage")
     assert "stamp_coverage_scope.py" not in combine, (
-        "coverage-combine must NOT stamp -- its shards predate the combine step, so a bracket here would describe the wrong tree"
+        "combine-coverage must NOT stamp -- its shards predate the combine step, so a bracket here would describe the wrong tree"
     )
 
     parallel_runner = (REPO_ROOT / "scripts" / "parallel_test_runner.py").read_text(encoding="utf-8")
@@ -330,7 +330,7 @@ def test_every_full_coverage_writer_reachable_from_test_validate_stamps_its_outp
 # allowlist that is NO LONGER found also fails, so the list cannot silently go stale in the other
 # direction either.
 _FULL_COVERAGE_JSON_WRITERS = frozenset(
-    {("justfile", "test-cov"), ("justfile", "coverage-combine"), ("scripts/parallel_test_runner.py", "_postprocess")}
+    {("justfile", "test-cov"), ("justfile", "combine-coverage"), ("scripts/parallel_test_runner.py", "_postprocess")}
 )
 # `.fast-coverage.json` (`kind: "selected-tests"`) is a DIFFERENT report from the `coverage.json`
 # (`kind: "full"`) the writers above produce -- `find_reusable_report` treats them as distinct
@@ -398,7 +398,7 @@ def test_no_unlisted_coverage_json_writer_exists() -> None:
 # exists to prevent. Hence these guards, and hence the last one, which checks the ARTIFACTS rather
 # than the config that is supposed to produce them.
 
-_COVERAGE_RECIPES = ("test-cov", "test-bucket", "coverage-combine")
+_COVERAGE_RECIPES = ("test-cov", "test-bucket", "combine-coverage")
 
 
 def test_no_coverage_recipe_disables_branch_measurement() -> None:
@@ -424,9 +424,9 @@ def test_the_coverage_artifacts_actually_carry_branch_data(tmp_path: Path) -> No
 
     ``branch = true`` in the config is what the previous test asserts; this one proves the config
     actually yields branch-carrying reports in BOTH formats the repo consumes -- ``coverage.json``,
-    which `scripts/coverage_floor.py` and `just branch-check` read, and ``coverage.xml``, which CI
+    which `scripts/coverage_floor.py` and `just check-branch-coverage` read, and ``coverage.xml``, which CI
     uploads to Codecov. A config that set branch coverage but produced reports without
-    ``num_branches`` would leave `just branch-check` unable to compare anything while every recipe
+    ``num_branches`` would leave `just check-branch-coverage` unable to compare anything while every recipe
     still looked correct.
 
     The repo's own ``pyproject.toml`` supplies the config (so a ``branch = false`` there fails this

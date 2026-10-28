@@ -1,6 +1,6 @@
 """Redis worktree-isolation guard (phaze-fwo7).
 
-``just test-db-for <name>`` isolated Postgres per worktree and said nothing about Redis, so every
+``just provision-test-db-seat <name>`` isolated Postgres per worktree and said nothing about Redis, so every
 concurrent seat landed on the same logical database, ``redis://localhost:6380/0``. That broke
 parallel runs two ways:
 
@@ -22,7 +22,7 @@ both *configuration*:
 
 1. A new redis-backed test module hardcodes a database index instead of honouring
    ``PHAZE_REDIS_URL``, silently opting itself back into the shared database.
-2. ``just test-db-for`` stops emitting the ``PHAZE_REDIS_URL`` export, restoring the original trap
+2. ``just provision-test-db-seat`` stops emitting the ``PHAZE_REDIS_URL`` export, restoring the original trap
    where an engineer isolates Postgres and never learns Redis needs isolating too.
 
 Both are checked against the real files. ``test_meta_guard_flags_*`` prove neither check is
@@ -31,20 +31,20 @@ vacuously green.
 Reproducing the original defect (documented, not automated — a genuine two-process race does not
 belong in the suite)::
 
-    just test-db-for seat-a          # -> PHAZE_REDIS_URL=redis://localhost:6380/1
-    just test-db-for seat-b          # -> PHAZE_REDIS_URL=redis://localhost:6380/2
+    just provision-test-db-seat seat-a # -> PHAZE_REDIS_URL=redis://localhost:6380/1
+    just provision-test-db-seat seat-b # -> PHAZE_REDIS_URL=redis://localhost:6380/2
 
     # BEFORE the fix, both seats used /0. Simulate that shared-database state:
-    docker exec phaze-test-redis redis-cli -n 0 SET exec:victim live-data
+    docker exec phaze-test-valkey redis-cli -n 0 SET exec:victim live-data
     PHAZE_REDIS_URL=redis://localhost:6380/0 uv run pytest \
         tests/review/routers/test_execution_dispatch.py::test_dispatch_summary_in_redis_hash
-    docker exec phaze-test-redis redis-cli -n 0 EXISTS exec:victim    # -> 0, DESTROYED
+    docker exec phaze-test-valkey redis-cli -n 0 EXISTS exec:victim    # -> 0, DESTROYED
 
     # AFTER the fix, the seats hold different logical databases:
-    docker exec phaze-test-redis redis-cli -n 1 SET exec:victim live-data
+    docker exec phaze-test-valkey redis-cli -n 1 SET exec:victim live-data
     PHAZE_REDIS_URL=redis://localhost:6380/2 uv run pytest \
         tests/review/routers/test_execution_dispatch.py::test_dispatch_summary_in_redis_hash
-    docker exec phaze-test-redis redis-cli -n 1 EXISTS exec:victim    # -> 1, survived
+    docker exec phaze-test-valkey redis-cli -n 1 EXISTS exec:victim    # -> 1, survived
 """
 
 from __future__ import annotations
@@ -100,12 +100,12 @@ def test_test_redis_dsns_are_always_env_var_defaults() -> None:
 
     assert not offenders, (
         "test-Redis DSNs must be written as os.environ.get('PHAZE_REDIS_URL', '<dsn>') so the "
-        f"per-worktree export from `just test-db-for <name>` takes effect. Offenders: {offenders}"
+        f"per-worktree export from `just provision-test-db-seat <name>` takes effect. Offenders: {offenders}"
     )
 
 
 def test_test_db_for_emits_a_redis_url_export(tmp_path: Path, run_provisioner: Callable[..., tuple[str, str]]) -> None:
-    """`just test-db-for` must hand the engineer a PHAZE_REDIS_URL alongside the Postgres exports.
+    """`just provision-test-db-seat` must hand the engineer a PHAZE_REDIS_URL alongside the Postgres exports.
 
     The original defect was not that Redis isolation was impossible -- it was that the recipe which
     taught the isolation workflow only ever mentioned Postgres. A fix requiring a separate,
@@ -120,7 +120,7 @@ def test_test_db_for_emits_a_redis_url_export(tmp_path: Path, run_provisioner: C
     stdout, _argv = run_provisioner(tmp_path, seat="laqf", allocated_index="9")
     exports = dict(line.removeprefix("export ").split("=", 1) for line in stdout.splitlines() if line.startswith("export "))
 
-    assert "PHAZE_REDIS_URL" in exports, f"`just test-db-for` must emit a PHAZE_REDIS_URL export, not just the Postgres ones:\n{stdout}"
+    assert "PHAZE_REDIS_URL" in exports, f"`just provision-test-db-seat` must emit a PHAZE_REDIS_URL export, not just the Postgres ones:\n{stdout}"
     # The index must be the one the allocator handed back, and must never be 0 -- DB 0 is the
     # registry itself and the shared seat every worktree used to land on (phaze-fwo7).
     assert exports["PHAZE_REDIS_URL"].strip('"') == "redis://localhost:6380/9", exports["PHAZE_REDIS_URL"]

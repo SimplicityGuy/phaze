@@ -89,11 +89,11 @@ def test_test_validate_derives_its_seat_through_the_shared_provisioning_script()
 
     assert "just test-cov-parallel" in validate
     assert "scripts/derive-validate-seat-name.sh" in runner
-    assert '"test-db-for"' in runner
+    assert '"provision-test-db-seat"' in runner
     assert "scripts/derive-validate-seat-name.sh" in serial
     assert "scripts/ensure-test-seat.sh" in serial
     assert "scripts/provision-test-seat.sh" in ENSURE_SCRIPT.read_text(encoding="utf-8")
-    assert "scripts/provision-test-seat.sh" in _recipe_body("test-db-for name")
+    assert "scripts/provision-test-seat.sh" in _recipe_body("provision-test-db-seat name")
 
 
 def test_test_validate_respects_an_exported_seat_verbatim() -> None:

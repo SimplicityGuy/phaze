@@ -34,9 +34,9 @@ def test_topology_sensitive_recipes_name_compose_files_explicitly() -> None:
         "up-dev": ["docker-compose.yml", "docker-compose.dev.yml"],
         "down-dev": ["docker-compose.yml", "docker-compose.dev.yml"],
         "up-agent": ["docker-compose.agent.yml"],
-        "agent-down": ["docker-compose.agent.yml"],
-        "cloud-agent-up": ["docker-compose.cloud-agent.yml"],
-        "cloud-agent-down": ["docker-compose.cloud-agent.yml"],
+        "down-agent": ["docker-compose.agent.yml"],
+        "up-cloud-agent": ["docker-compose.cloud-agent.yml"],
+        "down-cloud-agent": ["docker-compose.cloud-agent.yml"],
         "up-all": ["docker-compose.yml", "docker-compose.agent.yml"],
         "down-all": ["docker-compose.yml", "docker-compose.agent.yml"],
     }
@@ -64,8 +64,8 @@ def test_docker_validation_workflow_delegates_to_shared_recipes() -> None:
     text = path.read_text(encoding="utf-8")
     data = yaml.safe_load(text)
     commands = [step.get("run") for job in data["jobs"].values() for step in job["steps"] if "run" in step]
-    assert "just docker-validate" in commands
-    assert "just docker-compose-validate" in commands
+    assert "just validate-dockerfiles" in commands
+    assert "just validate-compose" in commands
     assert "docker compose" not in text
 
 
@@ -77,19 +77,19 @@ def test_non_ui_workflows_do_not_install_tailwind() -> None:
     tests_workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
     assert tests_workflow.count("run: just install") == 1
     assert "test-browser" in tests_workflow
-    assert "up: tailwind" not in JUSTFILE
-    assert "rebuild: tailwind" not in JUSTFILE
-    assert "up-dev: tailwind" in JUSTFILE
-    assert "test-browser: tailwind" in JUSTFILE
+    assert "up: build-tailwind" not in JUSTFILE
+    assert "rebuild: build-tailwind" not in JUSTFILE
+    assert "up-dev: build-tailwind" in JUSTFILE
+    assert "test-browser: build-tailwind" in JUSTFILE
 
 
 def test_local_image_recipes_delegate_to_one_helper() -> None:
-    for recipe in ("image-push", "image-build-arm64", "image-push-arm64"):
+    for recipe in ("push-image", "build-image-arm64"):
         body = _recipe(recipe)
         assert "scripts/container-images.sh" in body, recipe
         assert "ghcr.io" not in body, recipe
         assert "docker build" not in body, recipe
-    for recipe in ("parity-golden-regen", "parity-check"):
+    for recipe in ("regen-parity-golden", "check-parity"):
         assert "scripts/container-images.sh ref" in _recipe(recipe)
         assert "scripts/container-images.sh models-dir" in _recipe(recipe)
 

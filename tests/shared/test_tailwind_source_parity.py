@@ -1,7 +1,7 @@
 """Guard: the image and the dev/CI browser suite compile the SAME app.css (phaze-oicyy).
 
 Two producers build ``src/phaze/static/css/app.css``: the Dockerfile ``css-builder`` stage (which COPYs
-only a few paths into an empty ``/build``) and ``just tailwind`` (run from the repo root, which backs
+only a few paths into an empty ``/build``) and ``just build-tailwind`` (run from the repo root, which backs
 ``just test-browser`` and the blocking Browser-contract CI job). Tailwind v4 auto-detects class
 candidates from the cwd as well as from explicit ``@source`` lines, so the two used to scan different
 trees: 1,266 vs 899 class selectors, and ``dark:ring-phaze-border`` (emitted only by Python in
@@ -108,7 +108,7 @@ def test_every_tailwind_source_is_copied_by_the_css_builder_stage() -> None:
 
 @pytest.mark.browser
 def test_repo_root_and_image_builds_produce_identical_css(tmp_path: Path) -> None:
-    assert _TAILWIND.is_file(), "bin/tailwindcss missing: run `just tailwind` (test-browser depends on it)"
+    assert _TAILWIND.is_file(), "bin/tailwindcss missing: run `just build-tailwind` (test-browser depends on it)"
     image_tree = tmp_path / "image"
     _build_image_tree(image_tree)
     image_css = _compile(image_tree, tmp_path / "image.css")

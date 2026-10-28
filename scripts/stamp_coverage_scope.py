@@ -1,11 +1,11 @@
-"""Stamp `_phaze_scope` onto a full-suite coverage.json so `just branch-check` can tell it is
+"""Stamp `_phaze_scope` onto a full-suite coverage.json so `just check-branch-coverage` can tell it is
 safe to reuse without rerunning tests (phaze-vad6y).
 
-CLAUDE.md documented `just branch-check` as "free after any `check`" -- reading whatever
+CLAUDE.md documented `just check-branch-coverage` as "free after any `check`" -- reading whatever
 coverage.json a prior gate run left behind. That was aspirational, not measured: nothing ever
 recorded WHICH tree a full-suite `coverage.json` was produced against, so
 `scripts/branch_coverage_check.py` had no way to tell a same-tree report from a stale one, and
-`just branch-check`'s recipe never even tried to reuse one -- it unconditionally re-ran
+`just check-branch-coverage`'s recipe never even tried to reuse one -- it unconditionally re-ran
 `_test-branch-scoped` on EVERY invocation, whatever the diff: a cheaper selected-test subset when
 the change mapped cleanly, a full-suite escalation otherwise. Every invocation the 2026-09-22/23
 dispatch actually recorded escalated, costing a genuine ~20-24 minutes each time -- the escalation

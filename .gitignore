@@ -133,7 +133,7 @@ certs/*
 !certs/.gitkeep
 
 # Build-time Tailwind: the standalone binary and the generated stylesheet are
-# produced by `just tailwind` (local) / the Dockerfile css-builder stage
+# produced by `just build-tailwind` (local) / the Dockerfile css-builder stage
 # (image), never committed. Source of truth is assets/src/app.css.
 /bin/
 src/phaze/static/css/app.css

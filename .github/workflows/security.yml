@@ -49,10 +49,10 @@ jobs:
         run: just setup
 
       - name: 🔍 Run pip-audit
-        run: just pip-audit
+        run: just run-pip-audit
 
       - name: 🛡️ Run bandit
-        run: just bandit
+        run: just run-bandit
 
       - name: 🌐 Run osv-scanner
         uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36  # v2.7.0

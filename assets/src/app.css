@@ -1,6 +1,6 @@
 /* Tailwind input — compiled to src/phaze/static/css/app.css by the pinned
  * standalone Tailwind v4 binary (NO Node). Built at image-build time and via
- * `just tailwind` for local dev. Replaces the former in-browser compiler
+ * `just build-tailwind` for local dev. Replaces the former in-browser compiler
  * (@tailwindcss/browser) and the inline <style type="text/tailwindcss"> blocks
  * that used to live in base.html / shell.html.
  *
@@ -11,7 +11,7 @@
 
 /* The COMPLETE, explicit source set -- `source(none)` turns off Tailwind v4's
  * automatic detection, which otherwise also scans the cwd and so made the repo-root
- * build (`just tailwind`, the browser CI job) differ from the Dockerfile css-builder
+ * build (`just build-tailwind`, the browser CI job) differ from the Dockerfile css-builder
  * build (which copies only these paths): 1,266 vs 899 class selectors (phaze-oicyy).
  * With nothing implicit, both producers scan exactly the paths below, and the
  * Dockerfile css-builder stage must COPY exactly these paths

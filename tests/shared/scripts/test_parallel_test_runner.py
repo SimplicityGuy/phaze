@@ -373,13 +373,13 @@ def test_production_provision_names_redis_index_exhaustion_and_both_remedies(tmp
     """
 
     script = Path("scripts/redis-seat-registry.sh").read_text(encoding="utf-8")
-    template = next(line for line in script.splitlines() if "allocatable Redis logical DBs" in line)
+    template = next(line for line in script.splitlines() if "allocatable Valkey logical DBs" in line)
     exhausted = (
         template.strip()
         .removeprefix('echo "')
         .removesuffix('" >&2')
         .replace("$((cap - 1))", "63")
-        .replace("${redis_container}", "phaze-test-redis")
+        .replace("${redis_container}", "phaze-test-valkey")
         .replace("${seat}", "x")
     )
     assert "$" not in exhausted, exhausted
@@ -395,7 +395,7 @@ def test_production_provision_names_redis_index_exhaustion_and_both_remedies(tmp
 
     message = str(raised.value)
     assert "index pool is exhausted" in message
-    assert "just test-db-reclaim --apply" in message
+    assert "just reclaim-test-db-seats --apply" in message
     assert "PHAZE_TEST_PARALLEL=0" in message
     assert exhausted in message
 
@@ -410,7 +410,7 @@ def test_a_provisioning_failure_is_printed_fails_the_run_and_releases_the_seat_a
 
     def exhaust_on_lane_b(name: str) -> Seat:
         if name.endswith("lane-b"):
-            raise RuntimeError("lane seat 'x-lane-b' could not get a Redis logical DB: the harness index pool is exhausted.")
+            raise RuntimeError("lane seat 'x-lane-b' could not get a Valkey logical DB: the harness index pool is exhausted.")
         return provision(name)
 
     harness.provision = exhaust_on_lane_b
@@ -453,5 +453,5 @@ def test_source_never_uses_shared_or_forced_cleanup_bypasses() -> None:
     assert 'environment.pop("PYTEST_ADDOPTS", None)' in source
     assert 'environment["PHAZE_TEST_DB_ALLOW_SHARED"]' not in source
     assert "PHAZE_TEST_DB_FORCE_DOWN" not in source
-    assert "test-db-down" not in source
+    assert "down-test-db" not in source
     assert "--force" not in source

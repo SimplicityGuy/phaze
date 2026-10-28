@@ -22,7 +22,7 @@ Only ``phaze.tasks.companion_read.get_settings`` is patched (matching
 which normally runs on an agent host with ``PHAZE_ROLE=agent`` -- resolves this test's
 ``scan_roots`` instead. That patch never touches the broker, the serializer, or the consumer.
 
-Runs against the ephemeral integration-test Postgres broker (``just test-db``, host port 5433);
+Runs against the ephemeral integration-test Postgres broker (``just up-test-db``, host port 5433);
 the DSN is derived via ``tests.db_guard.integration_dsns`` (phaze-9nz1g's pattern), and the module
 skips cleanly when the broker is down.
 

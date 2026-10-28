@@ -100,14 +100,14 @@ def test_the_refusal_names_the_holder_and_the_remedy(pytestconfig: pytest.Config
     """The message must identify WHO holds the database and WHAT to run -- not just that it is busy.
 
     "Database in use" without a pid sends the reader hunting through ``ps``; without
-    ``just test-db-for`` it sends them to the justfile. Both belong in the one line they will read.
+    ``just provision-test-db-seat`` it sends them to the justfile. Both belong in the one line they will read.
     """
     _require_live_lock(pytestconfig)
     with pytest.raises(SharedTestDatabaseError) as excinfo:
         acquire_exclusive_session_lock(TEST_DATABASE_URL)
     message = str(excinfo.value)
     assert session_lock_application_name() in message, "the refusal must name the holding process"
-    assert "just test-db-for" in message, "the refusal must name the command that fixes it"
+    assert "just provision-test-db-seat" in message, "the refusal must name the command that fixes it"
     assert ALLOW_SHARED_ENV_VAR in message, "the refusal must document its own escape hatch"
 
 

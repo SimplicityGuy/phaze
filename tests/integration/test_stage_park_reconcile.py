@@ -20,7 +20,7 @@ These assertions are only observable against a live ``saq_jobs`` table + a live
 * a healthy backlog (nothing SENTINEL-parked) sweeps to an empty result -- a safe no-op every
   tick indefinitely.
 
-Run with real PG via ``just integration-test``. The package is auto-marked ``integration`` by
+Run with real PG via ``just test-integration``. The package is auto-marked ``integration`` by
 ``tests/conftest.py``; the explicit ``pytestmark`` below is the documented Plan 37-03 artifact
 contract this suite follows.
 """

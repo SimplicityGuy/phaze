@@ -73,7 +73,7 @@ def run_provisioner() -> Callable[..., tuple[str, str]]:
                 "--pg-port",
                 "5433",
                 "--redis-container",
-                "phaze-test-redis",
+                "phaze-test-valkey",
                 "--redis-port",
                 "6380",
                 "--redis-capacity",

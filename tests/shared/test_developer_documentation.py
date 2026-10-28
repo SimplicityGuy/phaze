@@ -115,8 +115,8 @@ def test_current_entrypoints_own_their_prose_and_state_the_isolation_contract() 
         assert "<!-- generated-by:" not in document.read_text(encoding="utf-8"), document.relative_to(REPO_ROOT)
 
     agf = (REPO_ROOT / "docs" / "AGF.md").read_text(encoding="utf-8")
-    assert "just test-db-for <seat>" in agf
-    assert "just test-db-release <seat>" in agf
-    assert "never use `just test-db-down`" in agf
+    assert "just provision-test-db-seat <seat>" in agf
+    assert "just release-test-db-seat <seat>" in agf
+    assert "never use `just down-test-db`" in agf
     assert "copy all three exports" in agf
     assert "Do not run two pytest processes against one seat" in agf

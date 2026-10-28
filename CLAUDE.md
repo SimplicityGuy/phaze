@@ -36,13 +36,15 @@ just check-fast            # THE per-bead gate: lint + typecheck + the tests rep
                            # or only the prose guards on a docs-only diff (see the outcome table)
 just check                 # lint + typecheck + full suite WITH coverage (95% LINE floor)
 just check-all             # THE molecule gate: every pre-commit hook + the full suite + promtool
-                           # alert-rule tests (alerts-test)
-just branch-check          # Per-bead BRANCH-coverage gate. Free when a same-tree artifact exists
-just test-db               # Bring up the shared test Postgres (5433) + Redis (6380) harness
-just test-db-for <name>    # Carve an isolated seat — REQUIRED for concurrent worktrees
+                           # alert-rule tests (test-alerts)
+just check-branch-coverage # Per-bead BRANCH-coverage gate. Free when a same-tree artifact exists
+just up-test-db            # Bring up the shared test Postgres (5433) + Valkey (6380) harness
+just provision-test-db-seat <name> # Carve an isolated seat — REQUIRED for concurrent worktrees
+just test-integration      # Full suite on its own throwaway Postgres + Valkey; torn down on success, failure or Ctrl-C
+just clean-integration-test # Reap integration-test leftovers this checkout owns (after a kill -9); never a live run
 ```
 
-> Bare `uv run pytest` needs the harness up (`just test-db`); without it the integration tests skip,
+> Bare `uv run pytest` needs the harness up (`just up-test-db`); without it the integration tests skip,
 > so a green run means less than it looks like. Check the database line in the pytest header.
 
 ### Which commands are gates, and which only look like one
@@ -57,11 +59,11 @@ it before citing any command as evidence in a bead. The operational summary:
 | `just check-fast` | yes | yes | one of three populations, named by its `🎯 selector:` line — a change-selected subset (`run`), the full suite (`escalate`), or `tests/docs_floor.txt` on a prose-only diff (`docs`) | only on `escalate` | **the per-bead gate** — `bh work check` / `submit` / `merge` / `merge-main` |
 | `just check` | yes | yes | full suite | 95% line floor | `postland`, `union`, and the manual escape hatch |
 | `just check-all` | via pre-commit | via pre-commit | full suite | 95% line floor | **the molecule gate** — `bh work finish` |
-| `just branch-check` | — | — | — | per-bead branch coverage | free when a same-tree `coverage.json`/`.fast-coverage.json` exists; otherwise runs fresh evidence and says so (phaze-vad6y) |
+| `just check-branch-coverage` | — | — | — | per-bead branch coverage | free when a same-tree `coverage.json`/`.fast-coverage.json` exists; otherwise runs fresh evidence and says so (phaze-vad6y) |
 
-`just check-all` also runs `alerts-test` (`promtool test rules alerts/phaze-alerts.test.yml`) after
+`just check-all` also runs `test-alerts` (`promtool test rules alerts/phaze-alerts.test.yml`) after
 `pre-commit` and `test-validate`, so the table's "every pre-commit hook + the full suite" undersells
-it by one check. Locally, `alerts-test` **loudly skips** — prints a warning and exits 0 — when
+it by one check. Locally, `test-alerts` **loudly skips** — prints a warning and exits 0 — when
 `promtool` is not on `PATH`; CI's `code-quality.yml` installs `promtool` and runs it for real, so a
 local `check-all` green does not by itself confirm the alert rules.
 
@@ -105,7 +107,7 @@ can guard the config half.
    regression to hunt — even though the last line printed reads `main is RED in combination`.
    A red `GATE_EXIT=4` with `All checks passed!` above it and no pytest summary means the selector
    handed pytest a mapped test id whose file a landed reorganisation moved. Refresh the map with
-   `just repowise-coverage` (or `just repowise-coverage-ci <run>` against the last green `main` run);
+   `just refresh-repowise-coverage` (or `just refresh-repowise-coverage-ci <run>` against the last green `main` run);
    see `scripts/select_impacted_tests.py`'s failure mode G. Measured 2026-09-15 on `phaze-bzw5y`.
 5. **A gate measures a TREE, and the base may move under it.** Before spending a slot:
    `git fetch origin && git rev-list --left-right --count HEAD...origin/main`.
@@ -174,10 +176,10 @@ decides what the pytest header must say (phaze-qov36):
 
 | `test-validate` line | what ran | pytest header(s) |
 |---|---|---|
-| `🛣️  CALLER SEAT '<seat>': running two lanes …` | your exported `test-db-for` seat, split into two lanes | two summaries, one per lane, each naming a lane database derived from your seat (below) — **not** your seat's own database — then one combined coverage line |
+| `🛣️  CALLER SEAT '<seat>': running two lanes …` | your exported `provision-test-db-seat` seat, split into two lanes | two summaries, one per lane, each naming a lane database derived from your seat (below) — **not** your seat's own database — then one combined coverage line |
 | `⚡ TWO-WORKER COVERAGE` | nothing exported: two self-provisioned lanes derived from `auto-<branch>-<hash>-parallel` | two summaries, then one combined coverage line |
 | `↩️  caller seat not split into lanes: <reason>`, then `↩️  SERIAL FALLBACK` | the exported triplet, verbatim | one summary naming your exported database |
-| `❌ caller seat refused, and nothing was run on it: <reason>` (exit 5) | nothing: your export has the shape of a seat the registry contradicts (released, reclaimed, a stale Redis index, or an unreadable registry) | none — fix the seat (`just test-db-for <name>`, re-export) |
+| `❌ caller seat refused, and nothing was run on it: <reason>` (exit 5) | nothing: your export has the shape of a seat the registry contradicts (released, reclaimed, a stale Redis index, or an unreadable registry) | none — fix the seat (`just provision-test-db-seat <name>`, re-export) |
 | `❌ caller seat busy -- refusing before collection` (exit 4) | nothing: another gate or pytest already holds your seat | none — UNMEASURED; wait for the holder the message names |
 
 Lane seat names come from `derive-seat-name.sh`: the prefix plus `-lane-a` / `-lane-b`, hyphens turned into underscores, **truncated to 32 characters**, then an 8-hex hash of the full name. So a lane database reads `phaze_<seat>_lane_a_<hash>_test` only while the seat id is at most 25 characters; past that, `lane` is truncated away and the two lanes differ only by their hash (every `auto-…-parallel` prefix is past it).
@@ -252,7 +254,7 @@ regression that passes on isolated re-run, which is the worst possible shape bec
 reviewers to dismiss red runs.
 
 ```bash
-just test-db-for <name>    # creates phaze_<derived>_test + phaze_<derived>_migrations_test,
+just provision-test-db-seat <name> # creates phaze_<derived>_test + phaze_<derived>_migrations_test,
                            # allocates a dedicated Redis logical DB, prints all three exports
 ```
 
@@ -267,13 +269,13 @@ for single-agent and CI runs.
 `just check` / `check-fast` **self-provision** an `auto_<branch>_<hash>` seat when
 `TEST_DATABASE_URL` is unset, so a solo worktree is genuinely isolated rather than landing on shared
 `phaze_test`. That is a floor, not a substitute: export your own seat anyway — a derived name is
-opaque in `just test-db-seats`, and a seat you did not name is one you will not think to release.
+opaque in `just list-test-db-seats`, and a seat you did not name is one you will not think to release.
 
 An exported triplet is honoured **verbatim** and provisions nothing, which CI depends on, with **one
-narrow exception** (phaze-qov36): a triplet of exactly the shape `just test-db-for` prints, on this
+narrow exception** (phaze-qov36): a triplet of exactly the shape `just provision-test-db-seat` prints, on this
 harness's ports (5433/6380), whose Redis DB is the one the registry holds for that seat, is split by
 `just test-validate` into two lane seats, `<seat>-lane-a` and `<seat>-lane-b`. Both are provisioned by
-`test-db-for` and released after the run, and neither lane is handed your own seat; the runner holds
+`provision-test-db-seat` and released after the run, and neither lane is handed your own seat; the runner holds
 your seat's session lock for the whole run, so a second gate on it is refused at once. A triplet of
 that exact shape which the registry **contradicts** — released, reclaimed, or a stale Redis index —
 fails loudly on every path, serial included, because its Redis DB may now be another live seat's.
@@ -367,9 +369,9 @@ query.
 **Give a seat back when a worktree is done — and never tear the harness down to free one.**
 
 ```bash
-just test-db-seats                # who holds which logical DB, and the evidence per verdict
-just test-db-release <name>       # hand ONE finished seat's index back
-just test-db-reclaim [--apply]    # dry run / free every seat no longer in use
+just list-test-db-seats           # who holds which logical DB, and the evidence per verdict
+just release-test-db-seat <name>  # hand ONE finished seat's index back
+just reclaim-test-db-seats [--apply] # dry run / free every seat no longer in use
 ```
 
 A seat is protected while **any** of three signals holds: a Redis client is connected (L1); a Postgres
@@ -381,11 +383,11 @@ Two conditions override the lease but **never** L1/L2: its origin worktree is go
 index is not first in line for the next seat — a shell with a stale `PHAZE_REDIS_URL` still exported
 is the one hazard no liveness check can see. Full rule set: `scripts/redis-seat-registry.sh`.
 
-**`just test-db-down` refuses while any client is connected to a `phaze%test` database**, listing the
+**`just down-test-db` refuses while any client is connected to a `phaze%test` database**, listing the
 seats it is protecting; `PHAZE_TEST_DB_FORCE_DOWN=1` overrides for genuinely stale connections. On
 2026-07-29 a down + recreate mid-round destroyed 89 per-worktree databases and reset the Redis
 registry with five suites in flight. **If you got here because Redis indices ran out, this is the
-wrong tool** — use `just test-db-reclaim`, which touches neither container.
+wrong tool** — use `just reclaim-test-db-seats`, which touches neither container.
 
 **Every writable path shared by concurrent seats is a collision surface.** Postgres was the first
 instance and Redis the second, so carry the general form rather than a list: **anything a concurrent
@@ -433,7 +435,7 @@ passed because it is a standalone binary that does not need the venv's packages)
 **Remedy, in order: `uv sync --reinstall` first; escalate to `rm -rf .venv && uv sync` only if
 that is insufficient** (one seat needed the stronger form; both are fast when the cache itself is
 intact). Verified directly (2026-09-23): `uv sync --reinstall` alone fully repaired the scratch
-reproduction above. `worktree-integrity` (`scripts/worktree-integrity.sh`, wired FIRST into both
+reproduction above. `check-worktree-integrity` (`scripts/worktree-integrity.sh`, wired FIRST into both
 `check` and `check-fast`, before lint/typecheck/tests) already probes `mypy`/`pytest`/`defusedxml`
 imports before anything else runs — a venv hollowed this way fails there with a named diagnosis
 ("the venv has been hollowed … not a code regression") instead of surfacing as a bare
@@ -462,7 +464,7 @@ documents and already fixed**: worktrees used to live under a macOS temp directo
 already carry the cache file's original timestamps (clone/copy preserve them), so a newly-rebuilt
 venv could already read as stale to that purge. The worktree root has since moved to a persistent
 path (`~/.beadhive/worktrees`, bead `phaze-ofrxb`), which should prevent a recurrence of that
-specific mechanism; `worktree-integrity` is the standing guard regardless of which mechanism
+specific mechanism; `check-worktree-integrity` is the standing guard regardless of which mechanism
 recurs. Whether this fully accounts for the three `phaze-1i0h6` incidents specifically was not
 re-verified here — flagged as the leading candidate, not confirmed identical.
 
@@ -506,7 +508,7 @@ conflicts, TOML, YAML, JSON check + pretty-format, AWS credentials, private keys
 whitespace, mixed line endings) · ruff `--fix` + ruff-format · check-jsonschema (GitHub
 workflows/actions) · hadolint · actionlint · yamllint strict · shellcheck-py (`--shell=bash
 --severity=warning`) · shfmt (`--indent=2 --case-indent --language-dialect=bash --write`) · a local
-`uv run mypy .` hook with `pass_filenames: false` · a local `just bandit` hook (`uv run bandit -r
+`uv run mypy .` hook with `pass_filenames: false` · a local `just run-bandit` hook (`uv run bandit -r
 src/ -x tests -s B608`, `pass_filenames: false`) — the identical invocation CI's security workflow
 runs, pinned by `tests/shared/test_bandit_invocation_parity.py`. The hook used to run the frozen
 `PyCQA/bandit` repo hook with an unanchored `-x tests,services`, which matched the flag as a
@@ -516,7 +518,7 @@ substring against each file passed individually and silently excluded every file
 ## Testing
 
 - **95% LINE coverage repo-wide, plus a 90% per-module line floor** — both enforced by
-  `scripts/coverage_floor.py`, which `just test-cov` and `just coverage-combine` run.
+  `scripts/coverage_floor.py`, which `just test-cov` and `just combine-coverage` run.
 - Coverage uploads to Codecov with service-specific flags. Codecov config: precision 2, round down,
   range 70–100%, project target auto with 1% threshold, patch target 80% with 5% threshold.
 
@@ -533,7 +535,7 @@ is visible everywhere. The **gate** is deliberately narrow:
 - **Repo-wide, the floors stay on LINES** — 95% total, 90% per module. Branch coverage sits below the
   line figure on most files here, so a repo-wide branch floor would fail on day one and the backfill
   would dwarf the work it was meant to protect. **Do not raise `fail_under` against branches.**
-- **Per bead, `just branch-check`** reuses a `coverage.json` / `.fast-coverage.json` a prior gate
+- **Per bead, `just check-branch-coverage`** reuses a `coverage.json` / `.fast-coverage.json` a prior gate
   run left behind **only when it was stamped for this exact tree** — a clean working tree at the
   START of that run, and HEAD unchanged for its whole duration (`scripts/
   stamp_coverage_scope.py`, `find_reusable_report` in `scripts/branch_coverage_check.py`,
@@ -544,7 +546,7 @@ is visible everywhere. The **gate** is deliberately narrow:
   says so and produces one itself — but reuse never trusts a DIRTY tree, and neither does a
   selected-subset fallback (exit 2, not a pass: the check needs an exact, git-addressable tree to
   compare against). An escalation to the full suite is the one path that still judges a dirty
-  tree — its coverage.json goes unstamped, so `branch-check` scores it as measured rather than
+  tree — its coverage.json goes unstamped, so `check-branch-coverage` scores it as measured rather than
   refusing it outright. It checks
   only the `src/phaze/**.py` files that bead changed against `--base-ref` (committed, staged
   *and* unstaged, so the FILE SELECTION itself is useful mid-flight even though artifact reuse is
@@ -580,10 +582,10 @@ is structurally unable to see that regression, and a repo-wide average is far to
 and offers no option to select the metric. Enabling branch measurement therefore silently re-points
 every floor left on that knob. That is why both repo-wide floors read `percent_statements_covered`
 explicitly in `scripts/coverage_floor.py`; why the two artifact **writers** (`coverage json`,
-`coverage xml`) carry `--fail-under=0` in `coverage-combine` while `coverage report --fail-under=95`,
+`coverage xml`) carry `--fail-under=0` in `combine-coverage` while `coverage report --fail-under=95`,
 last and on purpose, is where the run actually fails; and why every line the gate prints names the
 metric it measured. A writer that fails its own floor still **writes its file first, then exits** —
-which once aborted the run at `coverage xml` so `coverage.json`, the file `branch-check` reads, was
+which once aborted the run at `coverage xml` so `coverage.json`, the file `check-branch-coverage` reads, was
 never written at all. `tests/shared/test_coverage_gate.py` pins the report floor to `pyproject.toml`
 so the two must move together.
 
@@ -752,13 +754,16 @@ and counters only. **mutagen** for tag read *and* write.
 | **pyacoustid** | Never a dependency and never used. The fingerprinting feature it would have served was removed from the product on 2026-07-28 (epic `phaze-0jpe`). |
 
 **One Redis-protocol image everywhere: `valkey/valkey:9-alpine`** — production compose, both CI
-service containers, the local harness (`test_redis_image` in the justfile) and the real-server test
+service containers, the local harness (`test_valkey_image` in the justfile) and the real-server test
 fixtures, kept in step by `tests/agents/deployment/test_redis_image_pin.py`. This retired the old
 harness-on-Redis-7 / production-on-Redis-8 skew (bead `phaze-8o294`). The image ships `redis-cli` /
 `redis-server` as symlinks to the `valkey-*` binaries, so the harness scripts' `docker exec …
-redis-cli` calls work on it and on a pre-migration `phaze-test-redis` alike; `just test-db` reuses
-such a container **with a warning** rather than refusing, and it moves to Valkey at the next idle
-`just test-db-down`. **Until then, a local run on that container does not exercise Valkey** — CI does.
+redis-cli` calls work unchanged. **The harness container is `phaze-test-valkey`** (bead
+`phaze-aje5d`), and its knobs are `PHAZE_TEST_VALKEY_PORT` / `_CONTAINER` / `_DATABASES` /
+`_SEAT_LEASE_HOURS` and `PHAZE_INTEGRATION_TEST_VALKEY_PORT`; each still reads its pre-rename
+`PHAZE_TEST_REDIS_*` spelling as a fallback, and the Valkey name wins when both are set. The switch
+from the old `phaze-test-redis` container was a hard one: `just up-test-db` neither reuses nor removes
+it, and only warns while it is still running, because it holds port 6380.
 
 **Do not introduce:** `ffmpeg-python` (abandoned since 2022 — shell out to `ffprobe`, or use
 `python-ffmpeg`) · SQLite (no concurrent writes from parallel workers, no JSON operators) · Celery or

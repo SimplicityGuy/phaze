@@ -1,4 +1,4 @@
-"""Behaviour tests for ``just test-db-gc`` (phaze-robzi.2) -- the STOCK half of the epic.
+"""Behaviour tests for ``just gc-test-dbs`` (phaze-robzi.2) -- the STOCK half of the epic.
 
 ``test-db-reclaim --apply`` (phaze-robzi.1) now drops a freed seat's own two databases in the same
 operation that frees its Redis index, going forward. It cannot reach a database orphaned BEFORE
@@ -25,7 +25,7 @@ durable record: bead phaze-robzi.2):
 arithmetic are properties of real evidence, not of anything mockable. Every test drives
 ``scripts/test-db-gc.sh`` -- the same entry point the justfile recipe calls -- against THROWAWAY
 containers this module starts and removes itself, never the shared ``phaze-test-db`` /
-``phaze-test-redis`` harness that this bead exists to make safe to reap.
+``phaze-test-valkey`` harness that this bead exists to make safe to reap.
 
 **The age clock, measured rather than assumed (phaze-robzi.2, 2026-08-28, against
 ``postgres:18-alpine`` in a throwaway container).** ``pg_database`` carries no creation timestamp
@@ -88,7 +88,7 @@ pytestmark = pytest.mark.skipif(not _docker_usable(), reason="needs a working do
 
 @pytest.fixture(scope="module")
 def throwaway_redis() -> Iterator[str]:
-    """A private Redis for this module alone -- never the shared ``phaze-test-redis``."""
+    """A private Redis for this module alone -- never the shared ``phaze-test-valkey``."""
     container = f"phaze-gc-test-redis-{uuid4().hex[:10]}"
     started = _docker("run", "-d", "--name", container, "valkey/valkey:9-alpine", "redis-server", "--databases", "16")
     if started.returncode != 0:
@@ -435,7 +435,7 @@ def _recipe_body(name: str) -> str:
 
 
 def test_the_gc_recipe_exists_and_is_a_dry_run_by_default() -> None:
-    body = _recipe_body("test-db-gc *flags:")
+    body = _recipe_body("gc-test-dbs *flags:")
     assert "scripts/test-db-gc.sh" in body
     command = next(line for line in body.splitlines() if "scripts/test-db-gc.sh" in line)
     assert "--apply" not in command, "the recipe must not force --apply itself"
@@ -443,7 +443,7 @@ def test_the_gc_recipe_exists_and_is_a_dry_run_by_default() -> None:
 
 
 def test_the_gc_recipe_never_tears_anything_down() -> None:
-    body = _recipe_body("test-db-gc *flags:")
+    body = _recipe_body("gc-test-dbs *flags:")
     assert "docker rm" not in body
     assert "docker stop" not in body
-    assert "test-db-down" not in body
+    assert "down-test-db" not in body

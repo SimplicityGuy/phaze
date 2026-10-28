@@ -24,7 +24,7 @@ implementations:
     newly committed row (PostgreSQL EvalPlanQual) -- no longer matches, so 0 rows are affected and the
     COMPLETED row survives untouched.
 
-Run with real PG via ``just integration-test``. Package auto-marked ``integration`` by
+Run with real PG via ``just test-integration``. Package auto-marked ``integration`` by
 ``tests/conftest.py``; the explicit ``pytestmark`` is the Plan 37-03 artifact contract.
 """
 
