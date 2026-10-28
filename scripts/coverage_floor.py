@@ -6,7 +6,7 @@ Reads ``coverage json`` output (``coverage.json`` in the current working directo
 * a single uniform **per-module** floor (``FLOOR``, D-04, raised 85 -> 90 once every module cleared
   90%) over every tracked source file.
 
-Runs inside ``just test-cov`` and ``just coverage-combine``; in the latter it runs AFTER
+Runs inside ``just test-cov`` and ``just combine-coverage``; in the latter it runs AFTER
 ``coverage combine`` + ``coverage json``, so it sees the authoritative COMBINED coverage
 (Phase 63 D-02) -- never a partial per-bucket shard.
 
@@ -25,7 +25,7 @@ So both floors are read here from ``percent_statements_covered``, which coverage
 alongside ``percent_branches_covered`` and ``percent_covered`` (combined). The metric is named in
 every line this script prints, so a failure can never be misread as the other one.
 
-Branch coverage is MEASURED and REPORTED -- see ``just branch-check``, which gates it per bead on
+Branch coverage is MEASURED and REPORTED -- see ``just check-branch-coverage``, which gates it per bead on
 the files that bead touched -- but it is deliberately not gated repo-wide.
 
 Inputs:
@@ -115,7 +115,9 @@ def main() -> int:
         return 1
     branch_pct = data["totals"].get("percent_branches_covered")
     branch_note = (
-        "" if branch_pct is None else f"  (branch coverage {float(branch_pct):.2f}%, measured but not gated repo-wide — see `just branch-check`)"
+        ""
+        if branch_pct is None
+        else f"  (branch coverage {float(branch_pct):.2f}%, measured but not gated repo-wide — see `just check-branch-coverage`)"
     )
     print(  # noqa: T201
         f"✅ Repo-wide LINE coverage {total_pct:.2f}% ≥ {TOTAL_FLOOR:.0f}%; all tracked modules ≥ {FLOOR:.0f}% lines.{branch_note}"

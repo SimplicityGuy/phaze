@@ -80,7 +80,9 @@ def _extract_recipe(justfile_text: str, name: str) -> str:
     (e.g. the backtick-quoted ``coverage-combine`` reference in the ``test-bucket``
     doc comment) from being mistaken for the recipe's own header.
     """
-    pattern = re.compile(rf"^{re.escape(name)}\b[^\n]*:\n((?:[ \t]+.*\n?)*)", re.MULTILINE)
+    # `(?![\w-])` rather than `\b`: a `\b` after `test-browser` also matched the `test-browser-install`
+    # header, which is the recipe this used to hand back. Dependencies may follow the colon.
+    pattern = re.compile(rf"^{re.escape(name)}(?![\w-])[^\n:]*:(?!=)[^\n]*\n((?:[ \t]+.*\n?)*)", re.MULTILINE)
     match = pattern.search(justfile_text)
     assert match is not None, f"recipe {name!r} not found as a top-level header in {_JUSTFILE}"
     return match.group(1)
@@ -143,7 +145,8 @@ def _browser_job() -> dict[str, Any]:
 
 def _find_run_step(job: dict[str, Any], needle: str) -> dict[str, Any]:
     """Return the unique run step containing ``needle``."""
-    hits = [step for step in job["steps"] if needle in step.get("run", "")]
+    # Token-bounded: `just install` must not also match `just install-test-browser-ci`.
+    hits = [step for step in job["steps"] if re.search(rf"{re.escape(needle)}(?![\w-])", step.get("run", ""))]
     assert len(hits) == 1, f"expected one browser step containing {needle!r}, found {len(hits)}"
     return hits[0]
 
@@ -157,7 +160,7 @@ def test_browser_ci_requires_the_template_class_guard_after_pinned_install() -> 
     assert "if" not in guard and not guard.get("continue-on-error", False)
     assert steps.index(install) < steps.index(guard) < steps.index(_find_run_step(job, "playwright --version"))
     justfile = _JUSTFILE.read_text(encoding="utf-8")
-    assert "install: setup tailwind" in justfile
+    assert "install: setup build-tailwind" in justfile
 
 
 def test_root_ci_does_not_serialize_tests_behind_quality() -> None:
@@ -211,7 +214,7 @@ def test_python_security_job_calls_the_public_bandit_recipe() -> None:
     steps = _load_security_workflow()["jobs"]["python-security"]["steps"]
     runs = [step["run"] for step in steps if "run" in step]
 
-    assert "just bandit" in runs
+    assert "just run-bandit" in runs
     assert "just security" not in runs
 
 
@@ -329,7 +332,7 @@ def test_coverage_combine_recipe_enforces_the_gate_exactly_once() -> None:
     gate above the 90.38% baseline; test_coverage_gate.py owns the exact-value invariant,
     so here we only assert the recipe still enforces a global fail-under gate at all.
     """
-    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "coverage-combine")
+    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "combine-coverage")
     assert "coverage combine" in recipe_body
     assert "coverage xml" in recipe_body
     assert re.search(r"coverage report --fail-under=\d+", recipe_body) is not None
@@ -391,7 +394,7 @@ def test_setup_uv_cache_has_one_writer_and_parallel_jobs_are_restore_only() -> N
 
 
 def test_combine_job_downloads_shards_and_runs_the_combine_recipe() -> None:
-    """`combine` fans in every bucket's shard artifact then delegates to `just coverage-combine`.
+    """`combine` fans in every bucket's shard artifact then delegates to `just combine-coverage`.
 
     This is the other half of CI-03: a single combined upload requires the combine job
     to actually download every `coverage-*` artifact (not just the last one) before
@@ -408,7 +411,7 @@ def test_combine_job_downloads_shards_and_runs_the_combine_recipe() -> None:
     assert download_with.get("merge-multiple") is True, download_with
 
     run_steps = [s.get("run", "") for s in steps if "run" in s]
-    assert any(run.strip() == "just coverage-combine" for run in run_steps), run_steps
+    assert any(run.strip() == "just combine-coverage" for run in run_steps), run_steps
 
     # combine must wait on the full matrix fan-out, not run ahead of shard uploads.
     assert combine_job["needs"] == ["test"]
@@ -420,7 +423,7 @@ def test_combine_job_exports_both_repowise_coverage_inputs() -> None:
     CI must not ingest into its ephemeral repowise index. It does need to preserve the combined
     binary report (per-test contexts) alongside ``coverage.xml`` (per-file totals), so a human can
     download a commit-paired report while the durable local refresh remains
-    ``just repowise-coverage <seat>``.
+    ``just refresh-repowise-coverage <seat>``.
     """
     combine_steps = _load_workflow()["jobs"]["combine"]["steps"]
     uploads = [step for step in combine_steps if "actions/upload-artifact" in step.get("uses", "")]
@@ -534,7 +537,7 @@ def _assert_browser_group_is_exactly_pinned_playwright(browser_group: list[str])
     The invariant is that the group holds exactly one requirement, it is playwright, and
     its specifier is a single exact ``==`` pin -- never that the pin names any particular
     version. Unlike the litellm pin (phaze-85zxu), nothing in this repo's browser suite
-    measures a verdict against a specific playwright release: `just test-browser-install`'s
+    measures a verdict against a specific playwright release: `just install-test-browser`'s
     own comment states the reason for the pin is keeping the resolved browser *revision*
     reproducible across an unchanged commit (via `uv.lock`), not that 1.62.0 itself has any
     load-bearing behavior. So the guard here is a pure structural policy check, and a
@@ -563,8 +566,8 @@ def test_browser_toolchain_is_exactly_pinned_in_an_optional_group() -> None:
     _assert_browser_group_is_exactly_pinned_playwright(pyproject["dependency-groups"]["browser"])
 
     justfile_text = _JUSTFILE.read_text(encoding="utf-8")
-    install_recipe = _extract_recipe(justfile_text, "test-browser-install")
-    ci_install_recipe = _extract_recipe(justfile_text, "test-browser-install-ci")
+    install_recipe = _extract_recipe(justfile_text, "install-test-browser")
+    ci_install_recipe = _extract_recipe(justfile_text, "install-test-browser-ci")
     test_recipe = _extract_recipe(justfile_text, "test-browser")
     for recipe in (install_recipe, ci_install_recipe, test_recipe):
         assert "--group browser" in recipe
@@ -612,8 +615,8 @@ def test_browser_ci_installs_headless_shell_without_apt() -> None:
     assert "--with-deps" not in browser_job_text
 
     justfile_text = _JUSTFILE.read_text(encoding="utf-8")
-    local_recipe = _extract_recipe(justfile_text, "test-browser-install")
-    ci_recipe = _extract_recipe(justfile_text, "test-browser-install-ci")
+    local_recipe = _extract_recipe(justfile_text, "install-test-browser")
+    ci_recipe = _extract_recipe(justfile_text, "install-test-browser-ci")
     assert "playwright install --with-deps chromium" in local_recipe
     assert "playwright install --only-shell chromium" in ci_recipe
 
@@ -633,9 +636,9 @@ def test_browser_cache_key_tracks_locked_toolchain_platform_and_payload() -> Non
 
 def test_browser_install_timeout_preserves_the_real_exit_status() -> None:
     """The install is bounded and distinguishes timeout 124 from other failures."""
-    install_step = _find_run_step(_browser_job(), "just test-browser-install-ci")
+    install_step = _find_run_step(_browser_job(), "just install-test-browser-ci")
     run = install_step["run"]
-    assert "timeout --kill-after=5s 300 just test-browser-install-ci" in run
+    assert "timeout --kill-after=5s 300 just install-test-browser-ci" in run
     assert "status=$?" in run
     assert "if ! timeout" not in run
     assert 'if [ "${status}" -eq 124 ]' in run
@@ -686,7 +689,7 @@ def _promtool_versions_cited(text: str) -> set[str]:
 def test_code_quality_installs_and_runs_promtool_for_alert_rules() -> None:
     """CI must actually RUN the alert-rule promtool tests, not merely wire a skippable recipe.
 
-    `just alerts-test` loudly skips when `promtool` is not on the local PATH -- correct for a
+    `just test-alerts` loudly skips when `promtool` is not on the local PATH -- correct for a
     developer machine, wrong for CI. This pins that CI installs the binary and then runs the
     recipe, so the skip path is never the only place phaze-jjjy8 acceptance 2/3 actually run.
     """
@@ -696,12 +699,12 @@ def test_code_quality_installs_and_runs_promtool_for_alert_rules() -> None:
     install_steps = [run for run in runs if "promtool" in run and "install" in run.lower()]
     assert install_steps, "no step in code-quality.yml installs promtool"
 
-    alerts_test_steps = [run for run in runs if run.strip() == "just alerts-test"]
-    assert len(alerts_test_steps) == 1, f"expected exactly one `just alerts-test` step, found {len(alerts_test_steps)}"
+    alerts_test_steps = [run for run in runs if run.strip() == "just test-alerts"]
+    assert len(alerts_test_steps) == 1, f"expected exactly one `just test-alerts` step, found {len(alerts_test_steps)}"
 
     install_index = next(i for i, run in enumerate(runs) if run in install_steps)
-    alerts_test_index = next(i for i, run in enumerate(runs) if run.strip() == "just alerts-test")
-    assert install_index < alerts_test_index, "promtool must be installed BEFORE `just alerts-test` runs, not after"
+    alerts_test_index = next(i for i, run in enumerate(runs) if run.strip() == "just test-alerts")
+    assert install_index < alerts_test_index, "promtool must be installed BEFORE `just test-alerts` runs, not after"
 
 
 def test_promtool_version_pin_agrees_across_ci_and_alert_fixtures() -> None:

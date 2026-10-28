@@ -31,7 +31,7 @@ redis_port="$5"
 redis_capacity="$6"
 origin="$7"
 
-just test-db >&2
+just up-test-db >&2
 bash scripts/provision-test-seat.sh \
   --seat "$seat" \
   --pg-container "$pg_container" \

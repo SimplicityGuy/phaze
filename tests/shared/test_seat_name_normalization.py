@@ -1,6 +1,6 @@
-"""Regression tests for the `just test-db-for` seat-name normalization (phaze-fmfk).
+"""Regression tests for the `just provision-test-db-seat` seat-name normalization (phaze-fmfk).
 
-``just test-db-for <name>`` used to interpolate the seat name straight into
+``just provision-test-db-seat <name>`` used to interpolate the seat name straight into
 ``CREATE DATABASE phaze_<name>_test`` without validating or quoting it, so a hyphen -- which is
 not valid in an unquoted Postgres identifier -- produced a raw ``syntax error at or near "-"``
 with no hint at the cause. That is a real trap: this repo's own worktree convention IS hyphenated
@@ -26,7 +26,7 @@ Two properties matter as much as "hyphens no longer explode":
   with a hash of the raw, pre-normalization name; :func:`test_hyphen_and_underscore_variants_do_not_collide`
   and :func:`test_hyphen_underscore_and_dot_variants_do_not_collide` pin it. Dots are accepted at
   all (phaze-robzi.4) because every beadhive epic-child bead id contains one (``phaze-o8sie.3``),
-  and CLAUDE.md's own isolation instruction, ``just test-db-for <bead-id>``, requires the id to be
+  and CLAUDE.md's own isolation instruction, ``just provision-test-db-seat <bead-id>``, requires the id to be
   usable verbatim; :func:`test_dotted_bead_id_succeeds_with_a_safe_identifier` pins it.
 * **The 63-byte Postgres identifier limit** -- an unquoted identifier longer than 63 bytes
   (``NAMEDATALEN - 1``) is not rejected, it is SILENTLY TRUNCATED, so two long seat names that
@@ -114,7 +114,7 @@ def test_hyphenated_name_succeeds_with_a_safe_identifier(raw_name: str) -> None:
 )
 def test_dotted_bead_id_succeeds_with_a_safe_identifier(raw_name: str) -> None:
     """Every beadhive epic-child bead id contains a dot, and CLAUDE.md's own isolation
-    instruction is `just test-db-for <bead-id>` -- the id must be usable verbatim rather than
+    instruction is `just provision-test-db-seat <bead-id>` -- the id must be usable verbatim rather than
     forcing every seat to hand-hyphenate it (the observed cost: nine seats, two divergent
     improvisations, phaze-robzi.4).
     """
@@ -153,7 +153,7 @@ def test_invalid_names_are_rejected_with_a_stated_rule(raw_name: str) -> None:
 def test_derivation_is_idempotent_across_repeated_calls() -> None:
     """Re-running for the same raw name must yield the identical derived identifier.
 
-    `just test-db-for` re-running for the same worktree is required to be idempotent (CLAUDE.md),
+    `just provision-test-db-seat` re-running for the same worktree is required to be idempotent (CLAUDE.md),
     and the Redis logical-DB allocation registry depends on it: a fresh value per call would mint
     a new Postgres database and burn a new Redis index (of a fixed-size pool) on every re-run.
     """

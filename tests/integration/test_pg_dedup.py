@@ -1,7 +1,7 @@
 """REQ-36-3: deterministic-key dedup no-op on a real PostgresQueue.
 
-Runs against the ephemeral integration-test Postgres broker (``just test-db`` /
-``just integration-test``, host port 5433). Pins the production SAQ dedup contract
+Runs against the ephemeral integration-test Postgres broker (``just up-test-db`` /
+``just test-integration``, host port 5433). Pins the production SAQ dedup contract
 the ``DedupFakeQueue`` test double models (``tests/_queue_fakes.py``) -- and that
 ``recover_orphaned_work`` relies on to count an in-flight item as ``skipped`` -- against
 the live Postgres broker (``saq/queue/postgres.py`` ``_enqueue``, lines 700-755):
@@ -52,7 +52,7 @@ async def pg_queue() -> AsyncGenerator[PostgresQueue]:
     """Yield a connected real ``PostgresQueue`` with a per-test-unique name.
 
     Probes broker connectivity first and ``pytest.skip``s when Postgres is down, so a
-    bare ``uv run pytest`` (no ``just test-db``) skips rather than errors. ``connect()``
+    bare ``uv run pytest`` (no ``just up-test-db``) skips rather than errors. ``connect()``
     opens the psycopg3 pool and runs ``init_db()`` (creates ``saq_jobs``). Teardown
     best-effort-deletes this queue's rows, then disconnects the pool.
     """

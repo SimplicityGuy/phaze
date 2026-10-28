@@ -14,7 +14,7 @@ test does the same in a temporary directory.
 
 Only literal `class="..."` attributes are checked (the bead's "static" tokens); Alpine `:class` bindings are not.
 
-Needs the pinned standalone binary (``just tailwind`` leaves it at ``./bin/tailwindcss``). Absent, the test skips
+Needs the pinned standalone binary (``just build-tailwind`` leaves it at ``./bin/tailwindcss``). Absent, the test skips
 loudly, unless ``PHAZE_REQUIRE_TAILWIND=1``, which makes absence or a version mismatch a failure.
 CI's Browser contract job sets this flag and runs this module after its pinned binary installation.
 """
@@ -115,7 +115,7 @@ def build_image_equivalent_css(binary: Path, workdir: Path, templates: Path) -> 
 def tailwind() -> Path:
     binary = _find_tailwind()
     if binary is None:
-        message = "standalone Tailwind binary not found (run `just tailwind`); the dead-class guard cannot build the image CSS"
+        message = "standalone Tailwind binary not found (run `just build-tailwind`); the dead-class guard cannot build the image CSS"
         if os.environ.get("PHAZE_REQUIRE_TAILWIND") == "1":
             pytest.fail(message)
         pytest.skip(message)

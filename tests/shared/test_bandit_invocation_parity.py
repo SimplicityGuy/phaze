@@ -8,7 +8,7 @@ false`), so the old local config's `-x tests,services` excluded every file whose
 contained the substring "services" -- not only the top-level `services/` prototype
 directory it was meant to skip (see `pyproject.toml`'s `mypy` `exclude` and
 `per-file-ignores`, both anchored with `^`/`services/**` at the repo root), but also every
-file under `src/phaze/services/`. CI's invocation, `just bandit`
+file under `src/phaze/services/`. CI's invocation, `just run-bandit`
 (`uv run bandit -r src/ -x tests -s B608`, run from `.github/workflows/security.yml`'s
 "Run bandit" step), has no "services" exclusion at all and does scan that tree. Result:
 phaze-08fom's B101 assert in `src/phaze/services/set_glyph_colors.py` passed every local
@@ -16,7 +16,7 @@ gate and the submit validation, and failed only on `main`'s post-merge CI.
 
 The fix makes drift structurally impossible rather than merely re-synchronizing the two
 exclusion lists by hand: the pre-commit hook is now a `local`/`system` hook whose `entry`
-is literally `just bandit` -- the identical recipe CI runs -- so there is exactly one
+is literally `just run-bandit` -- the identical recipe CI runs -- so there is exactly one
 bandit invocation in the repository, not two lists that can silently diverge again.
 
 Deliberately parses `.pre-commit-config.yaml` and `justfile` as text/YAML rather than
@@ -60,27 +60,27 @@ def _bandit_local_hook() -> dict[str, object]:
 
 def _justfile_bandit_recipe_body() -> str:
     text = _JUSTFILE.read_text(encoding="utf-8")
-    match = re.search(r"^bandit:\n((?:[ \t]+.*\n?)*)", text, re.MULTILINE)
-    assert match is not None, "no top-level `bandit:` recipe found in justfile"
+    match = re.search(r"^run-bandit:\n((?:[ \t]+.*\n?)*)", text, re.MULTILINE)
+    assert match is not None, "no top-level `run-bandit:` recipe found in justfile"
     return match.group(1)
 
 
 def test_bandit_hook_runs_via_just_bandit_recipe() -> None:
-    """The pre-commit bandit hook must be `entry: just bandit` -- ONE invocation, not two.
+    """The pre-commit bandit hook must be `entry: just run-bandit` -- ONE invocation, not two.
 
     This is what makes drift structurally impossible rather than just re-synchronized:
     the pre-commit hook and the CI step (`security.yml`'s "Run bandit" step, `run: just
-    bandit`) both resolve to the exact same justfile recipe body, so there is nothing left
+    run-bandit`) both resolve to the exact same justfile recipe body, so there is nothing left
     to keep in sync by hand.
     """
     hook = _bandit_local_hook()
-    assert hook.get("entry") == "just bandit", (
-        f"the local bandit hook must run `just bandit` (the same recipe CI uses), not a second, "
+    assert hook.get("entry") == "just run-bandit", (
+        f"the local bandit hook must run `just run-bandit` (the same recipe CI uses), not a second, "
         f"independently-flagged invocation; got entry={hook.get('entry')!r}"
     )
     assert hook.get("language") == "system"
     assert hook.get("pass_filenames") is False, (
-        "pass_filenames must be false: `just bandit` always targets `-r src/` itself, so pre-commit "
+        "pass_filenames must be false: `just run-bandit` always targets `-r src/` itself, so pre-commit "
         "must not additionally pass a partial file list that could under-scan a partially-staged commit"
     )
 
@@ -94,20 +94,20 @@ def test_bandit_hook_is_no_longer_a_frozen_pycqa_repo_hook() -> None:
     """
     repos = {repo.get("repo") for repo in _precommit_config()["repos"]}
     assert "https://github.com/PyCQA/bandit" not in repos, (
-        "a frozen `PyCQA/bandit` repo hook re-appeared alongside the local `just bandit` hook -- "
+        "a frozen `PyCQA/bandit` repo hook re-appeared alongside the local `just run-bandit` hook -- "
         "that reintroduces exactly the two-invocations-that-can-drift shape this guard exists to prevent"
     )
 
 
 def test_ci_bandit_step_runs_the_same_just_recipe() -> None:
-    """`security.yml`'s bandit step must also invoke `just bandit`, not a raw `bandit` command."""
+    """`security.yml`'s bandit step must also invoke `just run-bandit`, not a raw `bandit` command."""
     data = yaml.safe_load(_SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"))
     steps = data["jobs"]["python-security"]["steps"]
     bandit_steps = [s for s in steps if "bandit" in s.get("run", "").lower()]
     assert len(bandit_steps) == 1, f"expected exactly one bandit step in security.yml, found {len(bandit_steps)}"
     (bandit_step,) = bandit_steps
-    assert bandit_step.get("run", "").strip() == "just bandit", (
-        f"security.yml's bandit step must run exactly `just bandit`; got {bandit_step.get('run')!r}"
+    assert bandit_step.get("run", "").strip() == "just run-bandit", (
+        f"security.yml's bandit step must run exactly `just run-bandit`; got {bandit_step.get('run')!r}"
     )
 
 

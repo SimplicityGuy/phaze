@@ -1,5 +1,5 @@
 {
-  "_comment": "Coverage baseline (phaze-bk9el.21 criterion 5, consumed by phaze-bk9el.1). Regenerate with `just branch-check --write-baseline` after a FULL-suite coverage run; a partial run records partial numbers and would fail every later bead for the wrong reason. Every module carries all three metrics; the per-bead gate compares only percent_branches_covered, which is null for a module with no branches (not measurable, and neither 0% nor 100%).",
+  "_comment": "Coverage baseline (phaze-bk9el.21 criterion 5, consumed by phaze-bk9el.1). Regenerate with `just check-branch-coverage --write-baseline` after a FULL-suite coverage run; a partial run records partial numbers and would fail every later bead for the wrong reason. Every module carries all three metrics; the per-bead gate compares only percent_branches_covered, which is null for a module with no branches (not measurable, and neither 0% nor 100%).",
   "base_ref": "main",
   "commit": "59bef0afbe3bde51664f8fc3a2c93e034684f83e",
   "files": {

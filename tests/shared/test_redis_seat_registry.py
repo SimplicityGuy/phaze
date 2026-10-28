@@ -1,6 +1,6 @@
-"""Behaviour tests for the Redis logical-DB seat registry behind ``just test-db-for`` (phaze-68wky).
+"""Behaviour tests for the Redis logical-DB seat registry behind ``just provision-test-db-seat`` (phaze-68wky).
 
-``just test-db-for <name>`` gives each worktree ("seat") an exclusive Redis logical database,
+``just provision-test-db-seat <name>`` gives each worktree ("seat") an exclusive Redis logical database,
 because two redis-backed test modules run global ``scan_iter``+``delete`` sweeps in fixture setup
 AND teardown — on a shared logical database one seat's fixture deletes another seat's live keys
 mid-test (phaze-fwo7, guarded by :mod:`tests.shared.test_redis_worktree_isolation`).
@@ -10,7 +10,7 @@ monotonic counter with no reclaim. Every seat that ever ran ``test-db-for`` burn
 forever, so the counter walked past the 64-database cap and then refused every new seat — indices
 68, 73, 74 and 80 were observed live, mostly held by worktrees that no longer existed. Refusing
 was right (wrapping onto an occupied index restores phaze-fwo7 silently), but the only remedies
-the error offered were ``just test-db-down`` variants, and ``test-db-down`` removes the ONE
+the error offered were ``just down-test-db`` variants, and ``test-db-down`` removes the ONE
 Postgres+Redis pair every concurrent worktree shares — the phaze-ieqg incident, where a mid-round
 teardown destroyed 89 per-worktree databases and this registry under five in-flight suites. Five
 independent fleet reports (hq-6hb, hq-8zr, hq-el5, hq-ew2, hq-ij4) hit that wall, and each invented
@@ -413,7 +413,7 @@ def _blocking_client(container: str, index: int) -> None:
 # 0.3s apart, before declaring Redis unreachable. It exists because a single `docker exec` can fail
 # against a container that is up and answering — observed with four suites in flight, where it
 # turned an `allocate` that should have refused with the exhaustion message into the false
-# diagnosis "not reachable, start the harness with `just test-db`" about a harness already running.
+# diagnosis "not reachable, start the harness with `just up-test-db`" about a harness already running.
 # `_fail_first_ping_then_succeed` forces that exact window deterministically: a PATH shim answers
 # the probe's own first `docker exec ... redis-cli PING` itself (no output, exit 1) and forwards
 # every later one — matched, not counted, so the loop's OWN retries are what recovers — to the real
@@ -455,7 +455,7 @@ def _fail_first_ping_then_succeed(tmp_path: Path) -> dict[str, str]:
 
 def test_a_transient_first_ping_failure_is_retried_and_not_reported_as_unreachable(registry: str, tmp_path: Path) -> None:
     """phaze-yq7jk: one failed `docker exec ... PING` against a live Redis must not become
-    "not reachable, start the harness with `just test-db`" about a harness that is already running.
+    "not reachable, start the harness with `just up-test-db`" about a harness that is already running.
 
     Deterministic reproduction of the phaze-b2qs9 contention, not a sleep racing a real concurrent
     `docker exec`: the shim fails the probe's first attempt itself and forwards the second to the
@@ -488,7 +488,7 @@ def test_a_genuinely_absent_redis_container_still_fails_fast_with_the_unreachabl
 
     assert result.returncode == 1
     assert "not reachable" in result.stderr
-    assert "just test-db" in result.stderr
+    assert "just up-test-db" in result.stderr
 
 
 # Allocation
@@ -539,23 +539,23 @@ def test_exhaustion_names_the_non_destructive_remedy_first(registry: str, tmp_pa
     """The error must lead with reclaim, and must not offer ``test-db-down`` as the fix.
 
     This is the whole reported defect, not a cosmetic point about wording. Five agents read this
-    message, found only ``just test-db-down`` on offer, and went around it — one of them by
+    message, found only ``just down-test-db`` on offer, and went around it — one of them by
     dropping Redis isolation entirely. A remedy an operator must not run is not a remedy.
     """
     for n in range(_ALLOCATABLE):
         _allocate(registry, f"seat_{n}", origin=str(tmp_path))
     message = _allocate(registry, "seat_overflow", origin=str(tmp_path)).stderr
 
-    assert "just test-db-reclaim" in message
-    assert "just test-db-release" in message
+    assert "just reclaim-test-db-seats" in message
+    assert "just release-test-db-seat" in message
 
-    reclaim_at = message.index("just test-db-reclaim")
+    reclaim_at = message.index("just reclaim-test-db-seats")
     resize_at = message.index("PHAZE_TEST_VALKEY_DATABASES")
     assert reclaim_at < resize_at, "reclaiming must be offered before the remedy that recreates the container"
 
-    teardown_lines = [line for line in message.splitlines() if "test-db-down" in line]
+    teardown_lines = [line for line in message.splitlines() if "down-test-db" in line]
     assert teardown_lines, "the message should still name test-db-down — to warn AGAINST it"
-    assert all("do NOT" in line or "phaze-ieqg" in line for line in teardown_lines), f"test-db-down must not be offered as a remedy: {teardown_lines}"
+    assert all("do NOT" in line or "phaze-ieqg" in line for line in teardown_lines), f"down-test-db must not be offered as a remedy: {teardown_lines}"
 
 
 def test_a_freed_index_is_handed_out_again(registry: str, tmp_path: Path) -> None:
@@ -745,8 +745,8 @@ def test_release_of_an_unknown_seat_is_distinguishable_from_a_real_release(regis
     assert result.returncode == 5, result.stderr
     assert result.returncode != 0
     assert "nothing was released" in result.stderr
-    assert "just test-db-seats" in result.stderr, "point at the command that lists real identifiers"
-    assert "just test-db-reclaim" in result.stderr, "point at the command that reads liveness instead of a guessed name"
+    assert "just list-test-db-seats" in result.stderr, "point at the command that lists real identifiers"
+    assert "just reclaim-test-db-seats" in result.stderr, "point at the command that reads liveness instead of a guessed name"
 
 
 def test_release_of_a_corrupt_registry_value_does_not_read_it_as_a_regex(registry: str, tmp_path: Path) -> None:
@@ -1027,7 +1027,7 @@ def test_no_postgres_check_warns_even_when_pg_container_is_also_passed(registry:
     """The warning is gated on the EVIDENCE, not on which flags were typed (phaze-gmkua defect A).
 
     The old gate was ``--no-postgres-check AND no --pg-container``. But the justfile recipe always
-    passes ``--pg-container``, so ``just test-db-reclaim --no-postgres-check`` — the only shape an
+    passes ``--pg-container``, so ``just reclaim-test-db-seats --no-postgres-check`` — the only shape an
     operator ever types — swept with L2 missing and printed nothing at all. The tests never caught
     it because they only ever exercised the bare form.
     """
@@ -1089,7 +1089,7 @@ def test_a_seat_reclaimed_mid_sweep_survives_the_sweep(registry: str, tmp_path: 
     """The TOCTOU that made the sweep able to destroy a live seat (phaze-r311e).
 
     ``reclaim`` classifies every seat ONCE and then destroys them from that snapshot — 5.46s for a
-    five-seat sweep, 20s+ on a realistic registry. An agent running ``just test-db-for`` inside
+    five-seat sweep, 20s+ on a realistic registry. An agent running ``just provision-test-db-seat`` inside
     that window is handed its existing index back and its lease refreshed, correctly and
     atomically; the sweep then flushed the database anyway and freed the index for the next
     allocate. Two seats on one logical DB is phaze-fwo7, reached from a snapshot that was merely
@@ -1218,7 +1218,7 @@ def test_l2_protects_only_the_seat_it_names(registry: str, postgres: str, tmp_pa
 def test_the_justfile_shape_still_consults_postgres_under_no_postgres_check(registry: str, postgres: str, tmp_path: Path) -> None:
     """``--no-postgres-check`` waives the REFUSAL, not evidence that is there for the taking.
 
-    ``just test-db-reclaim --no-postgres-check`` always passes ``--pg-container`` too, because the
+    ``just reclaim-test-db-seats --no-postgres-check`` always passes ``--pg-container`` too, because the
     recipe does. A reachable Postgres therefore still protects a running suite on that path — and
     the sweep says which of the two it did, because the operator asked for one and got the other.
     """
@@ -1252,7 +1252,7 @@ def test_release_refuses_while_a_postgres_backend_is_attached(registry: str, pos
 
 
 def test_list_reports_the_evidence_behind_every_verdict(registry: str, tmp_path: Path) -> None:
-    """``just test-db-seats`` exists so a full registry reads as a list of seats, not a dead end."""
+    """``just list-test-db-seats`` exists so a full registry reads as a list of seats, not a dead end."""
     _allocate(registry, "seat_live", origin=str(tmp_path))
     gone = tmp_path / "vanished"
     gone.mkdir()
@@ -1490,7 +1490,7 @@ def test_test_db_for_allocates_through_the_registry_script(tmp_path: Path, run_p
     ``derive-seat-name.sh`` and ``ensure-pg-database.sh`` established the principle: the recipe
     orchestrates, the scripts decide, and the scripts are what the tests can drive. phaze-bk9el.23
     took the same step once more, moving provisioning into ``provision-test-seat.sh`` so
-    ``just test-validate`` and ``just test-db-for`` cannot drift apart.
+    ``just test-validate`` and ``just provision-test-db-seat`` cannot drift apart.
 
     The allocation must come from the ATOMIC REGISTRY, not a hash of the name: ``hash(name) % 16``
     collides ~35% of the time across 8 seats, which would restore phaze-fwo7 intermittently. This
@@ -1511,7 +1511,7 @@ def test_test_db_for_allocates_through_the_registry_script(tmp_path: Path, run_p
 
 def test_the_provisioner_is_not_a_monotonic_counter() -> None:
     """The phaze-68wky defect must not return: no INCR anywhere on the provisioning path."""
-    body = _recipe_commands("test-db-for name:")
+    body = _recipe_commands("provision-test-db-seat name:")
     provisioner = (Path(__file__).resolve().parents[2] / "scripts" / "provision-test-seat.sh").read_text(encoding="utf-8")
 
     assert "INCR" not in body + provisioner, "the monotonic counter is the defect; it must not survive"
@@ -1523,7 +1523,7 @@ def test_test_validate_provisions_through_the_same_script_as_test_db_for() -> No
     ``just test-validate`` is what ``just check`` / ``just check-all`` -- and therefore
     ``bh work check`` and ``bh work submit`` -- ultimately run. When it provisions for itself it
     must use the same normalization (phaze-fmfk), the same database pair and the same Redis
-    registry allocation the operator gets from ``just test-db-for``. A second copy of that body is
+    registry allocation the operator gets from ``just provision-test-db-seat``. A second copy of that body is
     exactly how the two would silently drift apart.
     """
     validate = _recipe_commands("test-validate:")
@@ -1536,7 +1536,7 @@ def test_test_validate_provisions_through_the_same_script_as_test_db_for() -> No
     assert "scripts/provision-test-seat.sh" in resolver
     assert "scripts/derive-validate-seat-name.sh" in serial
     assert "scripts/derive-validate-seat-name.sh" in runner
-    assert '"test-db-for"' in runner
+    assert '"provision-test-db-seat"' in runner
     assert "/phaze_test" not in validate, "the shared-seat fallback is the defect; it must not come back"
 
 
@@ -1547,14 +1547,14 @@ def test_the_non_destructive_recipes_exist_and_do_not_tear_anything_down() -> No
     deleted them would restore the reported defect in full.
     """
     for recipe, subcommand in (
-        ("test-db-release name *flags:", "release"),
-        ("test-db-reclaim *flags:", "reclaim"),
-        ("test-db-seats:", "list"),
+        ("release-test-db-seat name *flags:", "release"),
+        ("reclaim-test-db-seats *flags:", "reclaim"),
+        ("list-test-db-seats:", "list"),
     ):
         body = _recipe_commands(recipe)
         assert f"scripts/redis-seat-registry.sh {subcommand}" in body
         assert "docker rm" not in body, f"`{recipe}` must never remove a container"
-        assert "test-db-down" not in body, f"`{recipe}` is the alternative to test-db-down, not a wrapper for it"
+        assert "down-test-db" not in body, f"`{recipe}` is the alternative to test-db-down, not a wrapper for it"
 
 
 def test_the_teardown_guards_point_at_reclaim_instead() -> None:
@@ -1563,9 +1563,9 @@ def test_the_teardown_guards_point_at_reclaim_instead() -> None:
     An operator who reaches ``test-db-down`` or the logical-DB resize because the registry filled
     up is one step from the phaze-ieqg incident; that is the moment to say ``test-db-reclaim``.
     """
-    for recipe in ("test-db-down:", "test-db:"):
+    for recipe in ("down-test-db:", "up-test-db:"):
         body = _recipe_body(recipe)
-        assert "test-db-reclaim" in body, f"`{recipe}`'s guard should offer reclaim before a teardown"
+        assert "reclaim-test-db-seats" in body, f"`{recipe}`'s guard should offer reclaim before a teardown"
 
 
 def _doc_line_for(recipe_signature: str) -> str:
@@ -1586,7 +1586,7 @@ def test_the_reclaim_doc_states_the_revised_postgres_contract() -> None:
     Before phaze-robzi.1 this line, and the recipe's own comment, said nothing about Postgres at
     all -- accurate under the old contract, silently wrong under the new one.
     """
-    doc = _doc_line_for("test-db-reclaim *flags:")
+    doc = _doc_line_for("reclaim-test-db-seats *flags:")
     assert "drop" in doc.lower(), f"the reclaim doc must state the new database-dropping behaviour: {doc}"
     assert "postgres database" in doc.lower(), f"the reclaim doc must name what it now drops: {doc}"
 
@@ -1601,11 +1601,11 @@ def test_no_tracked_text_still_claims_reclaim_leaves_every_postgres_database_unt
     """
     for phrase in ("every Postgres database are untouched", "every Postgres database is untouched"):
         assert phrase not in _SCRIPT.read_text(encoding="utf-8"), f"the script still claims the old, now-false reclaim contract: {phrase!r}"
-        assert phrase not in _recipe_body("test-db-reclaim *flags:"), f"the reclaim recipe still claims the old, now-false contract: {phrase!r}"
+        assert phrase not in _recipe_body("reclaim-test-db-seats *flags:"), f"the reclaim recipe still claims the old, now-false contract: {phrase!r}"
 
 
 def test_a_no_op_release_through_the_real_recipe_never_prints_the_left_in_place_paragraph(registry: str) -> None:
-    """End to end through ``just test-db-release`` itself, not just the script (phaze-robzi.5).
+    """End to end through ``just release-test-db-seat`` itself, not just the script (phaze-robzi.5).
 
     The "Postgres databases ... were left in place / re-running test-db-for reuses them" paragraph
     lives in the JUSTFILE recipe, not in the script -- ``cmd_release`` never prints it. Proving it
@@ -1626,7 +1626,7 @@ def test_a_no_op_release_through_the_real_recipe_never_prints_the_left_in_place_
             "--set",
             "test_db_container",
             _ABSENT_PG_CONTAINER,
-            "test-db-release",
+            "release-test-db-seat",
             "never-allocated-seat-xyz",
         ],
         cwd=_REPO_ROOT,
@@ -1639,26 +1639,26 @@ def test_a_no_op_release_through_the_real_recipe_never_prints_the_left_in_place_
     assert result.returncode != 0, combined
     assert "were left in place" not in combined, f"the real-release paragraph must not appear after a no-op: {combined}"
     assert "nothing was released" in combined, combined
-    assert "just test-db-seats" in combined, combined
-    assert "just test-db-reclaim" in combined, combined
+    assert "just list-test-db-seats" in combined, combined
+    assert "just reclaim-test-db-seats" in combined, combined
 
 
 # `test-db-release` accepting a copy-pasted, already-registered identifier verbatim (phaze-cohbr)
 #
-# `just test-db-release <name>` used to re-derive UNCONDITIONALLY (normalize + hash of the raw
-# name), so passing the exact identifier `just test-db-seats` itself prints -- e.g.
+# `just release-test-db-seat <name>` used to re-derive UNCONDITIONALLY (normalize + hash of the raw
+# name), so passing the exact identifier `just list-test-db-seats` itself prints -- e.g.
 # `refresh_data_548751b3` -- normalized+hashed it AGAIN into a different, unregistered string
 # (`refresh_data_548751b3_8cc94c4b`) and missed the seat, same failure shape as phaze-robzi.5's
 # wrong-guessed name but self-inflicted: the operator copied the tool's OWN output. All three
 # acceptance cases live in the RECIPE, one layer above `cmd_release` -- the script only ever sees
-# an already-resolved `--seat`, so these drive the real `just test-db-release` (and, for the
-# headline case, the real `just test-db-seats` that produces the pasted identifier) end to end
+# an already-resolved `--seat`, so these drive the real `just release-test-db-seat` (and, for the
+# headline case, the real `just list-test-db-seats` that produces the pasted identifier) end to end
 # rather than the script directly, the same discipline `test_a_no_op_release_through_the_real_recipe_...`
 # above already uses for the no-op path.
 
 
 def _run_test_db_release_recipe(redis_container: str, pg_container: str, *args: str) -> subprocess.CompletedProcess[str]:
-    """Drive ``just test-db-release`` itself -- the name resolution under test is the recipe's."""
+    """Drive ``just release-test-db-seat`` itself -- the name resolution under test is the recipe's."""
     just = shutil.which("just")
     assert just is not None
     return subprocess.run(  # noqa: S603 - fixed executable; every argument is a test literal or a throwaway container name
@@ -1670,7 +1670,7 @@ def _run_test_db_release_recipe(redis_container: str, pg_container: str, *args: 
             "--set",
             "test_db_container",
             pg_container,
-            "test-db-release",
+            "release-test-db-seat",
             *args,
         ],
         cwd=_REPO_ROOT,
@@ -1681,11 +1681,11 @@ def _run_test_db_release_recipe(redis_container: str, pg_container: str, *args: 
 
 
 def _run_test_db_seats_recipe(redis_container: str, pg_container: str) -> subprocess.CompletedProcess[str]:
-    """Drive ``just test-db-seats`` -- the real producer of the identifiers an operator pastes."""
+    """Drive ``just list-test-db-seats`` -- the real producer of the identifiers an operator pastes."""
     just = shutil.which("just")
     assert just is not None
     return subprocess.run(  # noqa: S603 - fixed executable; every argument is a test literal or a throwaway container name
-        [just, "--set", "test_valkey_container", redis_container, "--set", "test_db_container", pg_container, "test-db-seats"],
+        [just, "--set", "test_valkey_container", redis_container, "--set", "test_db_container", pg_container, "list-test-db-seats"],
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
@@ -1700,7 +1700,7 @@ _SEATS_TABLE_ROW = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+")
 
 
 def _seat_names_from_test_db_seats_output(stdout: str) -> set[str]:
-    """The SEAT column of ``just test-db-seats``'s table -- the exact artifact an operator pastes."""
+    """The SEAT column of ``just list-test-db-seats``'s table -- the exact artifact an operator pastes."""
     return {match.group(2) for line in stdout.splitlines() if (match := _SEATS_TABLE_ROW.match(line))}
 
 

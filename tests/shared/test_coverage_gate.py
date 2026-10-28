@@ -58,9 +58,9 @@ def _extract_recipe(justfile_text: str, name: str) -> str:
 
 
 def _justfile_gate() -> int:
-    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "coverage-combine")
+    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "combine-coverage")
     match = re.search(r"coverage report --fail-under=(\d+)", recipe_body)
-    assert match is not None, f"coverage-combine recipe has no `coverage report --fail-under=<N>`:\n{recipe_body}"
+    assert match is not None, f"combine-coverage recipe has no `coverage report --fail-under=<N>`:\n{recipe_body}"
     return int(match.group(1))
 
 
@@ -98,6 +98,6 @@ def test_coverage_combine_keeps_the_per_module_floor_wiring() -> None:
     coverage. It needs ``coverage json`` as its input and ``scripts/coverage_floor.py`` as
     the check; dropping either silently re-opens a false-green hole in the gate.
     """
-    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "coverage-combine")
-    assert "coverage json" in recipe_body, f"coverage-combine no longer emits coverage.json for the floor script:\n{recipe_body}"
-    assert "scripts/coverage_floor.py" in recipe_body, f"coverage-combine no longer invokes the per-module floor script:\n{recipe_body}"
+    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "combine-coverage")
+    assert "coverage json" in recipe_body, f"combine-coverage no longer emits coverage.json for the floor script:\n{recipe_body}"
+    assert "scripts/coverage_floor.py" in recipe_body, f"combine-coverage no longer invokes the per-module floor script:\n{recipe_body}"

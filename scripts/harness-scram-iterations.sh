@@ -29,7 +29,7 @@
 # `ALTER ROLE ... PASSWORD` keeps the password itself unchanged and does not touch existing
 # sessions; only connections authenticated afterwards see the new verifier.
 #
-# Callers: `just test-db` (the local 5433 harness) and .github/workflows/tests.yml (the job's own
+# Callers: `just up-test-db` (the local 5433 harness) and .github/workflows/tests.yml (the job's own
 # `services.postgres` container). Pinned by tests/shared/test_harness_scram_iterations.py.
 #
 # Usage: harness-scram-iterations.sh <container>

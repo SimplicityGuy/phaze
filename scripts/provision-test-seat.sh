@@ -5,7 +5,7 @@
 # WHY THIS EXISTS AS A SCRIPT RATHER THAN INLINE IN `test-db-for`. There are now TWO callers
 # that must provision an identical seat:
 #
-#   * `just test-db-for <name>` -- the operator-driven path. A human reads the exports off the
+#   * `just provision-test-db-seat <name>` -- the operator-driven path. A human reads the exports off the
 #     terminal and pastes them into their shell.
 #   * `just test-validate` -- the gate. When the caller exported no TEST_DATABASE_URL it has to
 #     provision a seat for itself and `eval` the exports, because before phaze-bk9el.23 it fell
@@ -31,7 +31,7 @@
 #
 # `--seat NAME` is the RAW seat name; it is normalized through `derive-seat-name.sh` (phaze-fmfk),
 # never used verbatim. `--origin PATH` is recorded in the Redis registry and is what
-# `just test-db-reclaim`'s O1 rule ("its origin worktree is gone") reads; default `$PWD`.
+# `just reclaim-test-db-seats`'s O1 rule ("its origin worktree is gone") reads; default `$PWD`.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

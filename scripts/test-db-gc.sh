@@ -131,7 +131,7 @@ readonly SHARED_MIGRATIONS_DB="phaze_migrations_test"
 # Postgres means backend evidence (signal 2) is unknown, and unknown is never read as free.
 if ! docker exec "$pg_container" psql -U phaze -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
   echo "❌ Postgres container '${pg_container}' is not reachable, so no backend evidence is available." >&2
-  echo "   Refusing rather than reading unknown as safe to drop. Start the harness (\`just test-db\`)." >&2
+  echo "   Refusing rather than reading unknown as safe to drop. Start the harness (\`just up-test-db\`)." >&2
   exit 1
 fi
 
@@ -141,7 +141,7 @@ fi
 if ! docker exec "$redis_container" redis-cli PING >/dev/null 2>&1; then
   echo "❌ Valkey container '${redis_container}' is not reachable, so registration status (signal 1) is" >&2
   echo "   unknown for every database. Refusing rather than reading unknown as unregistered. Start the" >&2
-  echo "   harness (\`just test-db\`)." >&2
+  echo "   harness (\`just up-test-db\`)." >&2
   exit 1
 fi
 

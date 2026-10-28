@@ -2,7 +2,7 @@
 
 phaze-bcf1 (dead-code investigation, confidence 40%, in_degree=0): NOT dead. It has no
 product-code caller, which is exactly the shape a repo-wide static scan flags. It is now exposed as
-``just benchmark-analyze`` beside ``scripts/perf_explain.py`` and
+``just measure-analyze-workspace`` beside ``scripts/perf_explain.py`` and
 ``scripts/seed_perf_corpus.py``. This script produced the numbers
 cited in ``.planning/phases/95-analyze-view-browser-slowdown/95-BASELINE.md`` and was re-run
 unmodified for ``95-VERIFICATION.md`` (2026-07-16) -- both still on disk, still current.
@@ -13,7 +13,7 @@ the dedicated perf DB this script targets has and an ad hoc alembic-only test DB
 Keep as supported benchmark tooling; do not delete.
 
 Standalone ``uv run`` companion to :mod:`scripts.perf_explain` / :mod:`scripts.seed_perf_corpus`
-(Phase 82 PERF-02 harness). Run it AFTER seeding the ~200K corpus (``just benchmark-seed``) into the
+(Phase 82 PERF-02 harness). Run it AFTER seeding the ~200K corpus (``just seed-benchmark-db``) into the
 dedicated database (``just up-benchmark-db``). It measures the THREE hot paths the phase-95 epic names
 as suspects, so the fix/verify beads have concrete before/after numbers to cite:
 

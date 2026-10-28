@@ -315,7 +315,7 @@ def acquire_exclusive_session_lock(dsn: str, *, connect_timeout: int = 5, explic
                 f"which two pytest processes can share a database with only the word `unlocked` in\n"
                 f"a header `-q` suppresses (docs/gates-and-isolation.md, phaze-cpn5k).\n"
                 f"\n"
-                f"Fix: bring the harness up (`just test-db`, or `just test-db-for <name>` for an\n"
+                f"Fix: bring the harness up (`just up-test-db`, or `just provision-test-db-seat <name>` for an\n"
                 f"isolated seat) and re-run, or unset TEST_DATABASE_URL for a database-free run."
             ) from exc
         return None  # harness not up (or not this run's problem) -- see docstring
@@ -341,7 +341,7 @@ def acquire_exclusive_session_lock(dsn: str, *, connect_timeout: int = 5, explic
         f"pass on an isolated re-run -- a false red indistinguishable from a real regression.\n"
         f"\n"
         f"Give this run its own database:\n"
-        f"    just test-db-for <name>      # then export the three lines it prints\n"
+        f"    just provision-test-db-seat <name> # then export the three lines it prints\n"
         f"or wait for the other run to finish.\n"
         f"\n"
         f"{ALLOW_SHARED_ENV_VAR}=1 bypasses this check. Running pytest-xdist against one database is\n"
@@ -379,8 +379,8 @@ def require_test_database(dsn: str, *, context: str) -> str:
         raise NonTestDatabaseError(
             f"Refusing to run {context} against non-test database {name!r}. "
             f"The database name must contain a 'test' segment (e.g. 'phaze_test', 'phaze_test_<bead>', "
-            f"'phaze_<bead>_test'). Set TEST_DATABASE_URL to a test DSN -- run `just test-db` for the "
-            f"shared harness, or `just test-db-for <name>` for an isolated per-worktree pair. "
+            f"'phaze_<bead>_test'). Set TEST_DATABASE_URL to a test DSN -- run `just up-test-db` for the "
+            f"shared harness, or `just provision-test-db-seat <name>` for an isolated per-worktree pair. "
             f"This is an ERROR rather than a skip on purpose: a skipped guard silently drops integration "
             f"coverage while the run still reports green."
         )

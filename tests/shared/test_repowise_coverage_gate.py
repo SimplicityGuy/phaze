@@ -1,6 +1,6 @@
 """Unit tests for the repowise coverage-refresh gate (phaze-2rgq2).
 
-``scripts/repowise_coverage_gate.py`` is the last step of ``just repowise-coverage``. It exists to
+``scripts/repowise_coverage_gate.py`` is the last step of ``just refresh-repowise-coverage``. It exists to
 catch two states that every other surface reports as success:
 
 * the ``.coverage``-only partial ingest -- a populated test-to-code map with ``line_coverage_pct``

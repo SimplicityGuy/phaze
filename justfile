@@ -5,9 +5,18 @@
 # Run `just` to list every recipe. Each [doc()] is the ONE line `just --list` prints; the detail
 # behind a recipe lives in the comment block above it.
 #
-# NAMING (phaze-aje5d): a lifecycle verb leads (`up-<stack>` / `down-<stack>`); every other recipe
-# is `<area>-<action>`, so a family sorts together (`test-db-*`, `benchmark-*`, `db-*`, `docker-*`).
-# A renamed recipe keeps its old name as an `alias`, so muscle memory and old transcripts still work.
+# NAMING (phaze-aje5d): VERB FIRST, then the noun it acts on -- `upgrade-db`, `build-docker`,
+# `logs-worker`. The rules that settle the ambiguous cases:
+#   * Compose/docker subcommands are verbs: `up`, `down`, `logs`, `ps`, `build`, `rebuild`, `restart`.
+#   * `test` is a VERB when the recipe runs pytest (`test`, `test-cov`, `test-fast`, `test-browser`,
+#     `test-integration`, `test-alerts`). `test-db` is a NOUN -- the shared test-database harness --
+#     so its recipes are `up-test-db`, `down-test-db` and `<verb>-test-db-seat(s)` for one seat.
+#   * `check-*` returns a pass/fail verdict (`check`, `check-fast`, `check-all`, `check-docs`, ...).
+#   * A recipe named only for the tool it runs, with no truer verb, is `run-<tool>` (`run-bandit`).
+#   * `default`, `install`, `setup`, `lint`, `typecheck`, `rebuild` are already a bare verb.
+# `check`, `check-fast`, `check-all` and `setup` are NEVER renamed: bh's fleet.yaml validation
+# boundaries and worktree provisioning call them. Every renamed recipe keeps its old name as an
+# alias (the block below).
 #
 # GROUPS: a recipe sits in the group named for the thing it operates on --
 #   setup      prepare a working copy (deps, the Tailwind stylesheet)
@@ -24,17 +33,125 @@
 #   security / models / maintenance  as named
 set positional-arguments
 
-# Pre-rename recipe names (phaze-aje5d), kept so muscle memory, old transcripts and runbooks still
-# work. `just --list` shows each beside its new name; `just --summary` (the public inventory in
-# docs/just-recipe-contract.md) lists only the new one.
+# Pre-rename recipe names (phaze-aje5d), one alias per renamed recipe, so CI, scripts, the bh
+# config, muscle memory and every incident write-up that quotes an old name still resolve.
+# Each is [private], so `just --list` stays one line per recipe; the old->new table lives here and
+# in docs/just-recipe-contract.md, and `just --summary` (that inventory's source) lists new names
+# only. tests/shared/test_just_recipe_contract.py fails if an old name stops resolving to its
+# recipe. Do not delete one without checking its callers.
+[private]
 alias agent-down := down-agent
-alias cloud-agent-up := up-cloud-agent
-alias cloud-agent-down := down-cloud-agent
-alias benchmark-db-up := up-benchmark-db
+[private]
+alias alerts-test := test-alerts
+[private]
+alias bandit := run-bandit
+[private]
+alias benchmark-analyze := measure-analyze-workspace
+[private]
 alias benchmark-db-down := down-benchmark-db
+[private]
+alias benchmark-db-up := up-benchmark-db
+[private]
+alias benchmark-explain := explain-benchmark-db
+[private]
+alias benchmark-seed := seed-benchmark-db
+[private]
+alias branch-check := check-branch-coverage
+[private]
+alias cloud-agent-down := down-cloud-agent
+[private]
+alias cloud-agent-up := up-cloud-agent
+[private]
+alias corpus-distribution := measure-corpus-distribution
+[private]
+alias coverage-combine := combine-coverage
+[private]
+alias db-current := show-db-revision
+[private]
+alias db-downgrade := downgrade-db
+[private]
+alias db-history := show-db-history
+[private]
+alias db-revision := create-db-revision
+[private]
+alias db-upgrade := upgrade-db
+[private]
+alias docker-build := build-docker
+[private]
+alias docker-compose-validate := validate-compose
+[private]
+alias docker-ps := ps-docker
+[private]
+alias docker-shell := shell-api
+[private]
+alias docker-validate := validate-dockerfiles
+[private]
+alias docs-check := check-docs
+[private]
+alias fmt := format
+[private]
+alias image-build-arm64 := build-image-arm64
+[private]
+alias image-push := push-image
+[private]
+alias image-push-arm64 := push-image-arm64
+[private]
+alias integration-test := test-integration
+[private]
+alias integration-test-down := down-integration-test
+[private]
+alias lint-fix := fix-lint
+[private]
+alias lock-upgrade := upgrade-lock
+[private]
+alias parity-check := check-parity
+[private]
+alias parity-dump := dump-parity
+[private]
+alias parity-golden-regen := regen-parity-golden
+[private]
+alias pip-audit := run-pip-audit
+[private]
+alias pre-commit := run-pre-commit
+[private]
+alias repowise-coverage := refresh-repowise-coverage
+[private]
+alias repowise-coverage-ci := refresh-repowise-coverage-ci
+[private]
+alias security-all := check-security
+[private]
+alias tailwind := build-tailwind
+[private]
+alias test-browser-install := install-test-browser
+[private]
+alias test-browser-install-ci := install-test-browser-ci
+[private]
+alias test-db := up-test-db
+[private]
+alias test-db-down := down-test-db
+[private]
+alias test-db-for := provision-test-db-seat
+[private]
+alias test-db-gc := gc-test-dbs
+[private]
+alias test-db-reclaim := reclaim-test-db-seats
+[private]
+alias test-db-release := release-test-db-seat
+[private]
+alias test-db-seats := list-test-db-seats
+[private]
+alias vulture := run-vulture
+[private]
+alias worker-health := check-worker-health
+[private]
+alias worker-logs := logs-worker
+[private]
+alias worker-restart := restart-worker
+[private]
+alias worktree-integrity := check-worktree-integrity
 
 # phaze-tcqq: single source of truth for the pinned Postgres image used by every
-# justfile-launched Postgres container (test-db, integration-test, up-benchmark-db). Before
+# justfile-launched Postgres container (up-test-db, test-integration, up-benchmark-db). Before
 # this variable existed the tag was hardcoded at 8 separate justfile sites (4 real
 # `docker run` arguments + 4 echo strings that only CLAIM the version), so a partial
 # bump could print the old tag while running the new one -- a divergence that survives
@@ -45,23 +162,23 @@ alias benchmark-db-down := down-benchmark-db
 # guard test fails and names the mismatch.
 postgres_image := "postgres:18-alpine"
 # phaze-knwk: match production's docker-compose.yml `shm_size: "256m"` on every
-# justfile-launched Postgres container (test-db, integration-test, up-benchmark-db), so a
+# justfile-launched Postgres container (up-test-db, test-integration, up-benchmark-db), so a
 # harness run cannot pass on a Postgres feature (a bigger parallel index build, a
 # manually-raised work_mem/maintenance_work_mem) that the 64 MB Docker default would
 # reject in production, or vice versa. See docker-compose.yml's `postgres.shm_size`
 # comment for the investigation and derivation.
 postgres_shm_size := "256m"
 # Host bind IP for every ephemeral/test-harness Postgres + Valkey container this justfile
-# publishes (test-db, integration-test's pinned-port branches, up-benchmark-db). Defaults to
+# publishes (up-test-db, test-integration's pinned-port branches, up-benchmark-db). Defaults to
 # loopback-only (phaze-v7ki): without a bind IP, `docker run -p PORT:PORT` binds 0.0.0.0
 # (dual-stack, so also `::`), publishing the shared test Postgres (superuser phaze/phaze)
 # and a passwordless test Valkey to every host on the LAN. Mirrors the loopback pattern the
-# `integration-test` dynamic-port branches already use (`-p 127.0.0.1::5432`).
+# `test-integration` dynamic-port branches already use (`-p 127.0.0.1::5432`).
 test_db_bind_ip := env_var_or_default("PHAZE_TEST_DB_BIND_IP", "127.0.0.1")
 # Host port for the SHARED test-harness Postgres (5433 avoids the dev DB on 5432). This
-# container is deliberately reused across every concurrent worktree/session (via `test-db`,
-# `test-db-for`, and `check`) -- see phaze-20vd/phaze-pik6 for the concurrency invariants that
-# protect it. `integration-test` does NOT use this container; it has its own dedicated pair below.
+# container is deliberately reused across every concurrent worktree/session (via `up-test-db`,
+# `provision-test-db-seat`, and `check`) -- see phaze-20vd/phaze-pik6 for the concurrency invariants that
+# protect it. `test-integration` does NOT use this container; it has its own dedicated pair below.
 test_db_port := env_var_or_default("PHAZE_TEST_DB_PORT", "5433")
 # Fixed container name for the SHARED test-harness Postgres
 test_db_container := "phaze-test-db"
@@ -81,12 +198,12 @@ test_valkey_port := env_var_or_default("PHAZE_TEST_VALKEY_PORT", env_var_or_defa
 #
 # The pre-rename `phaze-test-redis` container is NOT reused: the switch to `phaze-test-valkey` is a
 # hard one. Operator decision 2026-10-27, durable record bead phaze-aje5d. Question as put: how
-# should `just test-db` handle the transition, given a running phaze-test-redis may hold other
+# should `just up-test-db` handle the transition, given a running phaze-test-redis may hold other
 # worktrees' seats? Answer as given: "stop the running container (no one is using it) and then do
-# the hard switch". So `test-db` neither reuses nor removes a leftover one; it only warns while one
+# the hard switch". So `up-test-db` neither reuses nor removes a leftover one; it only warns while one
 # is still running, because that one holds port 6380.
 test_valkey_container := env_var_or_default("PHAZE_TEST_VALKEY_CONTAINER", env_var_or_default("PHAZE_TEST_REDIS_CONTAINER", "phaze-test-valkey"))
-# phaze-8o294: single source of truth for the test-harness Valkey image (test-db, integration-test).
+# phaze-8o294: single source of truth for the test-harness Valkey image (up-test-db, test-integration).
 # One image across the harness, CI and production closed the Redis 7 (tests) vs Redis 8 (prod)
 # skew. docker-compose.yml and .github/workflows/tests.yml cannot read a justfile variable, so they
 # carry their own literal pins; tests/agents/deployment/test_redis_image_pin.py keeps all of them in
@@ -95,14 +212,14 @@ test_valkey_container := env_var_or_default("PHAZE_TEST_VALKEY_CONTAINER", env_v
 test_valkey_image := "valkey/valkey:9-alpine"
 # Logical database count on the test Valkey. Valkey defaults to 16; we raise it so the per-worktree
 # index space (DB 0 is the allocation registry, seats get 1..N-1) comfortably exceeds any realistic
-# concurrent-seat count. `just test-db-for <name>` allocates out of this space.
+# concurrent-seat count. `just provision-test-db-seat <name>` allocates out of this space.
 test_valkey_databases := env_var_or_default("PHAZE_TEST_VALKEY_DATABASES", env_var_or_default("PHAZE_TEST_REDIS_DATABASES", "64"))
-# Dedicated, disposable Postgres + Valkey for `just integration-test` ONLY (phaze-pik6). A SEPARATE
-# container pair (own names + ports) so integration-test's auto-teardown EXIT trap can never
+# Dedicated, disposable Postgres + Valkey for `just test-integration` ONLY (phaze-pik6). A SEPARATE
+# container pair (own names + ports) so test-integration's auto-teardown EXIT trap can never
 # `docker rm -f` the SHARED phaze-test-db/phaze-test-valkey harness other concurrent worktrees rely
 # on -- the same isolation principle as benchmark_db_container below, applied to the one-shot test path.
 # phaze-987z: these are NAME PREFIXES, not fixed names -- the recipe below appends a
-# per-invocation unique token (shell PID + $RANDOM) so two concurrent `integration-test` runs
+# per-invocation unique token (shell PID + $RANDOM) so two concurrent `test-integration` runs
 # never share a container name and can never `docker rm -f` each other's containers. Host ports
 # default to a dynamically-assigned free port (read back via `docker port`); set
 # PHAZE_INTEGRATION_TEST_DB_PORT / PHAZE_INTEGRATION_TEST_VALKEY_PORT to pin a fixed port instead
@@ -160,7 +277,7 @@ api_base := "https://localhost:" + api_port
 # whatever is already accumulated. With json+xml in `addopts`, `just test-bucket`'s
 # `--cov-report=` suppressed nothing and BOTH artifacts were still written. Since
 # `COVERAGE_FILE=.coverage.<name>` redirects only the DATA file, a single shard would then
-# overwrite a full run's coverage.json -- the exact file `just branch-check` compares against.
+# overwrite a full run's coverage.json -- the exact file `just check-branch-coverage` compares against.
 # A missing artifact is an error you can see; a partial one wearing the right filename is a
 # wrong answer you cannot. `-o addopts=` does override, but it would also drop `-m 'not
 # browser'` and pull the browser suite into every shard.
@@ -209,7 +326,7 @@ default:
 
 [doc('Install dev dependencies and build the UI stylesheet')]
 [group('setup')]
-install: setup tailwind
+install: setup build-tailwind
 
 # phaze-gfdx: this is the bh worktree-provisioning entry point (global beadhive config's
 # `worktree.init` runs `just setup` whenever a justfile is present), so it MUST be cheap and
@@ -228,7 +345,7 @@ install: setup tailwind
 # live in this worktree (phaze-gfdx): `uv run pre-commit install` reported success and wrote
 # .git/hooks/pre-commit in the MAIN clone with INSTALL_PYTHON pointing at this worktree's
 # ephemeral .venv. A `setup` that silently wires a hook this fragile is worse than one that
-# only syncs deps, so it's left out; `just pre-commit` (run-all-files, no install) and manual
+# only syncs deps, so it's left out; `just run-pre-commit` (run-all-files, no install) and manual
 # `uv run pre-commit install` remain available for whoever wants hooks in a durable checkout.
 # Cheap, needs no network beyond PyPI, and safe to re-run.
 [doc('Sync dependencies only (bh worktree provisioning)')]
@@ -255,7 +372,7 @@ up:
 # docker-compose.yml plus the docker-compose.dev.yml overlay.
 [doc('Start the application server with the live-reload overlay')]
 [group('stack')]
-up-dev: tailwind
+up-dev: build-tailwind
     # phaze-476w: the dev overlay (plain-HTTP uvicorn --reload, ./src bind mount,
     # PHAZE_DEBUG=true) is now opt-in and included EXPLICITLY here — it is no
     # longer auto-merged into `just up`. It deliberately skips the cert bootstrap.
@@ -278,15 +395,13 @@ up-agent:
     mkdir -p models certs
     docker compose -f docker-compose.agent.yml up -d
 
-# Standalone docker-compose.agent.yml. Renamed from `agent-down` (phaze-aje5d); the old name is
-# an alias.
+# Standalone docker-compose.agent.yml.
 [doc('Stop the file-server agent stack')]
 [group('stack')]
 down-agent:
     docker compose -f docker-compose.agent.yml down
 
-# Standalone docker-compose.cloud-agent.yml. Renamed from `cloud-agent-up` (phaze-aje5d); the old name is
-# an alias.
+# Standalone docker-compose.cloud-agent.yml.
 [doc('Start the OCI A1 compute-agent stack')]
 [group('stack')]
 up-cloud-agent:
@@ -294,8 +409,7 @@ up-cloud-agent:
     mkdir -p models certs
     docker compose -f docker-compose.cloud-agent.yml up -d
 
-# Standalone docker-compose.cloud-agent.yml. Renamed from `cloud-agent-down` (phaze-aje5d); the old name is
-# an alias.
+# Standalone docker-compose.cloud-agent.yml.
 [doc('Stop the OCI A1 compute-agent stack')]
 [group('stack')]
 down-cloud-agent:
@@ -338,11 +452,11 @@ rebuild:
 # Downloads the standalone Tailwind binary (NO Node), verifies its sha256, then compiles app.css.
 [doc('Fetch the pinned Tailwind binary and rebuild app.css')]
 [group('setup')]
-tailwind:
+build-tailwind:
     @mkdir -p src/phaze/static/css bin
     # phaze-y3iyt: the download used to be gated on EXISTENCE only (`[ ! -x ./bin/tailwindcss ]`),
     # so bumping tailwind_version (+ the sha256 pins) had no effect on any machine already holding
-    # a cached binary -- every `just tailwind`/`up`/`up-dev`/`rebuild` kept compiling app.css with
+    # a cached binary -- every `just build-tailwind`/`up`/`up-dev`/`rebuild` kept compiling app.css with
     # the stale version forever, silently diverging from the Dockerfile css-builder stage (whose
     # cache key is the Docker layer, busted automatically by its ARG). Stamp the version that was
     # actually verified and installed next to the binary, and re-download whenever it doesn't
@@ -420,20 +534,20 @@ test:
 #
 #   * `{{cov_reports}}` -- json, term and xml, from the single variable at the top of this
 #     file. `scripts/coverage_floor.py` reads `coverage.json`, and so does `just
-#     branch-check`, which is how a bead proves it did not lower branch coverage on a file
+#     check-branch-coverage`, which is how a bead proves it did not lower branch coverage on a file
 #     it touched (phaze-bk9el.21). Emitting it here is necessary but was not, by itself,
 #     SUFFICIENT to make the per-bead branch check free after this gate: measured on the
-#     2026-09-22/23 dispatch, `just branch-check` re-ran real tests unconditionally on every
+#     2026-09-22/23 dispatch, `just check-branch-coverage` re-ran real tests unconditionally on every
 #     invocation regardless (a cheaper selected subset, or a ~20-24 minute full-suite
 #     escalation -- every invocation that dispatch actually hit escalated), because nothing
-#     recorded which TREE this report was measured against, so branch-check had no way to
+#     recorded which TREE this report was measured against, so check-branch-coverage had no way to
 #     trust it (phaze-vad6y). `scripts/stamp_coverage_scope.py`, bracketing this recipe with a
 #     per-run TOKEN (`--record-start` above, `--expect-token` right after this step), is what
 #     closes that gap -- see its docstring and `scripts/branch_coverage_check.py`'s
 #     `find_reusable_report`.
 #     The xml is there so that no consumer is coupled to whichever recipe the developer
 #     happened to run (phaze-jktlb): Codecov's artifact is now produced by the local gate
-#     too, not only by `coverage-combine` in CI. Destinations come from pyproject, not from
+#     too, not only by `combine-coverage` in CI. Destinations come from pyproject, not from
 #     a `:DEST` here.
 #
 # tests/shared/test_validation_gate_recipes.py fails the build if any of these regress.
@@ -464,16 +578,16 @@ test-cov-parallel:
     uv run python -m scripts.parallel_test_runner
 
 # The local default uses the reviewed two-worker runner. It derives two stable seats from the
-# worktree, provisions both through `test-db-for`, and releases them without stopping the shared
+# worktree, provisions both through `provision-test-db-seat`, and releases them without stopping the shared
 # harness. PHAZE_TEST_PARALLEL=0 is the operator escape hatch for a host that cannot safely run both
 # workers; that fallback is loud and retains the existing per-worktree auto-provisioning path.
 #
 # A caller-exported triplet (phaze-qov36). CLAUDE.md tells every dispatched seat to export the seat
-# `just test-db-for <bead>` printed, and until this bead that sent exactly those seats down the
+# `just provision-test-db-seat <bead>` printed, and until this bead that sent exactly those seats down the
 # serial path (864 s against 622 s for two lanes, phaze-7kc20). Now the runner CLASSIFIES the
-# triplet first: only one of exactly the shape `test-db-for` prints, on this harness's ports, naming
+# triplet first: only one of exactly the shape `provision-test-db-seat` prints, on this harness's ports, naming
 # a seat registered in the Valkey registry, and with neither CI nor PHAZE_TEST_PARALLEL=0 set, is
-# split -- into `<seat>-lane-a` / `<seat>-lane-b`, each provisioned by the real `test-db-for` and
+# split -- into `<seat>-lane-a` / `<seat>-lane-b`, each provisioned by the real `provision-test-db-seat` and
 # released afterwards. The caller's own seat is not handed to either lane. Everything else is still
 # an explicit environment contract and runs `test-cov` VERBATIM, provisioning nothing: CI (a 5432
 # service container, and CI never runs this recipe anyway), a hand-built DSN, the shared
@@ -483,7 +597,7 @@ test-cov-parallel:
 # fails loudly on EVERY path, serial included. The runner then takes the caller seat's own session
 # lock before anything else, so a second gate on the same seat is refused (exit 4) instead of
 # sharing its lanes.
-# Two isolated local workers by default (also derived from a caller-exported test-db-for seat);
+# Two isolated local workers by default (also derived from a caller-exported provision-test-db-seat seat);
 # a loud serial fallback otherwise.
 [doc('Full coverage suite: two lanes, loud serial fallback')]
 [group('gate')]
@@ -587,11 +701,11 @@ test-validate-serial:
 # NO `--cov` ON THE SELECTED RUN (operator decision 2026-08-25, bead phaze-pv3kk; answer as given:
 # "No coverage gate on the fast suite -- keep it where the full suite runs").
 # A subset's figure is meaningless against the 95% floor and must not be quotable as one, and a
-# `coverage.json` written here would overwrite the artifact `just branch-check` reads. The separate
-# branch-check recipe collects scoped branch evidence when needed (phaze-6e2hj).
+# `coverage.json` written here would overwrite the artifact `just check-branch-coverage` reads. The separate
+# check-branch-coverage recipe collects scoped branch evidence when needed (phaze-6e2hj).
 #
 # repowise is READ here and never written. Its coverage still comes only from `just
-# repowise-coverage` and `just repowise-coverage-ci`, so the "not for repowise" constraint holds.
+# refresh-repowise-coverage` and `just refresh-repowise-coverage-ci`, so the "not for repowise" constraint holds.
 # The `check-fast` test step (`bh work check` / `submit` / `merge`): the tests repowise says the diff
 # touches plus the always-run floor, escalating to the FULL suite whenever the selector cannot
 # speak for the change. No coverage.
@@ -650,7 +764,7 @@ test-fast:
         echo "   the selector discarded what it could not measure rather than running a guess."
         # Also recorded durably, because the transcript is per-run and the question this answers is
         # a trend one: if the fast gate is escalating on most beads, that is a fact about how stale
-        # the coverage map has become (`just repowise-coverage` refreshes it), and nobody should
+        # the coverage map has become (`just refresh-repowise-coverage` refreshes it), and nobody should
         # have to rediscover it by reading twenty transcripts. `.git/` is shared by every worktree
         # of this clone and is never tracked, so the log outlives the ephemeral bead worktree that
         # wrote it. One short append per escalation; concurrent seats interleave lines, not bytes.
@@ -708,15 +822,15 @@ test-file FILE:
 # unchanged commit. Browser binaries
 # are a one-off install:
 #
-#     just test-browser-install     # once per machine
-#     just test-db                  # the shared Postgres/Valkey harness must be up
+#     just install-test-browser     # once per machine
+#     just up-test-db                  # the shared Postgres/Valkey harness must be up
 #     just test-browser
 #
 # `-m browser` overrides the `addopts = "-m 'not browser'"` default that keeps this suite out of a
 # bare `uv run pytest`.
 [doc('Install Chromium for the browser suite (once per machine)')]
 [group('test')]
-test-browser-install:
+install-test-browser:
     uv run --group browser playwright install --with-deps chromium
 
 # CI runners already contain Chromium's shared libraries. Installing only Playwright's pinned
@@ -725,7 +839,7 @@ test-browser-install:
 # No apt/system dependency changes.
 [doc('Install only the pinned headless Chromium (CI)')]
 [group('ci')]
-test-browser-install-ci:
+install-test-browser-ci:
     uv run --group browser playwright install --only-shell chromium
 
 # Depends on `tailwind` deliberately. Without the compiled src/phaze/static/css/app.css the app
@@ -733,10 +847,10 @@ test-browser-install-ci:
 # horizontal overflow, touch targets) becomes meaningless while still reporting green, because an
 # unstyled document trivially satisfies "does not overflow". The first run of this suite passed the
 # overflow test for exactly that reason. A browser suite with no CSS is worse than none.
-# Needs `just test-db` up; the suite is excluded from the default run.
-[doc('Run the real-browser Playwright suite (needs test-db)')]
+# Needs `just up-test-db` up; the suite is excluded from the default run.
+[doc('Run the real-browser Playwright suite (needs up-test-db)')]
 [group('test')]
-test-browser: tailwind
+test-browser: build-tailwind
     uv run --group browser pytest tests/browser tests/shared/test_tailwind_source_parity.py -m browser -q
 
 # Non-blocking dead-code sweep (CLEAN-02). NOT a CI/pre-commit gate — framework-invoked
@@ -747,7 +861,7 @@ test-browser: tailwind
 # Non-blocking: a nonzero exit lists candidates to hand-verify.
 [doc('List dead-code candidates in src/phaze (non-blocking)')]
 [group('maintenance')]
-vulture:
+run-vulture:
     uv run vulture src/phaze vulture_whitelist.py --min-confidence 80 --ignore-decorators "@router.*,@app.*,@field_validator,@model_validator,@validator,@pytest.fixture"
 
 # PHAZE_COVERAGE_GREENLET=greenlet is REQUIRED alongside --cov-context=test (phaze-bein3): without
@@ -763,7 +877,7 @@ vulture:
 # phaze, so pytest-cov auto-enforcing pyproject's global fail_under gate against a
 # shard's PARTIAL coverage would fail every leg (exit 1) before the shard is uploaded,
 # and the combine job (needs: [test]) would never run. The global gate is enforced
-# once, on the COMBINED number, by `coverage-combine`.
+# once, on the COMBINED number, by `combine-coverage`.
 #
 # PATHS is one or more space-separated `tests/...` paths or `--ignore=tests/...` exclusions
 # (phaze-crq9k: the CI matrix is driven off tests/ci_shards.json, whose entries can split a
@@ -780,7 +894,7 @@ vulture:
 # measures a fraction of phaze and nothing consumes a per-shard report -- but the deciding fact is
 # that `COVERAGE_FILE` redirects only the binary DATA file, measured. A shard's json/xml would
 # still land on the SHARED `coverage.json`/`coverage.xml` names and overwrite a full run's, and
-# `just branch-check` reads exactly that coverage.json. So emitting them turns "no report yet" --
+# `just check-branch-coverage` reads exactly that coverage.json. So emitting them turns "no report yet" --
 # an error you can see -- into "a report covering one eleventh of the repo", a wrong answer you
 # cannot. The shard's whole contract is to defer every judgement to the combined number, which is
 # the same reasoning `--cov-fail-under=0` already encodes.
@@ -860,7 +974,7 @@ test-bucket NAME PATHS MODE="serial":
 # uncovered branch LINE NUMBERS, not just a percentage, so the answer is actionable.
 #
 # It FAILS CLOSED on a missing baseline: if the check could not perform a comparison, it did not
-# pass. The baseline is written by phaze-bk9el.1 (`just branch-check --write-baseline`), and that
+# pass. The baseline is written by phaze-bk9el.1 (`just check-branch-coverage --write-baseline`), and that
 # one bead -- which cannot be blocked by a check consuming the artifact it exists to produce --
 # passes `--allow-missing-baseline` explicitly. Nothing else should: an exemption at the call site
 # is auditable, one baked into the default is invisible to the twelve wave-2 beads downstream, and
@@ -874,7 +988,7 @@ test-bucket NAME PATHS MODE="serial":
 # Per-bead branch-coverage gate over the src/phaze files this bead touched.
 [doc('Fail if this bead added uncovered branches it touched')]
 [group('gate')]
-branch-check *flags:
+check-branch-coverage *flags:
     #!/usr/bin/env bash
     set -euo pipefail
     # phaze-vad6y: the reuse-or-run decision lives in scripts/branch_coverage_check.py itself
@@ -882,12 +996,12 @@ branch-check *flags:
     # coverage.json / .fast-coverage.json when one exists and says so; only when none does does
     # it shell back out to `just _test-branch-scoped`, exactly as this recipe used to do
     # unconditionally -- which is what made "free after any check" false: nothing ever checked.
-    # Trust boundary: these are operator-authored branch-check CLI arguments, forwarded as
+    # Trust boundary: these are operator-authored check-branch-coverage CLI arguments, forwarded as
     # discrete argv entries. "$@" is never reparsed as shell syntax.
     uv run python scripts/branch_coverage_check.py "$@"
 
 # Never applies the repo-wide line floor to a subset.
-[doc('Collect selected-test branch evidence for branch-check')]
+[doc('Collect selected-test evidence for check-branch-coverage')]
 [group('gate')]
 _test-branch-scoped:
     #!/usr/bin/env bash
@@ -939,7 +1053,7 @@ _test-branch-scoped:
 # finished. A bracket placed around `combine`/`json` here would describe "was the tree clean when
 # `combine` started", a fact with no relationship to what any shard actually measured, stamping
 # the WRONG tree with false confidence. See `scripts/stamp_coverage_scope.py`'s own docstring
-# ("WHY NOT `coverage-combine`") for the full reasoning. CI does not upload `coverage.json` either,
+# ("WHY NOT `combine-coverage`") for the full reasoning. CI does not upload `coverage.json` either,
 # so nothing downstream would have read a stamp here regardless.
 #
 # `--fail-under=0` on the two artifact steps (phaze-jktlb). Without it they inherit pyproject's
@@ -950,7 +1064,7 @@ _test-branch-scoped:
 # MEASURED, not argued (phaze-jktlb, over deliberately partial shards): the pre-jktlb ordering
 # `xml` / `json` / `report` failed at `coverage xml` and left coverage.xml on disk with NO
 # coverage.json at all. coverage.json is the file `scripts/coverage_floor.py` and
-# `just branch-check` read, so a sub-floor combine destroyed the artifact you need to find out
+# `just check-branch-coverage` read, so a sub-floor combine destroyed the artifact you need to find out
 # WHICH module dropped, and reported it as a report writer exiting nonzero rather than as a named
 # module below its floor. This was never a false green -- it failed, loudly, at the wrong thing.
 # With the flags, the same partial-shard combine wrote both reports in full and then failed at
@@ -959,7 +1073,7 @@ _test-branch-scoped:
 # Writes coverage.json + coverage.xml, then enforces 95% line total + 90% per-module lines.
 [doc('Combine CI shard coverage and enforce the line floors')]
 [group('ci')]
-coverage-combine:
+combine-coverage:
     uv run coverage combine
     uv run coverage json --fail-under=0
     uv run coverage xml --fail-under=0
@@ -1036,7 +1150,7 @@ coverage-combine:
 # health. Pass a seat name to auto-provision an isolated test DB.
 [doc('Refresh repowise from a local coverage run (~21 min)')]
 [group('repowise')]
-repowise-coverage seat="":
+refresh-repowise-coverage seat="":
     @bash scripts/repowise-coverage.sh {{quote(seat)}}
 
 # Reuse CI's combined coverage without re-running the 21-minute suite. The workflow run is the
@@ -1051,7 +1165,7 @@ repowise-coverage seat="":
 # Latest successful main run by default, or pass an exact Actions run ID.
 [doc('Refresh repowise from a CI coverage artifact')]
 [group('repowise')]
-repowise-coverage-ci run_id="":
+refresh-repowise-coverage-ci run_id="":
     @uv run python scripts/repowise_coverage_from_ci.py {{quote(run_id)}}
 
 # Newline-delimited changed files on stdin; feeds the CI docs-only skip gate (CI-04).
@@ -1063,7 +1177,7 @@ detect-code-changes:
 # Ports PHAZE_TEST_DB_PORT / PHAZE_TEST_VALKEY_PORT, defaults 5433 / 6380.
 [doc('Start or reuse the shared test Postgres and Valkey')]
 [group('harness')]
-test-db:
+up-test-db:
     #!/usr/bin/env bash
     set -euo pipefail
     container="{{test_db_container}}"
@@ -1116,7 +1230,7 @@ test-db:
             echo "   actual:     image=${got_image:-<unknown>} host-port=${got_hostport:-<unknown>}" >&2
             echo "   'docker start' reuses whatever image/port the container was created with;" >&2
             echo "   it does not pick up a postgres_image bump or a port override." >&2
-            echo "   Run 'just test-db-down' (PHAZE_TEST_DB_FORCE_DOWN=1 if it reports busy), then retry." >&2
+            echo "   Run 'just down-test-db' (PHAZE_TEST_DB_FORCE_DOWN=1 if it reports busy), then retry." >&2
             exit 1
         fi
     }
@@ -1169,14 +1283,14 @@ test-db:
         else
             echo "♻️  ${valkey_container} has only ${current_databases:-0} logical DBs (need ${valkey_databases}); recreating."
             echo "    This CLEARS the test Valkey, including per-worktree DB allocations. Re-run"
-            echo "    'just test-db-for <name>' in each active worktree afterwards."
+            echo "    'just provision-test-db-seat <name>' in each active worktree afterwards."
             # phaze-1t4gc: this resize is a deliberate rm (see the comment above), but unlike
-            # test-db-down (phaze-ieqg) it had no live-seat guard at all -- so raising
-            # PHAZE_TEST_VALKEY_DATABASES (including via the exhaustion remedy test-db-for's own
+            # down-test-db (phaze-ieqg) it had no live-seat guard at all -- so raising
+            # PHAZE_TEST_VALKEY_DATABASES (including via the exhaustion remedy provision-test-db-seat's own
             # error message suggests) would silently wipe every concurrent worktree's live Valkey
             # keys and the DB-index registry mid-suite. Every live suite also holds a Postgres
             # advisory-lock backend (tests/db_guard.py), so the same pg_stat_activity probe
-            # test-db-down uses is a valid liveness signal here too.
+            # down-test-db uses is a valid liveness signal here too.
             if [ "${PHAZE_TEST_DB_FORCE_DOWN:-}" != "1" ] && \
                [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
                 busy="$(docker exec "$container" psql -U phaze -d postgres -tAc \
@@ -1189,13 +1303,13 @@ test-db:
                     echo "" >&2
                     echo "   Recreating now would wipe every concurrent worktree's live Valkey keys and the" >&2
                     echo "   DB-index allocation registry out from under those runs -- the same false-red" >&2
-                    echo "   signature test-db-down's guard exists to prevent (phaze-ieqg / phaze-1t4gc)." >&2
+                    echo "   signature down-test-db's guard exists to prevent (phaze-ieqg / phaze-1t4gc)." >&2
                     echo "" >&2
                     echo "   If you are here because allocation ran out of indices, you almost certainly do not" >&2
-                    echo "   need this resize at all -- \`just test-db-reclaim\` frees the seats that are no longer" >&2
-                    echo "   in use with no teardown, and \`just test-db-seats\` shows what it would free (phaze-68wky)." >&2
+                    echo "   need this resize at all -- \`just reclaim-test-db-seats\` frees the seats that are no longer" >&2
+                    echo "   in use with no teardown, and \`just list-test-db-seats\` shows what it would free (phaze-68wky)." >&2
                     echo "" >&2
-                    echo "   Otherwise wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-for ..." >&2
+                    echo "   Otherwise wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just provision-test-db-seat ..." >&2
                     echo "   if you know the connections are stale." >&2
                     exit 1
                 fi
@@ -1215,7 +1329,7 @@ test-db:
         if [ "$valkey_container" != "phaze-test-redis" ] && \
            [ "$(docker inspect -f '{{{{.State.Running}}' phaze-test-redis 2>/dev/null || echo false)" = "true" ]; then
             echo "⚠️  The pre-rename harness container phaze-test-redis is still running and may hold port ${valkey_port}." >&2
-            echo "   Once no seat uses it: \`docker stop phaze-test-redis\`, then re-run \`just test-db\`." >&2
+            echo "   Once no seat uses it: \`docker stop phaze-test-redis\`, then re-run \`just up-test-db\`." >&2
         fi
         run_or_yield "$valkey_container" "created" \
             -p "{{test_db_bind_ip}}:${valkey_port}:6379" \
@@ -1256,7 +1370,7 @@ test-db:
         docker logs "$valkey_container" >&2 || true
         exit 1
     fi
-    # phaze-hk8r: tolerate a lost create race against a concurrent `test-db`/`test-db-for`/
+    # phaze-hk8r: tolerate a lost create race against a concurrent `up-test-db`/`provision-test-db-seat`/
     # `check` invocation -- see scripts/ensure-pg-database.sh's header.
     bash scripts/ensure-pg-database.sh "$container" phaze_migrations_test
     # phaze-1dc8g: one SCRAM iteration for the harness role, so each of the suite's ~3,500 fresh
@@ -1266,20 +1380,20 @@ test-db:
     echo "✅ ${container} ready on localhost:${port} (phaze_test + phaze_migrations_test)"
     echo "✅ ${valkey_container} ready on localhost:${valkey_port}"
 
-# Creates a correctly-named isolated test DB pair and prints the exports, e.g. `just test-db-for laqf`.
+# Creates a correctly-named isolated test DB pair and prints the exports, e.g. `just provision-test-db-seat laqf`.
 [doc('Provision an isolated test seat for one worktree')]
 [group('harness')]
-test-db-for name:
+provision-test-db-seat name:
     #!/usr/bin/env bash
     set -euo pipefail
     # Exists so nobody hand-rolls an isolated database name again. The natural instinct is to
     # SUFFIX the standard name (`phaze_test_<name>`); that shape is accepted by the guard in
     # `tests/db_guard.py`, but this recipe emits the canonical `phaze_<name>_test` pair and,
-    # more importantly, prints the exact exports to use. Validate before `just test-db`, because
+    # more importantly, prints the exact exports to use. Validate before `just up-test-db`, because
     # starting shared containers is a mutation and a bad seat name must fail before it.
     raw_name="$1"
     bash scripts/derive-seat-name.sh "$raw_name" >/dev/null
-    just test-db
+    just up-test-db
     # phaze-bk9el.23: the provisioning body used to live inline here. It moved to
     # `scripts/provision-test-seat.sh` when `test-validate` gained a second, gate-driven caller
     # that must provision an IDENTICAL seat -- same normalization (phaze-fmfk), same database
@@ -1299,12 +1413,12 @@ test-db-for name:
     echo "Export these before running pytest in this worktree:"
     printf '%s\n' "$exports" | sed 's/^/  /'
     echo ""
-    echo "When this worktree is finished: just test-db-release ${raw_name}  (frees its Valkey index; no teardown)"
+    echo "When this worktree is finished: just release-test-db-seat ${raw_name}  (frees its Valkey index; no teardown)"
 
 # Also shows which allocations look stale.
 [doc('Show who holds each harness Valkey DB (read-only)')]
 [group('harness')]
-test-db-seats:
+list-test-db-seats:
     #!/usr/bin/env bash
     set -euo pipefail
     # phaze-68wky: the registry was invisible before this recipe -- the only way to see it was
@@ -1318,18 +1432,18 @@ test-db-seats:
 # Never touches the containers or any other seat.
 [doc('Release ONE seat and free its Valkey DB (non-destructive)')]
 [group('harness')]
-test-db-release name *flags:
+release-test-db-seat name *flags:
     #!/usr/bin/env bash
     set -euo pipefail
-    # phaze-68wky: the non-destructive counterpart to `test-db-for`. Run it when a worktree is
+    # phaze-68wky: the non-destructive counterpart to `provision-test-db-seat`. Run it when a worktree is
     # finished. It clears that seat's OWN Valkey keys and frees its index for the next seat; every
     # other seat, both containers, and every Postgres database are untouched. This is the remedy
-    # `test-db-down` was being misused for. Refuses while a client is connected to the seat's Valkey
+    # `down-test-db` was being misused for. Refuses while a client is connected to the seat's Valkey
     # DB or a backend is on its Postgres database (i.e. a suite is running in it) -- pass --force
-    # after `just test-db-seats` shows you why, if you know better.
+    # after `just list-test-db-seats` shows you why, if you know better.
     raw_name="$1"
     shift
-    # phaze-cohbr: `just test-db-seats` prints the ALREADY-DERIVED registered identifier (e.g.
+    # phaze-cohbr: `just list-test-db-seats` prints the ALREADY-DERIVED registered identifier (e.g.
     # `refresh_data_548751b3`), and re-deriving that unconditionally, as this recipe used to,
     # normalizes+hashes it AGAIN into a different, unregistered string (`..._8cc94c4b`) -- a
     # copy-paste of the tool's own output then misses the seat. So: try the name verbatim against
@@ -1345,7 +1459,7 @@ test-db-release name *flags:
         echo "Seat '${raw_name}' -> identifier '${name}'."
     fi
     for flag in "$@"; do
-        [[ "$flag" == "--force" ]] || { echo "❌ test-db-release accepts only --force" >&2; exit 2; }
+        [[ "$flag" == "--force" ]] || { echo "❌ release-test-db-seat accepts only --force" >&2; exit 2; }
     done
     # phaze-robzi.5: the script exits 5 (not 0) when the derived identifier holds no Valkey index --
     # e.g. a wrong-guessed name, hyphen vs. underscore. `set -euo pipefail` above means that non-zero
@@ -1359,21 +1473,21 @@ test-db-release name *flags:
         "$@"
     echo ""
     echo "The Postgres databases for this seat were left in place (they hold no index and block nobody);"
-    echo "re-running \`just test-db-for ${raw_name}\` reuses them and takes a fresh Valkey index."
+    echo "re-running \`just provision-test-db-seat ${raw_name}\` reuses them and takes a fresh Valkey index."
 
 # Sweeps every Valkey logical DB whose seat is no longer in use back into the pool. Dry run by
 # default; --apply frees them AND drops each freed seat's own 2 Postgres databases. Never touches the
 # containers.
 [doc('Reclaim idle seats; --apply drops their Postgres databases')]
 [group('harness')]
-test-db-reclaim *flags:
+reclaim-test-db-seats *flags:
     #!/usr/bin/env bash
     set -euo pipefail
-    # phaze-68wky: this is the fix for "the registry is full and the only way out is test-db-down".
+    # phaze-68wky: this is the fix for "the registry is full and the only way out is down-test-db".
     # A seat is left alone if a Valkey client is connected to its DB, if a Postgres backend is on its
     # database (pytest holds one for its whole session), or if its lease is still live; everything
     # else is freed. See scripts/redis-seat-registry.sh for the full rule set, and run
-    # `just test-db-seats` first to see the evidence behind each verdict.
+    # `just list-test-db-seats` first to see the evidence behind each verdict.
     #
     # phaze-robzi.1 CONTRACT CHANGE: `--apply` also drops each freed seat's own two Postgres
     # databases (`phaze_<seat>_test` / `phaze_<seat>_migrations_test`) -- their Valkey registry
@@ -1383,7 +1497,7 @@ test-db-reclaim *flags:
     # Trust boundary: only the registry script's closed option set is accepted, and every option
     # is forwarded as one argv entry rather than interpolated as a shell fragment.
     for flag in "$@"; do
-        case "$flag" in --apply|--include-unstamped|--no-postgres-check) ;; *) echo "❌ invalid test-db-reclaim flag: $flag" >&2; exit 2 ;; esac
+        case "$flag" in --apply|--include-unstamped|--no-postgres-check) ;; *) echo "❌ invalid reclaim-test-db-seats flag: $flag" >&2; exit 2 ;; esac
     done
     bash scripts/redis-seat-registry.sh reclaim \
         --redis-container "{{test_valkey_container}}" \
@@ -1395,7 +1509,7 @@ test-db-reclaim *flags:
 # --apply. Never touches the containers or the shared phaze_test/phaze_migrations_test pair.
 [doc('Reap orphaned phaze%test% databases (dry run by default)')]
 [group('harness')]
-test-db-gc *flags:
+gc-test-dbs *flags:
     #!/usr/bin/env bash
     set -euo pipefail
     # phaze-robzi.2: the STOCK half of the epic that phaze-robzi.1's reclaim fix cannot reach --
@@ -1414,13 +1528,13 @@ test-db-gc *flags:
 # using them.
 [doc('Remove the SHARED test Postgres + Valkey for every seat')]
 [group('harness')]
-test-db-down:
+down-test-db:
     #!/usr/bin/env bash
     set -euo pipefail
     container="{{test_db_container}}"
     # phaze-ieqg: this removes containers EVERY concurrent worktree shares, and the doc comment
     # above has said so since phaze-20vd. A warning in `just --list` is read at leisure, not at
-    # the moment somebody types the command. On 2026-07-29 18:17 UTC a `test-db-down` (+ implicit
+    # the moment somebody types the command. On 2026-07-29 18:17 UTC a `down-test-db` (+ implicit
     # recreate) mid-round destroyed 89 per-worktree databases AND the Valkey DB-index allocation
     # registry while five full suites were in flight. Every one of those suites went red with
     # branch-unrelated failures that passed on isolated re-run -- the exact false-red signature
@@ -1448,11 +1562,11 @@ test-db-down:
             echo "   would report branch-unrelated failures that pass on isolated re-run, which reads" >&2
             echo "   as a code regression and costs a review round to disprove (phaze-ieqg)." >&2
             echo "" >&2
-            echo "   If you came here to free Valkey logical DBs, stop: \`just test-db-reclaim\` hands back" >&2
-            echo "   every seat that is no longer in use without removing anything, and \`just test-db-release\`" >&2
+            echo "   If you came here to free Valkey logical DBs, stop: \`just reclaim-test-db-seats\` hands back" >&2
+            echo "   every seat that is no longer in use without removing anything, and \`just release-test-db-seat\`" >&2
             echo "   <name> frees a single one. Removing the harness for that was the phaze-68wky defect." >&2
             echo "" >&2
-            echo "   Otherwise wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-down" >&2
+            echo "   Otherwise wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just down-test-db" >&2
             echo "   if you know the connections are stale." >&2
             exit 1
         fi
@@ -1464,13 +1578,13 @@ test-db-down:
 # Refuses active or foreign runs.
 [doc('Remove one stale integration-test run this worktree owns')]
 [group('test')]
-integration-test-down RUN_ID:
+down-integration-test RUN_ID:
     PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_VALKEY_PREFIX={{quote(integration_valkey_container_prefix)}} bash scripts/integration-test-harness.sh cleanup {{quote(RUN_ID)}}
 
 # Per-invocation containers; always tears down only its own run.
 [doc('Full coverage suite on a throwaway Postgres + Valkey pair')]
 [group('test')]
-integration-test:
+test-integration:
     PHAZE_INTEGRATION_POSTGRES_IMAGE={{quote(postgres_image)}} PHAZE_INTEGRATION_VALKEY_IMAGE={{quote(test_valkey_image)}} PHAZE_INTEGRATION_POSTGRES_SHM_SIZE={{quote(postgres_shm_size)}} PHAZE_INTEGRATION_BIND_IP={{quote(test_db_bind_ip)}} PHAZE_INTEGRATION_DB_PORT={{quote(integration_db_port)}} PHAZE_INTEGRATION_VALKEY_PORT={{quote(integration_valkey_port)}} PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_VALKEY_PREFIX={{quote(integration_valkey_container_prefix)}} bash scripts/integration-test-harness.sh run
 [doc('Run the ruff linter')]
 [group('lint')]
@@ -1479,12 +1593,12 @@ lint:
 
 [doc('Run the ruff linter with auto-fix')]
 [group('lint')]
-lint-fix:
+fix-lint:
     uv run ruff check . --fix
 
 [doc('Format code with ruff')]
 [group('lint')]
-fmt:
+format:
     uv run ruff format .
 
 [doc('Run the mypy type checker')]
@@ -1494,7 +1608,7 @@ typecheck:
 
 [doc('Run every pre-commit hook')]
 [group('lint')]
-pre-commit:
+run-pre-commit:
     uv run pre-commit run --all-files
 
 # phaze-ofrxb: the first step of BOTH gates is a checkout-integrity probe that runs with no
@@ -1509,7 +1623,7 @@ pre-commit:
 # die with ModuleNotFoundError.
 [doc('Fail loudly if this checkout or its venv is hollowed')]
 [group('gate')]
-worktree-integrity:
+check-worktree-integrity:
     bash scripts/worktree-integrity.sh
 
 # THE full local/postland gate. This used to be the per-bead gate (phaze-nqawu), but
@@ -1528,7 +1642,7 @@ worktree-integrity:
 # exported.
 [doc('Full gate: lint, typecheck, full suite with coverage')]
 [group('gate')]
-check: worktree-integrity lint typecheck test-validate
+check: check-worktree-integrity lint typecheck test-validate
 
 # THE per-bead gate (phaze-pv3kk). The phaze rig's `work.validate_cmd` points here, so this is what
 # `bh work check`, `bh work submit`, `bh work merge` and `bh work merge-main` run. `just check`
@@ -1575,7 +1689,7 @@ check: worktree-integrity lint typecheck test-validate
 # escalating to the full suite when it cannot tell. `bh work finish` still runs `just check-all`.
 [doc('Per-bead gate: lint, typecheck, change-selected tests')]
 [group('gate')]
-check-fast: worktree-integrity lint typecheck test-fast
+check-fast: check-worktree-integrity lint typecheck test-fast
 
 # phaze-jjjy8: promtool is the REAL consumer of alerts/phaze-alerts.yml and its unit tests
 # (alerts/phaze-alerts.test.yml) -- a YAML/PromQL syntax check accepts an expr that parses
@@ -1595,7 +1709,7 @@ check-fast: worktree-integrity lint typecheck test-fast
 # for real.
 [doc('Run promtool alert-rule tests (loud skip without promtool)')]
 [group('gate')]
-alerts-test:
+test-alerts:
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v promtool >/dev/null 2>&1; then
@@ -1617,17 +1731,17 @@ alerts-test:
 # bandit, shellcheck, shfmt, yamllint, actionlint, hadolint, check-jsonschema and the
 # secret/large-file hooks). Those are the checks a single bead's diff can pass individually
 # while the assembled molecule fails, which is exactly what a pre-land boundary is for.
-# The test step is identical, so this costs one full suite run, not two. `alerts-test` is
+# The test step is identical, so this costs one full suite run, not two. `test-alerts` is
 # appended for the same reason: a whole-repo external-tool invariant, not something a
 # per-bead change-selector would reliably pick up.
 # `bh work finish` runs this. Strict superset of `just check`.
 [doc('Molecule gate: all pre-commit hooks, full suite, alert rules')]
 [group('gate')]
-check-all: pre-commit test-validate alerts-test
+check-all: run-pre-commit test-validate test-alerts
 
 [doc('Audit dependencies for known vulnerabilities')]
 [group('security')]
-pip-audit:
+run-pip-audit:
     #!/usr/bin/env bash
     set -e
     IGNORE_ARGS=""
@@ -1643,61 +1757,61 @@ pip-audit:
 
 [doc('Run Bandit Python SAST')]
 [group('security')]
-bandit:
+run-bandit:
     uv run bandit -r src/ -x tests -s B608
 
 [doc('Run the local dependency audit and Python SAST')]
 [group('security')]
-security-all: pip-audit bandit
+check-security: run-pip-audit run-bandit
 
 [doc('Follow the application-server worker logs')]
 [group('stack')]
-worker-logs:
+logs-worker:
     docker compose -f docker-compose.yml logs -f worker
 
 [doc('Restart the application-server worker')]
 [group('stack')]
-worker-restart:
+restart-worker:
     docker compose -f docker-compose.yml restart worker
 
 [doc('Check SAQ worker health')]
 [group('stack')]
-worker-health:
+check-worker-health:
     docker compose -f docker-compose.yml exec worker uv run saq phaze.tasks.controller.settings --check
 
 [doc('Build the production application-server images')]
 [group('docker')]
-docker-build:
+build-docker:
     docker compose -f docker-compose.yml build
 
 [doc('Lint the Dockerfiles with hadolint')]
 [group('docker')]
-docker-validate:
+validate-dockerfiles:
     bash scripts/validate-containers.sh dockerfiles
 
 # Requires a gh auth token with packages:write.
 [doc('Push the application image to GHCR')]
 [group('docker')]
-image-push:
+push-image:
     bash scripts/container-images.sh push api latest
 
 # Operator fallback to the CI build-arm64 job. BuildKit required -- the essentia compile runs through
 # an sccache cache mount.
 [doc('Build the arm64 essentia agent image locally')]
 [group('docker')]
-image-build-arm64 TAG="latest":
+build-image-arm64 TAG="latest":
     bash scripts/container-images.sh build arm64 {{quote(TAG)}}
 
 # Operator fallback; the CI push is parity-gated (plan 47-04).
 [doc('Build and push the arm64 agent image to GHCR')]
 [group('docker')]
-image-push-arm64 TAG="latest":
+push-image-arm64 TAG="latest":
     bash scripts/container-images.sh push arm64 {{quote(TAG)}}
 
 # Operator path, from the reference clip; CI (plan 47-04) is authoritative.
 [doc('Regenerate the x86 parity golden JSON locally')]
 [group('docker')]
-parity-golden-regen TAG="latest":
+regen-parity-golden TAG="latest":
     #!/usr/bin/env bash
     set -e
     # CI publishes the api image at the bare-repo URL (image_suffix="" for api,
@@ -1712,7 +1826,7 @@ parity-golden-regen TAG="latest":
     echo "🐳 Generating golden-x86.json via ${IMAGE} ..."
     # The image runs as a non-root user that cannot write into the host-owned
     # bind-mounted scripts/parity dir; write into a world-writable output dir and
-    # copy the result out host-side (same fix as the parity-dump recipe).
+    # copy the result out host-side (same fix as the dump-parity recipe).
     OUT_DIR=$(mktemp -d)
     chmod 777 "${OUT_DIR}"
     docker run --rm \
@@ -1728,7 +1842,7 @@ parity-golden-regen TAG="latest":
 # RUNTIME is the closed x86 or arm64 interpreter mode.
 [doc('Dump analyze_file output from an image')]
 [group('docker')]
-parity-dump IMAGE MODELS="./models" OUT="scripts/parity/actual.json" RUNTIME="x86":
+dump-parity IMAGE MODELS="./models" OUT="scripts/parity/actual.json" RUNTIME="x86":
     #!/usr/bin/env bash
     set -euo pipefail
     # The SHARED dump path BOTH CI parity jobs delegate to (workflows delegate to
@@ -1766,7 +1880,7 @@ parity-dump IMAGE MODELS="./models" OUT="scripts/parity/actual.json" RUNTIME="x8
 # Operator mirror of the CI parity-guard.
 [doc('Run the arm64-vs-x86 numeric parity check locally')]
 [group('docker')]
-parity-check TAG="latest":
+check-parity TAG="latest":
     #!/usr/bin/env bash
     set -e
     IMAGE="$(bash scripts/container-images.sh ref "$1" arm64)"
@@ -1774,7 +1888,7 @@ parity-check TAG="latest":
     #    never re-download a set that already exists); provision ./models only as a fallback.
     MODELS_DIR="$(bash scripts/container-images.sh models-dir)"
     # 2. Dump the arm64 actual via the shared recipe — direct python3 for the agent image.
-    just parity-dump "${IMAGE}" "${MODELS_DIR}" scripts/parity/actual.json arm64
+    just dump-parity "${IMAGE}" "${MODELS_DIR}" scripts/parity/actual.json arm64
     # 3. Compare against the committed/CI golden (non-zero exit on any parity break).
     echo "🔬 Comparing scripts/parity/actual.json against scripts/parity/golden-x86.json ..."
     uv run python scripts/parity/compare_analysis.py scripts/parity/golden-x86.json scripts/parity/actual.json
@@ -1782,42 +1896,42 @@ parity-check TAG="latest":
 # Base, dev overlay, agent, cloud-agent, and the telemetry example.
 [doc('Validate every shipped Compose shape')]
 [group('docker')]
-docker-compose-validate:
+validate-compose:
     bash scripts/validate-containers.sh compose
 
 [doc('Open a shell in the API container')]
 [group('stack')]
-docker-shell:
+shell-api:
     docker compose -f docker-compose.yml exec api bash
 
 [doc('List the application-server containers')]
 [group('stack')]
-docker-ps:
+ps-docker:
     docker compose -f docker-compose.yml ps
 
 [doc('Run Alembic migrations')]
 [group('db')]
-db-upgrade:
+upgrade-db:
     uv run alembic upgrade head
 
 [doc('Create a new Alembic migration')]
 [group('db')]
-db-revision MESSAGE:
+create-db-revision MESSAGE:
     uv run alembic revision --autogenerate -m {{quote(MESSAGE)}}
 
 [doc('Show current migration status')]
 [group('db')]
-db-current:
+show-db-revision:
     uv run alembic current
 
 [doc('Downgrade one migration')]
 [group('db')]
-db-downgrade:
+downgrade-db:
     uv run alembic downgrade -1
 
 [doc('Show migration history')]
 [group('db')]
-db-history:
+show-db-history:
     uv run alembic history
 
 # Corpus-distribution probe (phaze-d2hgv.5): the fraction of the archive exceeding a duration and/or
@@ -1825,14 +1939,14 @@ db-history:
 # guardrail G3.
 [doc('Measure the archive share past a duration/size bound')]
 [group('db')]
-corpus-distribution duration='' size='' dsn='':
+measure-corpus-distribution duration='' size='' dsn='':
     #!/usr/bin/env bash
     set -euo pipefail
     duration="$1"
     size="$2"
     dsn="$3"
     if [ -z "$duration" ] && [ -z "$size" ]; then
-        echo "usage: just corpus-distribution DURATION_SEC [SIZE_BYTES] [DSN]  (e.g. just corpus-distribution 6600)" >&2
+        echo "usage: just measure-corpus-distribution DURATION_SEC [SIZE_BYTES] [DSN]  (e.g. just measure-corpus-distribution 6600)" >&2
         exit 1
     fi
     cmd=(uv run python scripts/corpus_distribution.py)
@@ -1841,15 +1955,13 @@ corpus-distribution duration='' size='' dsn='':
     [ -n "$dsn" ] && cmd+=(--dsn "$dsn")
     "${cmd[@]}"
 
-# The synthetic-corpus benchmark Postgres, after verifying its image and port. Renamed from
-# `benchmark-db-up` (phaze-aje5d); the old name is an alias.
+# The synthetic-corpus benchmark Postgres, after verifying its image and port.
 [doc('Start or reuse the benchmark Postgres')]
 [group('benchmark')]
 up-benchmark-db:
     bash scripts/benchmark-db.sh up {{quote(benchmark_db_container)}} {{quote(benchmark_db_port)}} {{quote(benchmark_db_name)}} {{quote(postgres_image)}} {{quote(postgres_shm_size)}} {{quote(test_db_bind_ip)}}
 
-# Stops and removes only the synthetic-corpus benchmark Postgres. Renamed from `benchmark-db-down`
-# (phaze-aje5d); the old name is an alias.
+# Stops and removes only the synthetic-corpus benchmark Postgres.
 [doc('Remove the dedicated benchmark Postgres')]
 [group('benchmark')]
 down-benchmark-db:
@@ -1857,7 +1969,7 @@ down-benchmark-db:
 
 [doc('Migrate the benchmark DB and seed COUNT synthetic rows')]
 [group('benchmark')]
-benchmark-seed COUNT='200000':
+seed-benchmark-db COUNT='200000':
     #!/usr/bin/env bash
     set -euo pipefail
     count="$1"
@@ -1868,7 +1980,7 @@ benchmark-seed COUNT='200000':
 # Also times /pipeline/stats against the seeded benchmark DB.
 [doc('EXPLAIN ANALYZE hot queries on the benchmark DB')]
 [group('benchmark')]
-benchmark-explain ITERATIONS='20':
+explain-benchmark-db ITERATIONS='20':
     #!/usr/bin/env bash
     set -euo pipefail
     iterations="$1"
@@ -1878,7 +1990,7 @@ benchmark-explain ITERATIONS='20':
 # Measures the Analyze workspace and pipeline stats against the seeded benchmark DB.
 [doc('Time the Analyze workspace on the benchmark DB')]
 [group('benchmark')]
-benchmark-analyze ITERATIONS='10':
+measure-analyze-workspace ITERATIONS='10':
     #!/usr/bin/env bash
     set -euo pipefail
     iterations="$1"
@@ -1899,10 +2011,10 @@ update-hooks:
 # Includes local anchors and source-cited diagram assets.
 [doc('Validate maintained docs, anchors and diagram assets')]
 [group('maintenance')]
-docs-check:
+check-docs:
     uv run python scripts/check_documentation_integrity.py
 
 [doc('Lock and upgrade all dependencies')]
 [group('maintenance')]
-lock-upgrade:
+upgrade-lock:
     uv lock --upgrade

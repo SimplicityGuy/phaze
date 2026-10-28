@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Refresh the repowise index AND the coverage folded into its health scores, as ONE paired
-# operation. Driven by `just repowise-coverage [seat]`; see that recipe's comment for the WHY.
+# operation. Driven by `just refresh-repowise-coverage [seat]`; see that recipe's comment for the WHY.
 #
 # The five steps this encodes were measured by hand on 2026-08-18 (phaze-2rgq2). Two of them are
 # not discoverable from the tools' own output, which is the entire reason this is a script and not
@@ -10,7 +10,7 @@
 #   2. pytest --cov --cov-context=test       ~21 min, writes .coverage WITH per-test contexts
 #   3. `repowise coverage add .coverage`     -> the test-to-code map ONLY
 #   4. `coverage xml` + `coverage add ...`   -> per-file line coverage (REQUIRED, see gate)
-#      then `coverage json`                  -> the report `just branch-check` reads (phaze-jktlb)
+#      then `coverage json`                  -> the report `just check-branch-coverage` reads (phaze-jktlb)
 #   5. `repowise health`                     folds the coverage into the defect scores
 #
 # Step 3 alone is a SILENT PARTIAL SUCCESS: it prints "Built the test-to-code map: N test->file
@@ -22,7 +22,7 @@
 # error -- a 1-of-249 ingest otherwise looks entirely healthy).
 #
 # Usage: repowise-coverage.sh [seat-name]
-#   with a seat name    provisions an isolated test DB + Redis index via `just test-db-for <seat>`
+#   with a seat name    provisions an isolated test DB + Redis index via `just provision-test-db-seat <seat>`
 #                       and uses the exports that recipe prints, verbatim.
 #   without one         requires TEST_DATABASE_URL, MIGRATIONS_TEST_DATABASE_URL and
 #                       PHAZE_REDIS_URL to already be exported, and refuses if any is missing.
@@ -87,16 +87,16 @@ run_started_utc="$(date -u +"%Y-%m-%d %H:%M:%S")"
 
 # --- test isolation ------------------------------------------------------------------------------
 # CLAUDE.md: never share Postgres OR Redis between concurrent agents, and always copy the exports
-# `test-db-for` prints rather than hand-building the DSN (the derived seat name is hashed, so a
+# `provision-test-db-seat` prints rather than hand-building the DSN (the derived seat name is hashed, so a
 # hand-built `phaze_<seat>_test` only agrees when <seat> has no hyphens).
 if [ -n "$seat" ]; then
   echo "🔧 provisioning an isolated test seat for '${seat}'..."
-  seat_output="$(just test-db-for "$seat")"
+  seat_output="$(just provision-test-db-seat "$seat")"
   printf '%s\n' "$seat_output"
   for var in TEST_DATABASE_URL MIGRATIONS_TEST_DATABASE_URL PHAZE_REDIS_URL; do
     value="$(printf '%s\n' "$seat_output" | sed -n "s/^[[:space:]]*export ${var}=\"\\(.*\\)\"\$/\\1/p" | head -n 1)"
     if [ -z "$value" ]; then
-      echo "❌ \`just test-db-for ${seat}\` did not print an export for ${var}." >&2
+      echo "❌ \`just provision-test-db-seat ${seat}\` did not print an export for ${var}." >&2
       exit 1
     fi
     export "${var}=${value}"
@@ -108,8 +108,8 @@ else
   done
   if [ -n "$missing" ]; then
     echo "❌ no seat name given and these are unset:${missing}" >&2
-    echo "   Either pass a seat name (\`just repowise-coverage <name>\`, which runs test-db-for for" >&2
-    echo "   you) or export the three values \`just test-db-for <name>\` prints. Running the full" >&2
+    echo "   Either pass a seat name (\`just refresh-repowise-coverage <name>\`, which runs provision-test-db-seat for" >&2
+    echo "   you) or export the three values \`just provision-test-db-seat <name>\` prints. Running the full" >&2
     echo "   suite against the shared default database is a concurrency defect, not a shortcut." >&2
     exit 1
   fi
@@ -146,7 +146,7 @@ repowise update
 # it means "unknown" — the worst possible answer for a reviewer deciding what to re-run.
 # PHAZE_COVERAGE_GREENLET=greenlet keeps this run on CTracer: sys.monitoring, the default core,
 # records only the FIRST test per line under --cov-context (phaze-bein3; pyproject's coverage run table).
-# --cov-fail-under=0 mirrors `just test-bucket`: the 95% floor is enforced by `just coverage-combine`
+# --cov-fail-under=0 mirrors `just test-bucket`: the 95% floor is enforced by `just combine-coverage`
 # and CI, not here. This recipe's job is to MEASURE and ingest; failing the ingest because coverage
 # dipped would withhold the data exactly when it is most wanted.
 # phaze-jktlb: flags are alphabetical here and in every justfile coverage recipe, `--cov` carries no
@@ -197,7 +197,7 @@ fi
 # phaze-jktlb, AC4: this script runs the WHOLE suite, so "no consumer is coupled to one recipe"
 # reads onto it exactly as it reads onto `just test-cov`. It already emitted coverage.xml above
 # (for repowise); it emitted no coverage.json at all, so a developer who spent 21 minutes here and
-# then ran `just branch-check` got a missing file, or worse a stale one from some earlier run.
+# then ran `just check-branch-coverage` got a missing file, or worse a stale one from some earlier run.
 #
 # It is NOT covered by the operator decision of 2026-08-22 recorded on bead phaze-jktlb, which
 # excluded `just test-bucket` from AC4 and stops there. That decision rests on a shard measuring a
@@ -220,10 +220,10 @@ fi
 # subcommands here, `--cov-report` flags in the justfile). The destination is still single-sourced
 # in pyproject, which is the half that silently rots when it is duplicated.
 echo ""
-echo "    📄 coverage json (for \`just branch-check\`; not used by repowise)"
+echo "    📄 coverage json (for \`just check-branch-coverage\`; not used by repowise)"
 if ! uv run coverage json --fail-under=0; then
   echo "⚠️  \`coverage json\` failed — the repowise ingest above SUCCEEDED and is intact, but" >&2
-  echo "   coverage.json was not refreshed, so \`just branch-check\` has no report to read." >&2
+  echo "   coverage.json was not refreshed, so \`just check-branch-coverage\` has no report to read." >&2
   exit 1
 fi
 

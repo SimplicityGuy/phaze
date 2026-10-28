@@ -45,10 +45,10 @@ always carry the counts.
 
 Usage
 -----
-    just branch-check                     # after a coverage run, against the recorded baseline
-    just branch-check --base-ref main     # choose the ref the touched-file set is diffed against
-    just branch-check --write-baseline    # record the current numbers as the baseline (phaze-bk9el.1)
-    just branch-check --allow-missing-baseline   # phaze-bk9el.1 ONLY -- see "ON THE MISSING BASELINE"
+    just check-branch-coverage            # after a coverage run, against the recorded baseline
+    just check-branch-coverage --base-ref main # choose the ref the touched-file set is diffed against
+    just check-branch-coverage --write-baseline # record the current numbers as the baseline (phaze-bk9el.1)
+    just check-branch-coverage --allow-missing-baseline # phaze-bk9el.1 ONLY -- see "ON THE MISSING BASELINE"
 
 or directly::
 
@@ -61,7 +61,7 @@ Inputs
 ------
 ``coverage.json``
     A ``coverage json`` report produced with branch coverage on. ``just test-cov`` and
-    ``just coverage-combine`` both write one; ``branch = true`` in pyproject means any coverage
+    ``just combine-coverage`` both write one; ``branch = true`` in pyproject means any coverage
     run in this repo carries branch data.
 ``.coverage-baseline.json``
     The committed baseline (phaze-bk9el.1). ``{"files": {path: {"percent_branches_covered": float,
@@ -328,7 +328,7 @@ def write_baseline(data: dict[str, object], baseline_path: Path, base_ref: str) 
         path: {**_module_row(_summary_of(info)), "missing_branches": info.get("missing_branches")} for path, info in sorted(files.items())
     }
     payload: dict[str, object] = {
-        "_comment": "Coverage baseline (phaze-bk9el.21 criterion 5, consumed by phaze-bk9el.1). Regenerate with `just branch-check --write-baseline` after a FULL-suite coverage run; a partial run records partial numbers and would fail every later bead for the wrong reason. Every module carries all three metrics; the per-bead gate compares only percent_branches_covered, which is null for a module with no branches (not measurable, and neither 0% nor 100%).",
+        "_comment": "Coverage baseline (phaze-bk9el.21 criterion 5, consumed by phaze-bk9el.1). Regenerate with `just check-branch-coverage --write-baseline` after a FULL-suite coverage run; a partial run records partial numbers and would fail every later bead for the wrong reason. Every module carries all three metrics; the per-bead gate compares only percent_branches_covered, which is null for a module with no branches (not measurable, and neither 0% nor 100%).",
         "commit": _git("rev-parse", "HEAD").strip(),
         "base_ref": base_ref,
         "totals": _module_row(totals) if isinstance(totals, dict) else None,
@@ -343,7 +343,7 @@ def write_baseline(data: dict[str, object], baseline_path: Path, base_ref: str) 
 def find_reusable_report() -> tuple[Path | None, list[str]]:
     """Look for an existing coverage artifact this exact tree already produced (phaze-vad6y).
 
-    CLAUDE.md documents `just branch-check` as "free after any `check`" -- reading whatever
+    CLAUDE.md documents `just check-branch-coverage` as "free after any `check`" -- reading whatever
     ``coverage.json`` a prior gate run left behind. Nothing ever checked that claim: the recipe
     unconditionally regenerated branch evidence (``just _test-branch-scoped``) on every
     invocation regardless -- a cheaper selected-test subset when the diff mapped cleanly, a
@@ -486,7 +486,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         # FAIL CLOSED. If the check could not perform a comparison, it did not pass.
         print(f"❌ No branch-coverage baseline at {baseline_path} — cannot tell whether this bead lowered anything.")  # noqa: T201
-        print("   The baseline is recorded by phaze-bk9el.1 (`just branch-check --write-baseline`).")  # noqa: T201
+        print("   The baseline is recorded by phaze-bk9el.1 (`just check-branch-coverage --write-baseline`).")  # noqa: T201
         print("   If this bead is phaze-bk9el.1 itself, pass --allow-missing-baseline; nothing else should.")  # noqa: T201
         raise SystemExit(2)
 

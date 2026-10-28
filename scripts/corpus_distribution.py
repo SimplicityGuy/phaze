@@ -17,8 +17,8 @@ Usage:
     uv run python scripts/corpus_distribution.py --duration-sec 6600
     uv run python scripts/corpus_distribution.py --size-bytes 5000000000
     uv run python scripts/corpus_distribution.py --duration-sec 6600 --size-bytes 5000000000
-    just corpus-distribution 6600            # duration bound only
-    just corpus-distribution 6600 5000000000 # duration and size bounds
+    just measure-corpus-distribution 6600    # duration bound only
+    just measure-corpus-distribution 6600 5000000000 # duration and size bounds
 """
 
 from __future__ import annotations

@@ -12,7 +12,7 @@ live ``saq_jobs`` table:
 * ``resume_stage`` -> the SENTINEL-parked rows reset to ``scheduled = 0`` (immediately
   dequeueable), while the retry-backoff row is UNCHANGED (still future) -- REQ-37-3.
 
-Run with real PG via ``just integration-test``. Package auto-marked ``integration`` by
+Run with real PG via ``just test-integration``. Package auto-marked ``integration`` by
 ``tests/conftest.py``; the explicit ``pytestmark`` is the Plan 37-03 artifact contract.
 """
 

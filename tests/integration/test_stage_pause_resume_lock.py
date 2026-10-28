@@ -17,7 +17,7 @@ the real-PG ``stage_env`` fixture where each call opens its OWN pool connection 
 real -- the same style as ``test_scan_reaper_concurrency.py``'s row-lock regression: a waiter is
 observed via ``pg_locks`` (deterministic), not guessed via a sleep duration.
 
-Run with real PG via ``just integration-test``. Package auto-marked ``integration`` by
+Run with real PG via ``just test-integration``. Package auto-marked ``integration`` by
 ``tests/conftest.py``; the explicit ``pytestmark`` is the Plan 37-03 artifact contract.
 """
 

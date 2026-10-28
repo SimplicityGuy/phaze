@@ -44,7 +44,7 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
 
    > `just install` runs `setup` (including `uv sync`) and then `tailwind` (compiling `assets/src/app.css` →
    > `src/phaze/static/css/app.css` with the standalone Tailwind binary, no Node). Bare `uv sync` installs Python deps only and **skips the CSS build**, so prefer
-   > `just install` (or run `just tailwind` once) if you are serving the Web UI locally.
+   > `just install` (or run `just build-tailwind` once) if you are serving the Web UI locally.
 
 3. **Create your environment file.**
 
@@ -87,21 +87,21 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
    just up                  # docker compose up -d
    ```
 
-   `just up` starts the core Compose stack; it does not run Tailwind. Container image builds compile CSS in their own build stage. For a host-served UI, run `just install` or `just tailwind` after stylesheet changes. This launches four containers: `api` (FastAPI),
+   `just up` starts the core Compose stack; it does not run Tailwind. Container image builds compile CSS in their own build stage. For a host-served UI, run `just install` or `just build-tailwind` after stylesheet changes. This launches four containers: `api` (FastAPI),
    `worker` (SAQ), `postgres`, and `redis`.
 
 6. **Apply database migrations.**
 
    ```bash
-   just db-upgrade          # uv run alembic upgrade head
+   just upgrade-db          # uv run alembic upgrade head
    ```
 
    > The `api` container also runs migrations on startup by default
    > (`PHAZE_AUTO_MIGRATE=true`), so the schema is normally already at head after
-   > `just up`. Running `just db-upgrade` is a safe, idempotent confirmation —
+   > `just up`. Running `just upgrade-db` is a safe, idempotent confirmation —
    > and the explicit command you use when auto-migrate is disabled.
    >
-   > **Host vs container:** `just db-upgrade` runs `uv run alembic` on the **host**, but the
+   > **Host vs container:** `just upgrade-db` runs `uv run alembic` on the **host**, but the
    > shipped `.env` points `DATABASE_URL` at the Docker service DNS name
    > (`…@postgres:5432/phaze`), which does not resolve outside the compose network — the
    > command fails there. Before running it from the host, swap `DATABASE_URL` (and
@@ -128,7 +128,7 @@ Expected response (the endpoint checks the database with a `SELECT 1` before ans
 ```
 
 If you get a connection error, the containers may still be starting — check
-`just docker-ps` and `just logs`.
+`just ps-docker` and `just logs`.
 
 ### 🌐 Service URLs
 
@@ -190,7 +190,7 @@ search or jump) or the documented HTTP endpoints.
    - **Generate proposals** (LLM rename/path suggestions) — `POST /pipeline/proposals`
 
    Each button enqueues SAQ jobs handled by the `worker` container. Follow them with
-   `just worker-logs`.
+   `just logs-worker`.
 
 4. **Review proposals in the Web UI.**
 
@@ -241,7 +241,7 @@ full suite is still going is enough to trigger it.
 Redis:
 
 ```bash
-just test-db-for <name>
+just provision-test-db-seat <name>
 ```
 
 It normalizes `<name>` into `<derived>` (hyphens become underscores, plus a short hash of the
@@ -258,20 +258,20 @@ export PHAZE_REDIS_URL="redis://localhost:6380/<index>"
 ```
 
 Exporting only the first is the common mistake: Redis stays shared and one seat's fixture sweep
-deletes another's live keys mid-test. Two worktrees with their own `test-db-for` databases are the
+deletes another's live keys mid-test. Two worktrees with their own `provision-test-db-seat` databases are the
 supported way to run concurrently.
 
 **When the worktree is finished, hand its Redis index back** — the logical-DB space is finite (64
 by default) and shared by every seat on the machine:
 
 ```bash
-just test-db-release <name>   # frees this seat's index; stops and clears nothing
-just test-db-seats            # who holds what, and why each seat is considered in use
-just test-db-reclaim          # dry run: which seats a sweep would free (--apply to do it)
+just release-test-db-seat <name> # frees this seat's index; stops and clears nothing
+just list-test-db-seats       # who holds what, and why each seat is considered in use
+just reclaim-test-db-seats    # dry run: which seats a sweep would free (--apply to do it)
 ```
 
-If allocation ever refuses because the space is full, `just test-db-reclaim` is the answer.
-**Never `just test-db-down`** — it removes the containers every other seat is using and destroys
+If allocation ever refuses because the space is full, `just reclaim-test-db-seats` is the answer.
+**Never `just down-test-db`** — it removes the containers every other seat is using and destroys
 their databases mid-run.
 
 Every run prints its resolved target in the pytest header — check it before trusting a green run.
@@ -296,15 +296,15 @@ unprotected. See [CLAUDE.md](../CLAUDE.md) for the full rules.
   The schema has not been migrated. Apply migrations and confirm the current revision:
 
   ```bash
-  just db-upgrade      # uv run alembic upgrade head
-  just db-current      # uv run alembic current
+  just upgrade-db      # uv run alembic upgrade head
+  just show-db-revision # uv run alembic current
   ```
 
 - **`just up` fails with a port already in use (8000, 5432, or 6379).**
   Another process is bound to one of the published ports. Stop the conflicting service,
   or change the mapping — `API_PORT`, `POSTGRES_BIND_IP` (the 5432 publish, default
   `127.0.0.1`), and `REDIS_BIND_IP` are configurable in `.env`.
-  Inspect what is running with `just docker-ps`.
+  Inspect what is running with `just ps-docker`.
 
 ## ➡️ Next Steps
 

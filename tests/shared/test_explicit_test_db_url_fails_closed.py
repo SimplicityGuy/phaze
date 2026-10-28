@@ -104,7 +104,7 @@ def test_explicit_url_with_a_broken_connect_is_refused_before_collection() -> No
     assert "Refusing to start" in output
     assert _BLACKHOLE_DSN in output, "the refusal must name the DSN that could not be reached"
     assert "TEST_DATABASE_URL" in output
-    assert "just test-db" in output, "the refusal must name the remedy"
+    assert "just up-test-db" in output, "the refusal must name the remedy"
     # The two trivial tests in the fixture module must never have run.
     assert "2 passed" not in output
     assert "collected 2 item" not in output

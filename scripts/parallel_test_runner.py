@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 _SEAT_KEYS = frozenset({"TEST_DATABASE_URL", "MIGRATIONS_TEST_DATABASE_URL", "PHAZE_REDIS_URL"})
 _EXPORT_RE = re.compile(r'^export ([A-Z_]+)="([^"]+)"$')
-# phaze-qov36: the exact shapes `scripts/provision-test-seat.sh` prints for a `just test-db-for`
+# phaze-qov36: the exact shapes `scripts/provision-test-seat.sh` prints for a `just provision-test-db-seat`
 # seat. Only a triplet of exactly this shape can be a local harness seat worth splitting into
 # lanes; anything else -- CI's 5432 service container, the shared `phaze_test`, a hand-built DSN --
 # is an explicit environment contract and stays verbatim.
@@ -110,7 +110,7 @@ class SupervisorDependencies:
 
 @dataclass(frozen=True)
 class CallerSeatVerdict:
-    """Whether a caller-exported triplet is a `just test-db-for` seat the runner may derive lanes from.
+    """Whether a caller-exported triplet is a `just provision-test-db-seat` seat the runner may derive lanes from.
 
     Three outcomes: ``seat_id`` set (split it into lanes); declined (``seat_id`` None, ``fatal``
     False -- run `test-cov` verbatim); or ``fatal`` -- the triplet claims to be a harness seat and
@@ -128,7 +128,7 @@ class RegistryUnavailableError(RuntimeError):
 
 
 def classify_caller_seat(environ: Mapping[str, str], *, pg_port: str, redis_port: str, seat_index: SeatIndexLookup) -> CallerSeatVerdict:
-    """Accept only a triplet minted by `just test-db-for` on this harness; decline everything else.
+    """Accept only a triplet minted by `just provision-test-db-seat` on this harness; decline everything else.
 
     phaze-qov36. CI and every shape check come before the registry lookup, so an environment that
     is plainly not a local seat (CI above all) never reaches Docker. A shape-perfect triplet is then
@@ -145,7 +145,7 @@ def classify_caller_seat(environ: Mapping[str, str], *, pg_port: str, redis_port
         return CallerSeatVerdict(None, f"the caller's triplet is incomplete ({', '.join(missing)} unset)")
     main = _LOCAL_SEAT_DSN_RE.fullmatch(environ["TEST_DATABASE_URL"])
     if main is None or main["port"] != pg_port:
-        return CallerSeatVerdict(None, f"TEST_DATABASE_URL is not a `just test-db-for` seat database on localhost:{pg_port}")
+        return CallerSeatVerdict(None, f"TEST_DATABASE_URL is not a `just provision-test-db-seat` seat database on localhost:{pg_port}")
     seat_id = main["seat"]
     migrations = f"postgresql+asyncpg://phaze:phaze@localhost:{pg_port}/phaze_{seat_id}_migrations_test"
     if environ["MIGRATIONS_TEST_DATABASE_URL"] != migrations:
@@ -153,15 +153,15 @@ def classify_caller_seat(environ: Mapping[str, str], *, pg_port: str, redis_port
     redis = _LOCAL_SEAT_REDIS_RE.fullmatch(environ["PHAZE_REDIS_URL"])
     if redis is None or redis["port"] != redis_port:
         return CallerSeatVerdict(None, f"PHAZE_REDIS_URL is not a seat's logical DB on localhost:{redis_port}")
-    remedy = "Re-run `just test-db-for <your seat name>` and re-export the three lines it prints."
+    remedy = "Re-run `just provision-test-db-seat <your seat name>` and re-export the three lines it prints."
     try:
         registered = seat_index(seat_id)
     except RegistryUnavailableError as exc:
-        return CallerSeatVerdict(None, f"the harness seat registry could not be read ({exc}). Start the harness with `just test-db`", fatal=True)
+        return CallerSeatVerdict(None, f"the harness seat registry could not be read ({exc}). Start the harness with `just up-test-db`", fatal=True)
     if registered is None:
         return CallerSeatVerdict(
             None,
-            f"{seat_id!r} has the exact shape of a `just test-db-for` seat but is not registered -- released or reclaimed, "
+            f"{seat_id!r} has the exact shape of a `just provision-test-db-seat` seat but is not registered -- released or reclaimed, "
             f"so Valkey DB {redis['index']} may now belong to another live seat. {remedy}",
             fatal=True,
         )
@@ -175,7 +175,7 @@ def classify_caller_seat(environ: Mapping[str, str], *, pg_port: str, redis_port
     parallel = environ.get("PHAZE_TEST_PARALLEL", "1")
     if parallel != "1":
         return CallerSeatVerdict(None, f"PHAZE_TEST_PARALLEL={parallel} (anything but 1) forces the serial path")
-    return CallerSeatVerdict(seat_id, f"{seat_id!r} is a registered `just test-db-for` seat on Valkey DB {registered}")
+    return CallerSeatVerdict(seat_id, f"{seat_id!r} is a registered `just provision-test-db-seat` seat on Valkey DB {registered}")
 
 
 def registry_seat_index(repo_root: Path, redis_container: str) -> SeatIndexLookup:
@@ -246,7 +246,7 @@ def production_dependencies(repo_root: Path) -> SupervisorDependencies:
 
     def provision(seat_name: str) -> Seat:
         result = subprocess.run(  # noqa: S603  # nosec B603 -- fixed command and runner-owned seat name.
-            (just_binary, "test-db-for", seat_name),
+            (just_binary, "provision-test-db-seat", seat_name),
             cwd=repo_root,
             capture_output=True,
             text=True,
@@ -261,14 +261,14 @@ def production_dependencies(repo_root: Path) -> SupervisorDependencies:
                 raise RuntimeError(
                     f"lane seat {seat_name!r} could not get a Valkey logical DB: the harness index pool is exhausted. "
                     "A two-lane gate holds two lane indices on top of any seat the caller exported. Free stale seats with "
-                    "`just test-db-reclaim --apply`, or run serial on your own seat with PHAZE_TEST_PARALLEL=0.\n" + detail
+                    "`just reclaim-test-db-seats --apply`, or run serial on your own seat with PHAZE_TEST_PARALLEL=0.\n" + detail
                 )
             raise RuntimeError(f"seat provisioning failed for {seat_name!r}: {detail}")
         return _parse_seat_exports(result.stdout, seat_name)
 
     def release(seat_name: str) -> int:
         return subprocess.run(  # noqa: S603  # nosec B603 -- fixed command and runner-owned seat name.
-            (just_binary, "test-db-release", seat_name), cwd=repo_root, check=False
+            (just_binary, "release-test-db-seat", seat_name), cwd=repo_root, check=False
         ).returncode
 
     def spawn(launch: LaneLaunch) -> ProcessHandle:

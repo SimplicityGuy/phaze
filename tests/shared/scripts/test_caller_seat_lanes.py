@@ -1,4 +1,4 @@
-"""A caller-exported `just test-db-for` seat runs two derived lanes; everything else stays verbatim (phaze-qov36).
+"""A caller-exported `just provision-test-db-seat` seat runs two derived lanes; everything else stays verbatim (phaze-qov36).
 
 Until phaze-qov36, `just test-validate` sent ANY exported Postgres/Redis triplet down the serial
 path -- which is exactly what CLAUDE.md tells every dispatched seat to export, so the seats that
@@ -12,7 +12,7 @@ Three kinds of evidence, because each answers a different question:
 * CI safety, against the REAL workflow files: CI's own environment is declined without a single
   registry probe, and no recipe CI runs can reach the classifier, the lane runner or a provisioner;
 * isolation, against the REAL harness: the real supervisor provisions both lanes through the real
-  `just test-db-for`, each lane process reports what it actually connected to, and the lanes must
+  `just provision-test-db-seat`, each lane process reports what it actually connected to, and the lanes must
   be distinct from each other and from the caller, with both lane seats released afterwards.
 """
 
@@ -159,7 +159,7 @@ def test_a_shape_perfect_seat_the_registry_contradicts_is_fatal_even_when_opted_
     assert (verdict.seat_id, verdict.fatal) == (None, True)
     assert reason in verdict.reason
     if not registry.unavailable:
-        assert "Re-run `just test-db-for <your seat name>` and re-export" in verdict.reason
+        assert "Re-run `just provision-test-db-seat <your seat name>` and re-export" in verdict.reason
 
 
 def _recipe(name: str) -> str:
@@ -238,7 +238,7 @@ def test_ci_job_environments_are_declined_without_a_single_registry_probe() -> N
 
 
 _LOCAL_ONLY = ("test-validate", "check", "check-fast", "check-all", "test-cov-parallel", "test-fast")
-_PROVISIONING = ("parallel_test_runner", "classify-caller-seat", "test-db-for", "provision-test-seat", "ensure-test-seat", "test-validate")
+_PROVISIONING = ("parallel_test_runner", "classify-caller-seat", "provision-test-db-seat", "provision-test-seat", "ensure-test-seat", "test-validate")
 
 
 def _reachable(recipe: str, seen: set[str]) -> None:
@@ -254,7 +254,7 @@ def _reachable(recipe: str, seen: set[str]) -> None:
 
 def test_no_recipe_ci_runs_can_reach_the_classifier_the_lane_runner_or_a_provisioner() -> None:
     invoked = _ci_invoked_recipes()
-    assert {"test-bucket", "coverage-combine", "test-browser"} <= invoked, invoked
+    assert {"test-bucket", "combine-coverage", "test-browser"} <= invoked, invoked
     assert not invoked & set(_LOCAL_ONLY), invoked & set(_LOCAL_ONLY)
 
     reachable: set[str] = set()
@@ -324,13 +324,13 @@ def _redis_dbsize(index: str) -> int:
 
 
 _needs_harness = pytest.mark.skipif(
-    not _harness_is_up(), reason="needs the running local test harness (phaze-test-db + phaze-test-valkey); `just test-db`"
+    not _harness_is_up(), reason="needs the running local test harness (phaze-test-db + phaze-test-valkey); `just up-test-db`"
 )
 
 
 @pytest.fixture
 def probe_caller() -> Iterator[tuple[dict[str, str], str]]:
-    """A real `just test-db-for` caller seat, released afterwards.
+    """A real `just provision-test-db-seat` caller seat, released afterwards.
 
     Named from the RUNNING seat's own database, so it is stable per seat (re-runs reuse the same
     Postgres databases rather than leaving new ones behind) and unique across concurrent seats. One
@@ -339,13 +339,13 @@ def probe_caller() -> Iterator[tuple[dict[str, str], str]]:
 
     own_database = os.environ.get("TEST_DATABASE_URL", "phaze_test").rsplit("/", 1)[-1]
     raw_caller = f"qprobe-{hashlib.sha256(own_database.encode()).hexdigest()[:10]}"
-    provisioned = _just("test-db-for", raw_caller)
+    provisioned = _just("provision-test-db-seat", raw_caller)
     assert provisioned.returncode == 0, provisioned.stderr
     caller_id = _derived(raw_caller)
     try:
         yield dict(re.findall(r'export ([A-Z_]+)="([^"]+)"', provisioned.stdout)), caller_id
     finally:
-        _just("test-db-release", caller_id)
+        _just("release-test-db-seat", caller_id)
 
 
 def _runner_cli(*args: str, environ: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
@@ -517,4 +517,4 @@ def test_real_lanes_derived_from_a_caller_seat_are_isolated_and_released(
     finally:
         for lane_id in lane_ids:
             if _registered(lane_id):
-                _just("test-db-release", lane_id)
+                _just("release-test-db-seat", lane_id)

@@ -3,7 +3,7 @@
 coverage.py records branch arcs per *decision statement*, not per boolean operand. ``if A or B or C:``
 contributes exactly two arcs (taken, not taken) however many conditions it fuses, so a defence
 behind ``C`` that no test ever reaches leaves the ``if`` fully covered, the file fully covered and
-``just branch-check`` green. Measured on the finding's own file: the fused guard read 73/74
+``just check-branch-coverage`` green. Measured on the finding's own file: the fused guard read 73/74
 (98.65%); splitting its third disjunct into its own ``if`` read 74/76 (97.37%), exposing the
 uncovered arc.
 

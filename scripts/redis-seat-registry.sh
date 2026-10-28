@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# The Valkey logical-DB seat registry behind `just test-db-for` (phaze-68wky). The filename and the
+# The Valkey logical-DB seat registry behind `just provision-test-db-seat` (phaze-68wky). The filename and the
 # `--redis-container` flag predate the harness's move to Valkey and are kept (phaze-aje5d).
 #
 # WHAT THIS OWNS
 #
-# `just test-db-for <name>` gives one worktree ("seat") an exclusive Valkey logical database on the
+# `just provision-test-db-seat <name>` gives one worktree ("seat") an exclusive Valkey logical database on the
 # SHARED `phaze-test-valkey` container, because two redis-backed test modules run global
 # `scan_iter`+`delete` sweeps in fixture setup AND teardown -- on a shared logical DB one seat's
 # fixture deletes another seat's live keys mid-test (phaze-fwo7). This script is the single place
@@ -17,7 +17,7 @@
 # Every seat that ever ran `test-db-for` burned an index forever, so the counter walked past the
 # 64-database cap and then refused every new seat -- with indices 68, 73, 74 and 80 observed in the
 # wild, mostly held by worktrees that no longer existed. Refusing was right (wrapping onto a shared
-# index silently restores phaze-fwo7), but the only remedies offered were `just test-db-down`
+# index silently restores phaze-fwo7), but the only remedies offered were `just down-test-db`
 # variants, and `test-db-down` removes the ONE Postgres+Redis pair every concurrent seat shares --
 # the phaze-ieqg incident, where a mid-round teardown destroyed 89 per-worktree databases and this
 # very registry under five in-flight suites. Five independent fleet reports (hq-6hb, hq-8zr, hq-el5,
@@ -47,7 +47,7 @@
 #   L2  A Postgres client backend is connected to `phaze_<seat>_test` or
 #       `phaze_<seat>_migrations_test` on the shared harness. This is the strong one: pytest holds
 #       a session-level advisory-lock connection for the WHOLE run (tests/db_guard.py), so an
-#       idle-looking suite is still visible here. It is the same signal `just test-db-down` already
+#       idle-looking suite is still visible here. It is the same signal `just down-test-db` already
 #       trusts to refuse a teardown. Postgres evidence is MANDATORY for `reclaim`: if the Postgres
 #       container cannot be reached, the sweep refuses rather than treating unknown as free.
 #
@@ -176,8 +176,8 @@
 #
 # `has-seat` is a read-only probe (phaze-cohbr): 0 if `S` is an EXACT key in the registry, 1
 # otherwise. Nothing is printed on either outcome -- it exists for a caller to branch on, not to
-# read. It is what lets `just test-db-release` accept a name copy-pasted verbatim from
-# `just test-db-seats` (already the derived, registered identifier) without re-deriving it into a
+# read. It is what lets `just release-test-db-seat` accept a name copy-pasted verbatim from
+# `just list-test-db-seats` (already the derived, registered identifier) without re-deriving it into a
 # different, unregistered string -- see that recipe for the fallback to `derive-seat-name.sh` when
 # the probe misses.
 set -euo pipefail
@@ -288,7 +288,7 @@ for _ in 1 2 3; do
   sleep 0.3
 done
 if [ "$redis_reachable" -eq 0 ]; then
-  echo "❌ Valkey container '${redis_container}' is not reachable. Start the shared harness with \`just test-db\`." >&2
+  echo "❌ Valkey container '${redis_container}' is not reachable. Start the shared harness with \`just up-test-db\`." >&2
   exit 1
 fi
 
@@ -322,7 +322,7 @@ live_redis_indices() {
 }
 
 # Databases with a live client backend on the shared Postgres (liveness signal L2). Same query
-# shape `just test-db-down` uses to refuse a teardown; pytest holds its advisory-lock connection
+# shape `just down-test-db` uses to refuse a teardown; pytest holds its advisory-lock connection
 # for the whole session, so a suite that is merely thinking still shows up.
 readonly PG_LIVE_SQL="SELECT DISTINCT datname FROM pg_stat_activity
       WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%'"
@@ -486,15 +486,15 @@ cmd_allocate() {
       echo "   Valkey interference this registry exists to prevent (phaze-fwo7)." >&2
       echo "" >&2
       echo "   Reclaim first -- neither of these stops or clears the shared harness:" >&2
-      echo "     just test-db-seats                  # who holds what, and which seats look stale" >&2
-      echo "     just test-db-reclaim                # dry run: what a sweep would free" >&2
-      echo "     just test-db-reclaim --apply        # free every seat no longer in use" >&2
-      echo "     just test-db-release <other-seat>   # hand back one named seat you know is done" >&2
+      echo "     just list-test-db-seats             # who holds what, and which seats look stale" >&2
+      echo "     just reclaim-test-db-seats          # dry run: what a sweep would free" >&2
+      echo "     just reclaim-test-db-seats --apply  # free every seat no longer in use" >&2
+      echo "     just release-test-db-seat <other-seat> # hand back one named seat you know is done" >&2
       echo "" >&2
       echo "   Only if the sweep frees nothing and every seat is genuinely live, raise the space:" >&2
-      echo "     PHAZE_TEST_VALKEY_DATABASES=$((cap * 2)) just test-db" >&2
+      echo "     PHAZE_TEST_VALKEY_DATABASES=$((cap * 2)) just up-test-db" >&2
       echo "   (that resize recreates the Valkey container, so it refuses while any seat is connected;" >&2
-      echo "   do NOT reach for \`just test-db-down\` -- it removes the Postgres+Valkey pair every" >&2
+      echo "   do NOT reach for \`just down-test-db\` -- it removes the Postgres+Valkey pair every" >&2
       echo "   concurrent worktree shares and destroys their databases mid-run, phaze-ieqg.)" >&2
       exit 3
       ;;
@@ -518,7 +518,7 @@ cmd_allocate() {
 #
 # Freeing is CONDITIONAL, and that is the whole of phaze-r311e. `reclaim` classifies every seat
 # ONCE and then destroys them one at a time from that snapshot; a 5-seat sweep measured 5.46s
-# end to end, and a 38-seat registry is 20s+ of exposure. An agent running `just test-db-for` inside
+# end to end, and a 38-seat registry is 20s+ of exposure. An agent running `just provision-test-db-seat` inside
 # that window is handed its existing index back, correctly and atomically -- and the sweep, acting
 # on a snapshot taken before that happened, used to flush the database anyway and hand the index to
 # the next allocate. Two seats, one logical DB: exactly the phaze-fwo7 shape this registry exists to
@@ -753,8 +753,8 @@ cmd_release() {
     # success because this used to return 0. Point at the two non-destructive ways to find the real
     # identifier or free what is actually stale, same as the exhaustion message does.
     echo "🟡 '${seat}' holds no Valkey logical DB; nothing was released." >&2
-    echo "   If this name was a guess, \`just test-db-seats\` lists every real identifier and the" >&2
-    echo "   evidence behind it. \`just test-db-reclaim\` (dry run) / \`just test-db-reclaim --apply\`" >&2
+    echo "   If this name was a guess, \`just list-test-db-seats\` lists every real identifier and the" >&2
+    echo "   evidence behind it. \`just reclaim-test-db-seats\` (dry run) / \`just reclaim-test-db-seats --apply\`" >&2
     echo "   frees whatever is genuinely stale by reading liveness, not by trusting a name." >&2
     exit 5
   fi
@@ -805,7 +805,7 @@ cmd_release() {
     # Same rule as the sweep: a named container that will not answer leaves L2 unknown, and
     # unknown is never read as free (phaze-gmkua).
     echo "❌ Refusing to release '${seat}': Postgres container '${pg_container}' did not answer, so a" >&2
-    echo "   suite running in this seat would be invisible. Start the harness (\`just test-db\`), or --force." >&2
+    echo "   suite running in this seat would be invisible. Start the harness (\`just up-test-db\`), or --force." >&2
     exit 4
   fi
   if [ "$pg_evidence" = "obtained" ] && seat_is_postgres_live "$seat" "$pg_live"; then
@@ -833,7 +833,7 @@ cmd_release() {
   # to `release`.
   if ! free_seat "$seat" "$index" "$cap" "$seen_at" "$raw" 0; then
     echo "❌ Did not release '${seat}': ${free_seat_refusal}." >&2
-    echo "   Nothing was cleared. Re-run \`just test-db-seats\` to see where the seat stands now." >&2
+    echo "   Nothing was cleared. Re-run \`just list-test-db-seats\` to see where the seat stands now." >&2
     exit 4
   fi
   echo "✅ released ${freed_what} from '${seat}' (keys cleared, index free for the next seat)"
@@ -894,7 +894,7 @@ classify_seats() {
   lease_seconds=$((lease_hours * 3600))
 
   # Each hash is fetched ONCE and looked up locally. A per-seat `HGET` would be three `docker exec`
-  # round trips per seat; on a real 38-seat registry that turned `just test-db-seats` into a
+  # round trips per seat; on a real 38-seat registry that turned `just list-test-db-seats` into a
   # multi-second wait, which is a poor property for the command whose whole job is to be the easy
   # thing to reach for. (Local awk rather than a bash 4 associative array: /bin/bash on macOS is
   # still 3.2, and this script has to run there.)
@@ -927,7 +927,7 @@ classify_seats() {
       # structural, not observational -- an index past the cap has no logical DB for any client to
       # `SELECT`, so Postgres being unreachable tells this branch nothing it needs. Reporting it
       # "in-use" anyway (the pre-fix ordering) hid exactly the wedged 68/73/74/80-shaped entries an
-      # operator running `just test-db-seats` with Postgres down is most likely hunting for. This is
+      # operator running `just list-test-db-seats` with Postgres down is most likely hunting for. This is
       # `list`-only reporting: `reclaim --apply` still refuses outright on unavailable L2 evidence
       # before it ever reaches classify_seats (see `require_postgres_evidence`), so nothing here
       # weakens that refusal.
@@ -946,7 +946,7 @@ classify_seats() {
       # inventing an age for it would be exactly the guessed-at liveness test this design refuses.
       # A sweep leaves these alone unless the operator asks for them with --include-unstamped.
       verdict="unstamped"
-      reason="predates lease stamping, so its age is unknown; re-running \`just test-db-for\` in that seat stamps it"
+      reason="predates lease stamping, so its age is unknown; re-running \`just provision-test-db-seat\` in that seat stamps it"
     else
       age=$((now - seen_at))
       if [ "$age" -gt "$lease_seconds" ]; then
@@ -972,7 +972,7 @@ require_postgres_evidence() {
   fi
   echo "   pytest holds a Postgres connection for its whole session and often none to Valkey, so without" >&2
   echo "   that evidence a live seat looks idle and the sweep could clear a suite's keys mid-run." >&2
-  echo "   Start the harness (\`just test-db\`), or pass --no-postgres-check to sweep on the remaining" >&2
+  echo "   Start the harness (\`just up-test-db\`), or pass --no-postgres-check to sweep on the remaining" >&2
   echo "   evidence alone -- only do that when you know no suite is running." >&2
   exit 1
 }
@@ -1004,8 +1004,8 @@ cmd_list() {
     printf '  %-6s  %-40s  %-9s  %s\n' "$index" "$name" "$state" "$reason"
   done <<<"$records"
   echo ""
-  echo "  in-use  left alone by \`just test-db-reclaim\`."
-  echo "  stale   what \`just test-db-reclaim --apply\` frees."
+  echo "  in-use  left alone by \`just reclaim-test-db-seats\`."
+  echo "  stale   what \`just reclaim-test-db-seats --apply\` frees."
   echo "  unknown pre-phaze-68wky allocations; left alone unless you add --include-unstamped."
 }
 
@@ -1019,7 +1019,7 @@ cmd_reclaim() {
 
   # Report on the evidence that was actually OBTAINED, not on which flags were passed. The old
   # gate was `--no-postgres-check AND no --pg-container`, but the justfile recipe always passes
-  # `--pg-container` -- so `just test-db-reclaim --no-postgres-check`, the only shape an operator
+  # `--pg-container` -- so `just reclaim-test-db-seats --no-postgres-check`, the only shape an operator
   # ever types, swept with L2 missing and said nothing at all (phaze-gmkua defect A).
   if [ "$skip_postgres_check" -eq 1 ]; then
     if [ "$pg_evidence" = "obtained" ]; then
@@ -1115,7 +1115,7 @@ cmd_reclaim() {
     echo ""
     echo "${unstamped} seat(s) predate lease stamping (phaze-68wky) and were left alone: their age is unknown,"
     echo "and a worktree that still has PHAZE_REDIS_URL exported would keep writing to an index handed back"
-    echo "underneath it. Each one stamps itself the next time its worktree runs \`just test-db-for\`. Add"
+    echo "underneath it. Each one stamps itself the next time its worktree runs \`just provision-test-db-seat\`. Add"
     echo "--include-unstamped to clear the backlog once you know those worktrees are gone."
   fi
 }

@@ -220,14 +220,14 @@ normalized `pg_dump --schema-only` of the real pre-flatten chain's output
 `tests/integration/test_migrations/test_baseline_schema.py`.
 
 ```bash
-just db-upgrade              # Apply all pending migrations (alembic upgrade head)
-just db-revision "message"   # Create new migration (alembic revision --autogenerate)
-just db-current              # Show current migration (alembic current)
-just db-downgrade            # Roll back one migration (alembic downgrade -1)
-just db-history              # Show migration history (alembic history)
+just upgrade-db              # Apply all pending migrations (alembic upgrade head)
+just create-db-revision "message" # Create new migration (alembic revision --autogenerate)
+just show-db-revision        # Show current migration (alembic current)
+just downgrade-db            # Roll back one migration (alembic downgrade -1)
+just show-db-history         # Show migration history (alembic history)
 ```
 
-`db-revision` autogenerates from model changes — all models are imported in
+`create-db-revision` autogenerates from model changes — all models are imported in
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
@@ -312,7 +312,7 @@ the same three load-bearing properties:**
 **Production position drifts from `head` over time** — migrations land in the repo before they
 are applied to the live deployment, so a fresh CI or test database (which always builds straight
 to `head`) can be several revisions ahead of production. Check the live position with
-`just db-current` before assuming either end matches `head`; do not assume the two are in sync.
+`just show-db-revision` before assuming either end matches `head`; do not assume the two are in sync.
 
 ## Focused relationship views
 

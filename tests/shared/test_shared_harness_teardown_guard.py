@@ -1,7 +1,7 @@
-"""Guard: ``just test-db-down`` must refuse while another seat is using the shared harness (phaze-ieqg).
+"""Guard: ``just down-test-db`` must refuse while another seat is using the shared harness (phaze-ieqg).
 
 ``phaze-test-db`` and ``phaze-test-valkey`` are deliberately ONE pair of containers shared by every
-concurrent worktree -- ``just test-db-for <name>`` isolates seats by carving a database and a Valkey
+concurrent worktree -- ``just provision-test-db-seat <name>`` isolates seats by carving a database and a Valkey
 logical DB out of them, not by giving each seat its own container. That makes ``docker rm -f`` on
 either container a cluster-wide destructive act.
 
@@ -25,7 +25,7 @@ WHY A DOC COMMENT WAS NOT ENOUGH
 
 The recipe's ``[doc(...)]`` string has warned "affects every concurrent worktree/session using
 them" since phaze-20vd. It is displayed by ``just --list``, which is read at leisure -- never at
-the moment somebody types ``just test-db-down`` to unstick something. The guard has to run inside
+the moment somebody types ``just down-test-db`` to unstick something. The guard has to run inside
 the recipe, and it has to name the seats it is protecting so the operator can decide.
 
 This test parses the justfile as text: no docker daemon, no ``just`` binary, safe anywhere.
@@ -55,25 +55,25 @@ def test_test_db_down_probes_for_live_seats_before_removing_anything() -> None:
     Ordering is the whole point: a check that runs after the removal is a post-mortem, not a
     guard. Asserted positionally rather than by mere presence.
     """
-    body = _recipe_body("test-db-down")
+    body = _recipe_body("down-test-db")
     probe_at = body.find("pg_stat_activity")
     remove_at = body.find("docker rm -f")
-    assert probe_at != -1, "test-db-down must probe pg_stat_activity for other seats"
-    assert remove_at != -1, "test-db-down must still be able to remove the containers"
+    assert probe_at != -1, "down-test-db must probe pg_stat_activity for other seats"
+    assert remove_at != -1, "down-test-db must still be able to remove the containers"
     assert probe_at < remove_at, "the live-seat probe must run BEFORE the containers are removed"
 
 
 def test_the_probe_matches_per_worktree_test_databases() -> None:
     """The probe must look at every ``phaze%`` database, not only the default ``phaze_test``.
 
-    Every isolated seat is named ``phaze_<name>_test`` by ``just test-db-for``, so a probe pinned
+    Every isolated seat is named ``phaze_<name>_test`` by ``just provision-test-db-seat``, so a probe pinned
     to the literal default database would see none of the seats it exists to protect -- it would
     pass the check precisely when the most seats are at risk. The pattern is deliberately not
     narrowed to ``phaze%test``: a database misplaced on this shared container under a non-``test``
     name (e.g. a perf corpus seeded here by mistake, phaze-zpdyg) would otherwise be invisible to
     this guard even while it lives on the exact container the recipe is about to remove.
     """
-    body = _recipe_body("test-db-down")
+    body = _recipe_body("down-test-db")
     assert "'phaze%'" in body, "the live-seat probe must match every phaze-prefixed database on the shared container"
     assert "client backend" in body, "the probe must exclude Postgres' own background workers, which are always present"
 
@@ -85,7 +85,7 @@ def test_the_refusal_is_overridable_but_not_by_accident() -> None:
     also not be bypassable by re-running the same command, which is what a bare confirmation
     prompt degrades to.
     """
-    body = _recipe_body("test-db-down")
+    body = _recipe_body("down-test-db")
     assert FORCE_ENV_VAR in body, "an escape hatch must exist for genuinely stale connections"
     assert body.count(FORCE_ENV_VAR) >= 2, "the refusal message must name the override, not just honour it"
     assert "exit 1" in body, "the guard must fail the recipe, not merely print a warning"
@@ -97,6 +97,6 @@ def test_the_refusal_explains_the_failure_mode_it_prevents() -> None:
     "Containers are in use" reads as a lock to be forced. "Forcing this makes five suites report
     branch-unrelated failures that pass on re-run" reads as a reason to wait.
     """
-    body = _recipe_body("test-db-down")
+    body = _recipe_body("down-test-db")
     assert "isolated re-run" in body, "the refusal must describe the false-red symptom it prevents"
     assert "phaze-ieqg" in body, "the refusal must cite the bead so the evidence trail is reachable"

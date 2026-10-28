@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Derive the safe, collision-free Postgres/Redis identifier for one `just test-db-for` seat
+# Derive the safe, collision-free Postgres/Redis identifier for one `just provision-test-db-seat` seat
 # name (phaze-fmfk).
 #
 # A raw Postgres unquoted identifier can't contain a hyphen, but this repo's own worktree
@@ -21,7 +21,7 @@
 #
 # 2. Normalize hyphens AND DOTS to underscores for the SQL identifier -- dots are accepted because
 #    every beadhive epic child id contains one (`phaze-o8sie.3`), and CLAUDE.md's own isolation
-#    instruction is `just test-db-for <bead-id>`, so the id must be usable verbatim. But '-', '_'
+#    instruction is `just provision-test-db-seat <bead-id>`, so the id must be usable verbatim. But '-', '_'
 #    and '.' now all collapse onto the same text, so 'my-seat', 'my_seat' and 'my.seat' would
 #    otherwise silently land on ONE seat: the exact shared-database defect this whole mechanism
 #    exists to prevent (phaze-fwo7). Disambiguate by appending a short, DETERMINISTIC hash of the

@@ -173,12 +173,12 @@ def test_both_gates_run_the_integrity_probe_before_anything_that_needs_the_venv(
     match = re.search(rf"^{re.escape(recipe)}: (.+)$", _JUSTFILE, re.MULTILINE)
     assert match is not None, f"recipe {recipe!r} is missing"
     deps = match.group(1).split()
-    assert deps[0] == "worktree-integrity", f"{recipe} must probe the checkout FIRST, got {deps}"
+    assert deps[0] == "check-worktree-integrity", f"{recipe} must probe the checkout FIRST, got {deps}"
     assert "lint" in deps and "typecheck" in deps
 
 
 def test_the_probe_recipe_runs_the_script_outside_uv() -> None:
-    match = re.search(r"^worktree-integrity:\n((?: +.*\n)+)", _JUSTFILE, re.MULTILINE)
+    match = re.search(r"^check-worktree-integrity:\n((?: +.*\n)+)", _JUSTFILE, re.MULTILINE)
     assert match is not None
     body = match.group(1).strip()
     assert body == "bash scripts/worktree-integrity.sh"

@@ -31,11 +31,11 @@ def test_single_value_recipes_shell_quote_sentinel_inputs() -> None:
     sentinel = "space ' quote; $(touch second-command)"
     cases = {
         "test-file": [sentinel],
-        "db-revision": [sentinel],
+        "create-db-revision": [sentinel],
         "download-models": [sentinel],
-        "image-build-arm64": [sentinel],
-        "repowise-coverage-ci": [sentinel],
-        "integration-test-down": [sentinel],
+        "build-image-arm64": [sentinel],
+        "refresh-repowise-coverage-ci": [sentinel],
+        "down-integration-test": [sentinel],
     }
     for recipe, arguments in cases.items():
         rendered = _dry_run(recipe, *arguments)
@@ -49,7 +49,7 @@ def test_whitespace_bearing_paths_and_messages_survive_as_one_argument() -> None
     path = "tests/path with spaces/test_file.py"
     message = "migration message with spaces"
     assert path in shlex.split(_dry_run("test-file", path))
-    assert message in shlex.split(_dry_run("db-revision", message))
+    assert message in shlex.split(_dry_run("create-db-revision", message))
     assert path in shlex.split(_dry_run("download-models", path))
 
 
@@ -64,7 +64,7 @@ def test_invalid_runtime_and_bucket_mode_fail_before_external_commands(tmp_path:
     env = os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"}
 
     parity = subprocess.run(  # noqa: S603 - resolved Just binary with explicit argv and controlled PATH
-        [JUST, "parity-dump", "image", str(tmp_path), str(tmp_path / "out.json"), "python -c bad"],
+        [JUST, "dump-parity", "image", str(tmp_path), str(tmp_path / "out.json"), "python -c bad"],
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -86,7 +86,7 @@ def test_invalid_runtime_and_bucket_mode_fail_before_external_commands(tmp_path:
 
 def test_invalid_seat_name_fails_before_test_db_mutation() -> None:
     result = subprocess.run(  # noqa: S603 - resolved Just binary with explicit invalid test input
-        [JUST, "test-db-for", "Bad; docker rm"],
+        [JUST, "provision-test-db-seat", "Bad; docker rm"],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -94,7 +94,7 @@ def test_invalid_seat_name_fails_before_test_db_mutation() -> None:
     )
     assert result.returncode != 0
     assert "invalid seat name" in result.stderr
-    assert "just test-db" not in result.stdout
+    assert "just up-test-db" not in result.stdout
 
 
 def test_invalid_tag_fails_before_registry_authentication(tmp_path: Path) -> None:
@@ -141,7 +141,7 @@ def test_invalid_benchmark_counts_fail_before_database_or_python(tmp_path: Path)
     fake_uv.write_text(f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\n", encoding="utf-8")
     fake_uv.chmod(0o755)
     env = os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"}
-    for recipe in ("benchmark-seed", "benchmark-explain", "benchmark-analyze"):
+    for recipe in ("seed-benchmark-db", "explain-benchmark-db", "measure-analyze-workspace"):
         result = subprocess.run(  # noqa: S603 - resolved Just binary with explicit argv and controlled PATH
             [JUST, recipe, "0; touch bad"], cwd=REPO_ROOT, env=env, text=True, capture_output=True, check=False
         )
@@ -159,7 +159,7 @@ def test_variadic_flags_are_forwarded_as_discrete_argv(tmp_path: Path) -> None:
     fake_uv.chmod(0o755)
     sentinel = "branch; $(touch never)"
     result = subprocess.run(  # noqa: S603 - resolved Just binary with explicit argv and controlled PATH
-        [JUST, "branch-check", "--coverage", "coverage.json", "--base-ref", sentinel],
+        [JUST, "check-branch-coverage", "--coverage", "coverage.json", "--base-ref", sentinel],
         cwd=REPO_ROOT,
         env=os.environ | {"ARGV_LOG": str(log), "PATH": f"{fake_bin}:{os.environ['PATH']}"},
         text=True,

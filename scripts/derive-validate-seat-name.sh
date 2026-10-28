@@ -19,11 +19,11 @@
 #   auto-<label>-<pathhash>
 #
 #   * `auto-` marks the seat as gate-provisioned rather than operator-provisioned, so
-#     `just test-db-seats` shows at a glance which seats nobody typed a `test-db-for` for.
+#     `just list-test-db-seats` shows at a glance which seats nobody typed a `test-db-for` for.
 #     It also guarantees the leading-lowercase-letter that `derive-seat-name.sh` requires,
 #     whatever the branch is called.
 #   * `<label>` is the branch name (or, detached, the worktree directory name), sanitized and
-#     truncated. Readability only -- it is what makes `just test-db-seats` legible. It carries
+#     truncated. Readability only -- it is what makes `just list-test-db-seats` legible. It carries
 #     no uniqueness guarantee and is not relied on for any.
 #   * `<pathhash>` is a short digest of the ABSOLUTE worktree root. This is the part that
 #     actually guarantees two worktrees never share a seat. Branch names are unique per worktree
@@ -61,7 +61,7 @@ label="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-
 label="$(printf '%s' "$label" | sed -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//')"
 # Truncated for legibility only. `derive-seat-name.sh` budgets the Postgres 63-byte identifier
 # cap itself, so this cannot be the thing that overflows -- but an 18-char label keeps the derived
-# identifier readable in `just test-db-seats` instead of being truncated to noise there.
+# identifier readable in `just list-test-db-seats` instead of being truncated to noise there.
 label="${label:0:18}"
 label="$(printf '%s' "$label" | sed -e 's/-$//')"
 [ -n "$label" ] || label="wt"

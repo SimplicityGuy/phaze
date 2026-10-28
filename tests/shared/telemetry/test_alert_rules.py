@@ -8,7 +8,7 @@ The other half is `promtool`, the real consumer of both the rules and their unit
       prom/prometheus:v3.10.0 test rules /alerts/phaze-alerts.test.yml
 
 phaze-jjjy8 wired that into a gate rather than leaving it a reproduce-by-hand command: `just
-alerts-test` runs it (loudly skipping when `promtool` is not on the local PATH) and is a
+test-alerts` runs it (loudly skipping when `promtool` is not on the local PATH) and is a
 dependency of `just check-all`; `.github/workflows/code-quality.yml` installs the same
 v3.10.0 `promtool` binary and always runs it for real, so CI never merely skips.
 

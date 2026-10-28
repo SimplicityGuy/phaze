@@ -4,7 +4,7 @@
 #
 # The naive SELECT-then-CREATE (check if the datname row exists; CREATE only if not) is a
 # check-then-act TOCTOU race: two invocations targeting the SAME database (e.g. several
-# developers running `just test-db` / `just test-db-for <name>` / `just integration-test`
+# developers running `just up-test-db` / `just provision-test-db-seat <name>` / `just test-integration`
 # at once against a shared container) can both see the SELECT return no row, then both
 # attempt CREATE DATABASE. Under `set -e` the loser used to kill the whole recipe on
 # Postgres's "already exists" error instead of no-op'ing, even though the database this

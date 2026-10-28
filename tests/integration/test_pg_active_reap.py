@@ -74,7 +74,7 @@ async def broker() -> AsyncGenerator[tuple[PostgresQueue, async_sessionmaker[Asy
     The queue is the production broker under test (``connect()`` runs ``init_db()``, creating
     ``saq_jobs``); the session factory is how the control-side reaper reaches the same table, exactly
     as ``ctx["async_session"]`` does in the controller. Probes connectivity first and ``pytest.skip``s
-    when Postgres is down, so a bare ``uv run pytest`` (no ``just test-db``) skips rather than errors.
+    when Postgres is down, so a bare ``uv run pytest`` (no ``just up-test-db``) skips rather than errors.
     """
     import psycopg
     from saq.queue.postgres import PostgresQueue

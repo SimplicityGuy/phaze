@@ -22,7 +22,7 @@ established ``settings`` monkeypatch idiom rather than relying on ambient env:
   ``tests.db_guard.integration_dsns``, the same shared resolver the other live-broker integration tests
   use) instead of the unreachable ``postgres:5432/phaze`` default, so ``controller_queue.connect()`` (and
   the reverse-order shutdown that dereferences it) succeed. This is the ``integration`` bucket: it needs
-  ``TEST_DATABASE_URL`` (defaults to the 5433 harness locally via ``just test-db``; 5432 in CI, where the
+  ``TEST_DATABASE_URL`` (defaults to the 5433 harness locally via ``just up-test-db``; 5432 in CI, where the
   DB service container publishes that port) so the module engine's startup ``SELECT 1`` has a reachable DB.
 """
 

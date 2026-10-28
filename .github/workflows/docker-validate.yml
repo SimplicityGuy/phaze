@@ -43,7 +43,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: 🔍 Validate every shipped Dockerfile
-        run: just docker-validate
+        run: just validate-dockerfiles
 
       - name: 🐳 Test Docker build
         env:
@@ -85,4 +85,4 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 🐳 Validate every shipped Compose shape
-        run: just docker-compose-validate
+        run: just validate-compose

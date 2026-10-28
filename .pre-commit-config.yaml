@@ -127,12 +127,12 @@ repos:
           tests,services` excluded every file anywhere under src/phaze/services -- not just
           the top-level services/ prototype dir it was meant for -- and phaze-08fom's B101
           assert in src/phaze/services/set_glyph_colors.py passed every local gate and only
-          failed on main's post-merge CI, which runs `just bandit` (`-r src/ -x tests`, no
-          "services" exclusion at all). Run the IDENTICAL `just bandit` recipe here instead
+          failed on main's post-merge CI, which runs `just run-bandit` (`-r src/ -x tests`, no
+          "services" exclusion at all). Run the IDENTICAL `just run-bandit` recipe here instead
           of a second, drift-prone invocation, and force pass_filenames: false + a fixed
           `-r src/` target so partial-staged runs cannot under-scan either.
-          tests/shared/test_bandit_invocation_parity.py pins this to `just bandit`.
-        entry: just bandit
+          tests/shared/test_bandit_invocation_parity.py pins this to `just run-bandit`.
+        entry: just run-bandit
         language: system
         pass_filenames: false
         types: [python]

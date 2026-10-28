@@ -395,7 +395,7 @@ def test_production_provision_names_redis_index_exhaustion_and_both_remedies(tmp
 
     message = str(raised.value)
     assert "index pool is exhausted" in message
-    assert "just test-db-reclaim --apply" in message
+    assert "just reclaim-test-db-seats --apply" in message
     assert "PHAZE_TEST_PARALLEL=0" in message
     assert exhausted in message
 
@@ -453,5 +453,5 @@ def test_source_never_uses_shared_or_forced_cleanup_bypasses() -> None:
     assert 'environment.pop("PYTEST_ADDOPTS", None)' in source
     assert 'environment["PHAZE_TEST_DB_ALLOW_SHARED"]' not in source
     assert "PHAZE_TEST_DB_FORCE_DOWN" not in source
-    assert "test-db-down" not in source
+    assert "down-test-db" not in source
     assert "--force" not in source

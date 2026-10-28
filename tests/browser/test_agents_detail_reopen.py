@@ -83,7 +83,7 @@ async def test_details_reopen_after_clicking_close(page: Any, seed: Any, identit
 async def test_header_health_pill_survives_stats_poll_and_fits_phone(page: Any) -> None:
     await open_shell(page, "/s/agents")
     await settled(page)
-    assert await page.locator("header").evaluate("el => getComputedStyle(el).display") == "flex", "build the stylesheet with just tailwind"
+    assert await page.locator("header").evaluate("el => getComputedStyle(el).display") == "flex", "build the stylesheet with just build-tailwind"
     pill = page.get_by_role("button").and_(page.locator("#attention-pill"))
     await pill.wait_for(state="visible")
     assert await pill.get_attribute("aria-controls") == "attention-tray"

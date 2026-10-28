@@ -1,7 +1,7 @@
 """REQ-36-2: native priority + scheduled-park ordering on a real PostgresQueue.
 
-These run against the ephemeral integration-test Postgres broker (``just test-db`` /
-``just integration-test``, host port 5433). They pin two behaviors that are ONLY
+These run against the ephemeral integration-test Postgres broker (``just up-test-db`` /
+``just test-integration``, host port 5433). They pin two behaviors that are ONLY
 observable against a live Postgres broker and that the migration depends on
 (``saq/queue/postgres.py`` ``_dequeue``, lines 644-682):
 
@@ -48,7 +48,7 @@ async def pg_queue() -> AsyncGenerator[PostgresQueue]:
     """Yield a connected real ``PostgresQueue`` with a per-test-unique name.
 
     Probes broker connectivity FIRST and ``pytest.skip``s if Postgres is not up, so a
-    bare ``uv run pytest`` (no ``just test-db``) is a skip, not an error. ``connect()``
+    bare ``uv run pytest`` (no ``just up-test-db``) is a skip, not an error. ``connect()``
     opens the psycopg3 pool and runs ``init_db()`` (creates ``saq_jobs`` under the SAQ
     advisory lock). The unique queue name isolates rows from any other test; teardown
     still best-effort-deletes this queue's rows before disconnecting the pool.

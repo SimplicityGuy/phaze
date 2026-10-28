@@ -380,7 +380,7 @@ def test_mp4_delete_branch_removes_atoms_from_real_container(tmp_path: Path) -> 
 def test_asf_delete_branch_removes_attributes_from_real_container(tmp_path: Path) -> None:
     """Undo's mechanism for the format this bead ADDED -- ``_write_asf``'s ``del audio[asf_key]``.
 
-    Caught by ``just branch-check`` rather than by inspection: the first draft of this module gave
+    Caught by ``just check-branch-coverage`` rather than by inspection: the first draft of this module gave
     the delete branch its own test for Vorbis and for MP4 and left ASF -- the one newly-written
     writer -- with only the scalar-write path exercised. A new format's destructive path is
     precisely where the absence of a test costs most, and precisely where "it's the same shape as

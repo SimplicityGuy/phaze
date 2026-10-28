@@ -132,7 +132,7 @@ jobs:
       # production's Postgres ever becomes a custom build (e.g. the pgvector adoption
       # gated on the phaze-ytgo verdict matrix), this pin cannot follow it in place; it
       # would first need the custom image published to GHCR (phaze already does this for
-      # the app image via `just image-push`) and repointed here. Kept in step with the
+      # the app image via `just push-image`) and repointed here. Kept in step with the
       # justfile's `postgres_image` variable and docker-compose.yml's `image:` by
       # tests/agents/deployment/test_postgres_image_pin.py -- bump all three together.
       postgres:
@@ -317,7 +317,7 @@ jobs:
         run: |
           psql -h localhost -U phaze -d postgres -c 'CREATE DATABASE phaze_migrations_test OWNER phaze;'
 
-      # phaze-1dc8g: re-hash the service role with one SCRAM iteration, as `just test-db` does for
+      # phaze-1dc8g: re-hash the service role with one SCRAM iteration, as `just up-test-db` does for
       # the local harness. asyncpg derives the SCRAM key in a pure-Python loop (~12 ms per connect
       # at the default 4096), and the NullPool test engine opens a fresh connection per DB test.
       # Addressed by the service's container id, never a host/port -- see the script's header.
@@ -463,12 +463,12 @@ jobs:
           merge-multiple: true
 
       - name: 🧮 Combine coverage and enforce gate
-        run: just coverage-combine
+        run: just combine-coverage
 
       # CI never ingests into repowise: its runner-local .repowise index would be discarded.
       # Export both halves instead so a report downloaded at this exact commit remains usable:
       # .coverage carries per-test contexts; Cobertura carries per-file line totals. The durable
-      # local index is refreshed directly with `just repowise-coverage <isolated-seat-name>`.
+      # local index is refreshed directly with `just refresh-repowise-coverage <isolated-seat-name>`.
       - name: 📤 Upload combined coverage reports
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
@@ -597,7 +597,7 @@ jobs:
           set -euo pipefail
           echo "Chromium cache hit: ${CACHE_HIT}"
           set +e
-          timeout --kill-after=5s 300 just test-browser-install-ci
+          timeout --kill-after=5s 300 just install-test-browser-ci
           status=$?
           set -e
           if [ "${status}" -ne 0 ]; then

@@ -1,7 +1,7 @@
 """``scripts/fused_guards.py``: the report-only context for arc-level coverage's blind spot (phaze-5f1sv).
 
 coverage.py counts branch arcs per decision statement, so ``if A or B or C:`` is two arcs however many
-operands it fuses. The detector exists so ``just branch-check`` can say where those decisions are; it
+operands it fuses. The detector exists so ``just check-branch-coverage`` can say where those decisions are; it
 must find every shape the bead names and must never turn into a gate.
 """
 

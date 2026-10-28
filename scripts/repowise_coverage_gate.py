@@ -1,6 +1,6 @@
 """Fail the repowise coverage refresh unless BOTH ingests landed, freshly, against the indexed tree.
 
-``scripts/repowise-coverage.sh`` (driven by ``just repowise-coverage``) runs the five-step refresh:
+``scripts/repowise-coverage.sh`` (driven by ``just refresh-repowise-coverage``) runs the five-step refresh:
 reindex, suite-with-contexts, ``repowise coverage add .coverage``, ``coverage xml`` +
 ``repowise coverage add coverage.xml``, ``repowise health``. This module is the gate it runs at the
 end, and it exists because three of that path's failure modes are SILENT.

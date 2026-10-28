@@ -12,7 +12,7 @@ real ``count()`` SQL -- a unit-level fake cannot model them:
   ``count("incomplete")`` is UNCHANGED (parked rows are still ``status='queued'``) -- so the
   paused backlog is observable as "incomplete", not silently lost (T-37-02).
 
-Run with real PG via ``just integration-test``. The package is auto-marked ``integration``
+Run with real PG via ``just test-integration``. The package is auto-marked ``integration``
 by ``tests/conftest.py``; the explicit ``pytestmark`` below is the documented Plan 37-03
 artifact contract.
 """

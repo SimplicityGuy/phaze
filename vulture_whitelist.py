@@ -1,7 +1,7 @@
 # ruff: noqa
 """Hand-audited vulture false-positive whitelist for the `src/phaze` dead-code sweep (CLEAN-02, D-12/D-13).
 
-This file is consumed by `just vulture` (see the justfile `vulture` recipe):
+This file is consumed by `just run-vulture` (see the justfile `vulture` recipe):
 
     uv run vulture src/phaze vulture_whitelist.py \\
         --min-confidence 80 \\

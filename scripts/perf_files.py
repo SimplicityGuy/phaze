@@ -1,7 +1,7 @@
 """Repeat Files list and route measurements against a prepared, isolated synthetic test corpus.
 
 Run as ``uv run python -m scripts.perf_files --redis-url "$PHAZE_REDIS_URL"`` after exporting
-TEST_DATABASE_URL for a dedicated ``just test-db-for`` seat. Never point pytest at the benchmark
+TEST_DATABASE_URL for a dedicated ``just provision-test-db-seat`` seat. Never point pytest at the benchmark
 seat: its session fixtures drop application tables. This tool never seeds or resets application
 rows; SAQ's real queue handles can initialize their own broker tables. No workers or lifespan run.
 

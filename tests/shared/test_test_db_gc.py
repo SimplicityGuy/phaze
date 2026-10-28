@@ -1,4 +1,4 @@
-"""Behaviour tests for ``just test-db-gc`` (phaze-robzi.2) -- the STOCK half of the epic.
+"""Behaviour tests for ``just gc-test-dbs`` (phaze-robzi.2) -- the STOCK half of the epic.
 
 ``test-db-reclaim --apply`` (phaze-robzi.1) now drops a freed seat's own two databases in the same
 operation that frees its Redis index, going forward. It cannot reach a database orphaned BEFORE
@@ -435,7 +435,7 @@ def _recipe_body(name: str) -> str:
 
 
 def test_the_gc_recipe_exists_and_is_a_dry_run_by_default() -> None:
-    body = _recipe_body("test-db-gc *flags:")
+    body = _recipe_body("gc-test-dbs *flags:")
     assert "scripts/test-db-gc.sh" in body
     command = next(line for line in body.splitlines() if "scripts/test-db-gc.sh" in line)
     assert "--apply" not in command, "the recipe must not force --apply itself"
@@ -443,7 +443,7 @@ def test_the_gc_recipe_exists_and_is_a_dry_run_by_default() -> None:
 
 
 def test_the_gc_recipe_never_tears_anything_down() -> None:
-    body = _recipe_body("test-db-gc *flags:")
+    body = _recipe_body("gc-test-dbs *flags:")
     assert "docker rm" not in body
     assert "docker stop" not in body
-    assert "test-db-down" not in body
+    assert "down-test-db" not in body

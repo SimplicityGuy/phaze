@@ -151,20 +151,20 @@ For concurrent worktrees, never share PostgreSQL or Redis. Allocate a seat and c
 exports printed by the recipe:
 
 ```bash
-just test-db-for my-seat
+just provision-test-db-seat my-seat
 # Copy all three exports printed by the command before running tests.
 ```
 
 The seat name is normalized and hashed, and Redis receives a dedicated logical database. Do not
 hand-construct these values. One database also supports only one pytest process; the session lock
 refuses a competing process before collection.
-When the worktree is finished, `just test-db-release my-seat` returns only that seat's Redis index.
-Never use `just test-db-down` for seat cleanup: the containers are shared by every active seat.
+When the worktree is finished, `just release-test-db-seat my-seat` returns only that seat's Redis index.
+Never use `just down-test-db` for seat cleanup: the containers are shared by every active seat.
 
 Browser contracts are a separate real-application Playwright suite:
 
 ```bash
-just test-browser-install  # once per machine
+just install-test-browser  # once per machine
 just test-browser
 ```
 
@@ -175,7 +175,7 @@ browser acceptance checks) and uploads traces, screenshots, and logs on failure.
 To refresh Repowise with both line coverage and per-test coverage contexts:
 
 ```bash
-just repowise-coverage my-seat
+just refresh-repowise-coverage my-seat
 ```
 
 ## Deployment

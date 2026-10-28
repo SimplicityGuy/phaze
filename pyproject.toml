@@ -133,7 +133,7 @@ phaze = "phaze.cli:main"
 # "finish the job" by trying to move selection into this table -- there is nothing to move
 # it to, and a key here that coverage.py ignores reads as configured while doing nothing.
 #
-# `scripts/coverage_floor.py` and `just branch-check` both read this path.
+# `scripts/coverage_floor.py` and `just check-branch-coverage` both read this path.
 [tool.coverage.json]
 output = "coverage.json"
 
@@ -150,7 +150,7 @@ output = "coverage.json"
 #     statements 17554/17771 = 98.7789%
 #     branches    3684/3866  = 95.2923%
 #     combined   21238/21637 = 98.1559%   <- what this key now checks
-# 3.16 points of headroom, so this stays ARMED. It also has to: `just coverage-combine` passes
+# 3.16 points of headroom, so this stays ARMED. It also has to: `just combine-coverage` passes
 # `--fail-under=95` on the CLI, a CLI value silently overrides this config value, and
 # `tests/shared/test_coverage_gate.py` fails the build if the two sites ever disagree.
 #
@@ -200,7 +200,7 @@ source = ["phaze"]
 
 # phaze-jktlb. WHERE the Cobertura report lands -- the companion to the json table above, and
 # established by the same measurement: `--cov-report=xml` with no `:DEST`, and the bare
-# `coverage xml` that `just coverage-combine` runs, both take their destination from here.
+# `coverage xml` that `just combine-coverage` runs, both take their destination from here.
 # This retired the `-o coverage.xml` that scripts/repowise-coverage.sh used to hardcode.
 #
 # Codecov reads this file (.github/workflows/tests.yml `files: ./coverage.xml`), so the path
