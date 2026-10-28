@@ -67,7 +67,7 @@ cannot read a `justfile` variable.
 #### The `redis` service runs Valkey
 
 The `redis` service runs `valkey/valkey:9-alpine`  — the same image as the
-local test harness (`test_redis_image` in the `justfile`), both CI service containers, and the
+local test harness (`test_valkey_image` in the `justfile`), both CI service containers, and the
 real-server test fixtures; `tests/agents/deployment/test_redis_image_pin.py` fails the build if any
 of them drift. The service keeps its name, port and `REDIS_PASSWORD`, and the app keeps redis-py, so
 nothing that connects to it changes.
@@ -145,7 +145,7 @@ where they differ:
 - **[cloud-burst.md](cloud-burst.md)** — the `kind=compute` agent: the `docker-compose.cloud-agent.yml`
   walkthrough, the OCI A1 provisioning runbook (OpenTofu spec, Tailscale grants ACL, least-privilege
   `phaze_broker` Postgres role), and the smoke test. On the file-server/agent host, bring the compute
-  agent up/down with **`just cloud-agent-up`** / **`just cloud-agent-down`** (standalone
+  agent up/down with **`just up-cloud-agent`** / **`just down-cloud-agent`** (standalone
   `docker-compose.cloud-agent.yml`).
 - **[k8s-burst.md](k8s-burst.md)** — the `kind=kueue` clusters: the cluster-admin Kueue objects
   (ResourceFlavor / ClusterQueue / LocalQueue), the namespaced RBAC Role phaze's ServiceAccount needs
@@ -841,7 +841,7 @@ Before shipping a file-server host to production:
 - `.env.example.agent` — file-server agent environment template
 - `docker-compose.yml` — app-server compose
 - `docker-compose.agent.yml` — file-server agent compose
-- `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (`just cloud-agent-up` / `cloud-agent-down`)
+- `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (`just up-cloud-agent` / `down-cloud-agent`)
 - `docker-compose.dev.yml` — dev-only overlay (live reload; `just up-dev`, explicit `-f`, never auto-merged)
 - `backends.toml` — the cloud-backend registry (mounted at `PHAZE_BACKENDS_CONFIG_FILE`; absent ⇒ implicit local-only)
 - [docs/cloud-burst.md](cloud-burst.md) — `kind=compute` agent deploy + runbook (deep-dive; config surface is `backends.toml`)

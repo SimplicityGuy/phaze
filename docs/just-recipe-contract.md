@@ -20,20 +20,15 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 
 | Recipe | Classification | Verified consumer or current operator use |
 |---|---|---|
-| `agent-down` | operator convenience | file-server agent topology teardown |
 | `alerts-test` | internal helper | `check-all`; CI code-quality workflow (promtool test rules against alerts/phaze-alerts.test.yml) |
 | `bandit` | internal helper | `security-all`; focused local Python SAST |
 | `benchmark-analyze` | operator convenience | measure Analyze workspace and pipeline-stat scaling |
-| `benchmark-db-down` | operator convenience | dispose the dedicated synthetic benchmark database |
-| `benchmark-db-up` | operator convenience | start or verify the dedicated synthetic benchmark database |
 | `benchmark-explain` | operator convenience | measure query plans and pipeline-stat latency |
 | `benchmark-seed` | operator convenience | provision the reusable synthetic scale corpus |
 | `branch-check` | external contract | per-bead branch-coverage runbook |
 | `check` | external contract | Beadhive postland/union validation and manual full gate |
 | `check-all` | external contract | Beadhive molecule validation |
 | `check-fast` | external contract | Beadhive check/submit/merge validation |
-| `cloud-agent-down` | operator convenience | cloud-agent deployment teardown |
-| `cloud-agent-up` | operator convenience | cloud-agent deployment bring-up |
 | `corpus-distribution` | historical one-off | reproduce ADR-0012 (verification fidelity and operator attribution) archive-bound measurements |
 | `coverage-combine` | external contract | `.github/workflows/tests.yml` coverage fan-in |
 | `db-current` | operator convenience | inspect the active Alembic revision |
@@ -50,7 +45,10 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `docker-validate` | operator convenience | local Dockerfile lint mirror |
 | `docs-check` | operator convenience | deterministic maintained-document and source-cited diagram-asset gate |
 | `down` | operator convenience | application-server topology teardown |
+| `down-agent` | operator convenience | file-server agent topology teardown (alias `agent-down`) |
 | `down-all` | operator convenience | combined application/agent topology teardown |
+| `down-benchmark-db` | operator convenience | dispose the dedicated synthetic benchmark database (alias `benchmark-db-down`) |
+| `down-cloud-agent` | operator convenience | cloud-agent deployment teardown (alias `cloud-agent-down`) |
 | `down-dev` | operator convenience | live-reload development topology teardown |
 | `download-models` | external contract | model provisioning runbooks and image parity workflows |
 | `fmt` | operator convenience | apply Ruff formatting |
@@ -97,6 +95,8 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `up` | operator convenience | production application-server bring-up |
 | `up-agent` | operator convenience | file-server agent bring-up |
 | `up-all` | operator convenience | combined local application/agent bring-up |
+| `up-benchmark-db` | operator convenience | start or verify the dedicated synthetic benchmark database (alias `benchmark-db-up`) |
+| `up-cloud-agent` | operator convenience | cloud-agent deployment bring-up (alias `cloud-agent-up`) |
 | `up-dev` | operator convenience | live-reload UI development bring-up |
 | `update-hooks` | operator convenience | frozen pre-commit hook refresh |
 | `vulture` | operator convenience | non-blocking dead-code candidate sweep |
@@ -104,6 +104,22 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `worker-logs` | operator convenience | follow application-server worker logs |
 | `worker-restart` | operator convenience | restart the application-server worker |
 | `worktree-integrity` | internal helper | first step of `check` and `check-fast` (checkout-integrity probe, phaze-ofrxb); focused diagnosis of a hollowed seat |
+
+## Naming, groups and aliases
+
+The justfile header states both rules, and `tests/shared/test_just_recipe_contract.py` pins them:
+
+- **Naming.** A lifecycle verb leads (`up-<stack>` / `down-<stack>`); every other recipe is
+  `<area>-<action>`, so a family sorts together (`test-db-*`, `benchmark-*`, `db-*`, `docker-*`).
+- **Groups.** A recipe sits in the `[group()]` named for the thing it operates on: `setup`,
+  `stack`, `docker`, `gate`, `lint`, `test`, `ci`, `harness`, `benchmark`, `db`, `repowise`,
+  `security`, `models`, `maintenance`.
+- **Docs.** Each `[doc()]` is one line of at most 60 characters, so `just --list` never wraps; the
+  detail lives in the comment block above the recipe.
+- **Aliases.** A renamed recipe keeps its old name as a just `alias`. `just --summary` (what this
+  inventory tracks) lists only the new name; `just --list` shows the alias beside it. phaze-aje5d
+  renamed `agent-down`, `cloud-agent-up`, `cloud-agent-down`, `benchmark-db-up` and
+  `benchmark-db-down`, and kept all five old names as aliases.
 
 ## Compatibility rules
 

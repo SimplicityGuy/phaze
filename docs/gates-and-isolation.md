@@ -737,7 +737,8 @@ A seat is in use, and left alone, while **any** of three signals holds:
   `--no-postgres-check` waives the refusal, not the evidence — it warns, and a reachable Postgres
   is still consulted and still protects a seat.
 - **L3** — its lease is unexpired. `test-db-for` stamps the lease on every call and it runs
-  `PHAZE_TEST_REDIS_SEAT_LEASE_HOURS`, default 72.
+  `PHAZE_TEST_VALKEY_SEAT_LEASE_HOURS` (pre-rename fallback `PHAZE_TEST_REDIS_SEAT_LEASE_HOURS`),
+  default 72.
 
 **Two conditions override L3 — a live lease is not on its own enough to keep a seat.** Neither ever
 overrides L1 or L2; nothing reclaims a seat that is demonstrably in use.
@@ -765,7 +766,7 @@ a fresh index rather than one it just freed** (phaze-08sww). Recycling happens o
 genuinely demands it.
 
 `scripts/redis-seat-registry.sh` documents the full rule set. **A full registry is never a reason to
-run `test-db-down`** — reclaim first, and only consider raising `PHAZE_TEST_REDIS_DATABASES` if the
+run `test-db-down`** — reclaim first, and only consider raising `PHAZE_TEST_VALKEY_DATABASES` if the
 sweep frees nothing.
 
 ## One database, one pytest process (phaze-ieqg)
@@ -971,7 +972,7 @@ Scope every such query with `current_database()`. For an advisory-lock count use
 
 ## Never `just test-db-down` while another seat is running
 
-`phaze-test-db` and `phaze-test-redis` are **one shared pair of containers**; `test-db-for` carves
+`phaze-test-db` and `phaze-test-valkey` are **one shared pair of containers**; `test-db-for` carves
 seats out of them rather than giving each seat its own. On 2026-07-29 a `test-db-down` + recreate
 mid-round destroyed 89 per-worktree databases and reset the Redis allocation registry while five
 suites were in flight, producing the same false-red signature from a different cause. `test-db-down`

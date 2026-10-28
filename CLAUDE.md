@@ -752,13 +752,16 @@ and counters only. **mutagen** for tag read *and* write.
 | **pyacoustid** | Never a dependency and never used. The fingerprinting feature it would have served was removed from the product on 2026-07-28 (epic `phaze-0jpe`). |
 
 **One Redis-protocol image everywhere: `valkey/valkey:9-alpine`** — production compose, both CI
-service containers, the local harness (`test_redis_image` in the justfile) and the real-server test
+service containers, the local harness (`test_valkey_image` in the justfile) and the real-server test
 fixtures, kept in step by `tests/agents/deployment/test_redis_image_pin.py`. This retired the old
 harness-on-Redis-7 / production-on-Redis-8 skew (bead `phaze-8o294`). The image ships `redis-cli` /
 `redis-server` as symlinks to the `valkey-*` binaries, so the harness scripts' `docker exec …
-redis-cli` calls work on it and on a pre-migration `phaze-test-redis` alike; `just test-db` reuses
-such a container **with a warning** rather than refusing, and it moves to Valkey at the next idle
-`just test-db-down`. **Until then, a local run on that container does not exercise Valkey** — CI does.
+redis-cli` calls work unchanged. **The harness container is `phaze-test-valkey`** (bead
+`phaze-aje5d`), and its knobs are `PHAZE_TEST_VALKEY_PORT` / `_CONTAINER` / `_DATABASES` /
+`_SEAT_LEASE_HOURS` and `PHAZE_INTEGRATION_TEST_VALKEY_PORT`; each still reads its pre-rename
+`PHAZE_TEST_REDIS_*` spelling as a fallback, and the Valkey name wins when both are set. The switch
+from the old `phaze-test-redis` container was a hard one: `just test-db` neither reuses nor removes
+it, and only warns while it is still running, because it holds port 6380.
 
 **Do not introduce:** `ffmpeg-python` (abandoned since 2022 — shell out to `ffprobe`, or use
 `python-ffmpeg`) · SQLite (no concurrent writes from parallel workers, no JSON operators) · Celery or
