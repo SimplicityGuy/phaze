@@ -173,7 +173,7 @@ services:
 
   redis:
     restart: unless-stopped  # phaze-ewpa: cache must come back with the stack after a reboot/blip
-    # phaze-8o294: Valkey, the same image the test harness and CI run (justfile `test_redis_image`;
+    # phaze-8o294: Valkey, the same image the test harness and CI run (justfile `test_valkey_image`;
     # tests/agents/deployment/test_redis_image_pin.py keeps the pins in step). The service keeps the
     # name `redis` and port 6379 -- redis_url defaults, REDIS_BIND_IP and the agent compose files
     # all point at them -- and clients stay on redis-py, which speaks Valkey's wire protocol.

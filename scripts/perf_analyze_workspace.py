@@ -14,7 +14,7 @@ Keep as supported benchmark tooling; do not delete.
 
 Standalone ``uv run`` companion to :mod:`scripts.perf_explain` / :mod:`scripts.seed_perf_corpus`
 (Phase 82 PERF-02 harness). Run it AFTER seeding the ~200K corpus (``just benchmark-seed``) into the
-dedicated database (``just benchmark-db-up``). It measures the THREE hot paths the phase-95 epic names
+dedicated database (``just up-benchmark-db``). It measures the THREE hot paths the phase-95 epic names
 as suspects, so the fix/verify beads have concrete before/after numbers to cite:
 
 1. ``get_analyze_working_set`` (``services/pipeline.py``) -- DIRECT timing (no ASGI/template

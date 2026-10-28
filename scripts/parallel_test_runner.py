@@ -42,7 +42,7 @@ _EXPORT_RE = re.compile(r'^export ([A-Z_]+)="([^"]+)"$')
 # is an explicit environment contract and stays verbatim.
 _LOCAL_SEAT_DSN_RE = re.compile(r"postgresql\+asyncpg://phaze:phaze@localhost:(?P<port>[0-9]+)/phaze_(?P<seat>[a-z][a-z0-9_]*)_test")
 _LOCAL_SEAT_REDIS_RE = re.compile(r"redis://localhost:(?P<port>[0-9]+)/(?P<index>[1-9][0-9]*)")
-_REDIS_EXHAUSTED_MARKER = "allocatable Redis logical DBs"
+_VALKEY_EXHAUSTED_MARKER = "allocatable Valkey logical DBs"
 CALLER_SEAT_DECLINED = 3
 CALLER_SEAT_FATAL = 5
 CALLER_SEAT_BUSY = 4
@@ -162,20 +162,20 @@ def classify_caller_seat(environ: Mapping[str, str], *, pg_port: str, redis_port
         return CallerSeatVerdict(
             None,
             f"{seat_id!r} has the exact shape of a `just test-db-for` seat but is not registered -- released or reclaimed, "
-            f"so Redis DB {redis['index']} may now belong to another live seat. {remedy}",
+            f"so Valkey DB {redis['index']} may now belong to another live seat. {remedy}",
             fatal=True,
         )
     if registered != redis["index"]:
         return CallerSeatVerdict(
             None,
-            f"PHAZE_REDIS_URL names Redis DB {redis['index']}, but the registry holds DB {registered} for {seat_id!r}: "
+            f"PHAZE_REDIS_URL names Valkey DB {redis['index']}, but the registry holds DB {registered} for {seat_id!r}: "
             f"the export is stale and DB {redis['index']} may belong to another live seat. {remedy}",
             fatal=True,
         )
     parallel = environ.get("PHAZE_TEST_PARALLEL", "1")
     if parallel != "1":
         return CallerSeatVerdict(None, f"PHAZE_TEST_PARALLEL={parallel} (anything but 1) forces the serial path")
-    return CallerSeatVerdict(seat_id, f"{seat_id!r} is a registered `just test-db-for` seat on Redis DB {registered}")
+    return CallerSeatVerdict(seat_id, f"{seat_id!r} is a registered `just test-db-for` seat on Valkey DB {registered}")
 
 
 def registry_seat_index(repo_root: Path, redis_container: str) -> SeatIndexLookup:
@@ -254,12 +254,12 @@ def production_dependencies(repo_root: Path) -> SupervisorDependencies:
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip()
-            if _REDIS_EXHAUSTED_MARKER in detail:
+            if _VALKEY_EXHAUSTED_MARKER in detail:
                 # phaze-qov36: a caller-seat gate holds three indices (its own + two lanes), so
                 # exhaustion is likelier than it was. Fail loudly and name the cause -- never
                 # fall back to serial behind the caller's back.
                 raise RuntimeError(
-                    f"lane seat {seat_name!r} could not get a Redis logical DB: the harness index pool is exhausted. "
+                    f"lane seat {seat_name!r} could not get a Valkey logical DB: the harness index pool is exhausted. "
                     "A two-lane gate holds two lane indices on top of any seat the caller exported. Free stale seats with "
                     "`just test-db-reclaim --apply`, or run serial on your own seat with PHAZE_TEST_PARALLEL=0.\n" + detail
                 )
@@ -554,6 +554,19 @@ class ParallelTestSupervisor:
         return self._postprocess(run_root, scope_token)
 
 
+def harness_valkey_setting(environ: Mapping[str, str], knob: str, default: str) -> str:
+    """One shared-harness Valkey knob, read exactly as the justfile reads it (phaze-aje5d).
+
+    ``PHAZE_TEST_VALKEY_<knob>`` wins; the pre-rename ``PHAZE_TEST_REDIS_<knob>`` is the fallback, so
+    a shell that still exports the old name keeps working. tests/shared/test_valkey_env_compat.py
+    pins this against the justfile's own evaluation.
+    """
+    for name in (f"PHAZE_TEST_VALKEY_{knob}", f"PHAZE_TEST_REDIS_{knob}"):
+        if name in environ:
+            return environ[name]
+    return default
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
@@ -562,10 +575,11 @@ def _parser() -> argparse.ArgumentParser:
     # accepted seat's id back as the lane prefix, so lanes are `<seat>-lane-a` / `<seat>-lane-b`.
     parser.add_argument("--classify-caller-seat", action="store_true")
     parser.add_argument("--pg-port", default="5433")
-    # phaze-8o294: the same env overrides the justfile's test_redis_port/test_redis_container read, so
-    # a direct CLI call agrees with `just test-validate` on which harness Redis it is classifying against.
-    parser.add_argument("--redis-port", default=os.environ.get("PHAZE_TEST_REDIS_PORT", "6380"))
-    parser.add_argument("--redis-container", default=os.environ.get("PHAZE_TEST_REDIS_CONTAINER", "phaze-test-redis"))
+    # phaze-8o294: the same env overrides the justfile's test_valkey_port/test_valkey_container read,
+    # so a direct CLI call agrees with `just test-validate` on which harness Valkey it is classifying
+    # against. The `--redis-*` flag names are unchanged: they are the CLI shared with redis-seat-registry.sh.
+    parser.add_argument("--redis-port", default=harness_valkey_setting(os.environ, "PORT", "6380"))
+    parser.add_argument("--redis-container", default=harness_valkey_setting(os.environ, "CONTAINER", "phaze-test-valkey"))
     parser.add_argument("--seat-prefix")
     return parser
 

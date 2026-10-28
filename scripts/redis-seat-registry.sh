@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# The Redis logical-DB seat registry behind `just test-db-for` (phaze-68wky).
+# The Valkey logical-DB seat registry behind `just test-db-for` (phaze-68wky). The filename and the
+# `--redis-container` flag predate the harness's move to Valkey and are kept (phaze-aje5d).
 #
 # WHAT THIS OWNS
 #
-# `just test-db-for <name>` gives one worktree ("seat") an exclusive Redis logical database on the
-# SHARED `phaze-test-redis` container, because two redis-backed test modules run global
+# `just test-db-for <name>` gives one worktree ("seat") an exclusive Valkey logical database on the
+# SHARED `phaze-test-valkey` container, because two redis-backed test modules run global
 # `scan_iter`+`delete` sweeps in fixture setup AND teardown -- on a shared logical DB one seat's
 # fixture deletes another seat's live keys mid-test (phaze-fwo7). This script is the single place
 # that decides which index a seat gets, and -- new in phaze-68wky -- when an index may be taken
@@ -68,7 +69,8 @@
 #                      `-z "$pg_container"` gate silenced the warning on the only shape an operator
 #                      ever types.
 #   L3  Its lease has not expired -- `test-db-for` stamps `phaze:test:redis-db-seen` on every call,
-#       and a seat stamped within PHAZE_TEST_REDIS_SEAT_LEASE_HOURS (default 72) is left alone.
+#       and a seat stamped within PHAZE_TEST_VALKEY_SEAT_LEASE_HOURS (default 72; the pre-rename
+#       PHAZE_TEST_REDIS_SEAT_LEASE_HOURS is still read as a fallback) is left alone.
 #       This is what protects the claimed-but-idle seat that L1 and L2 cannot see.
 #
 # A registry entry with NO stamp predates phaze-68wky, so its age is genuinely unknown. It is
@@ -185,7 +187,7 @@ readonly SEEN_KEY="phaze:test:redis-db-seen"
 readonly ORIGIN_KEY="phaze:test:redis-db-origin"
 readonly HIGHWATER_KEY="phaze:test:redis-db-counter"
 
-lease_hours="${PHAZE_TEST_REDIS_SEAT_LEASE_HOURS:-72}"
+lease_hours="${PHAZE_TEST_VALKEY_SEAT_LEASE_HOURS:-${PHAZE_TEST_REDIS_SEAT_LEASE_HOURS:-72}}"
 
 subcommand="${1:-}"
 shift || true
@@ -286,7 +288,7 @@ for _ in 1 2 3; do
   sleep 0.3
 done
 if [ "$redis_reachable" -eq 0 ]; then
-  echo "❌ Redis container '${redis_container}' is not reachable. Start the shared harness with \`just test-db\`." >&2
+  echo "❌ Valkey container '${redis_container}' is not reachable. Start the shared harness with \`just test-db\`." >&2
   exit 1
 fi
 
@@ -454,16 +456,16 @@ cmd_allocate() {
 
   case "$verdict" in
     existing)
-      echo "🟥 '${seat}' already holds Redis logical DB ${index}" >&2
+      echo "🟥 '${seat}' already holds Valkey logical DB ${index}" >&2
       ;;
     allocated | reallocated)
       if [ "$verdict" = "reallocated" ]; then
         # Only reachable when the recorded index was out of range -- an allocation from the old
         # monotonic counter that Redis would refuse to SELECT. Moving it into range is a repair,
         # not a reassignment: nothing can have been using it.
-        echo "♻️  '${seat}' held an out-of-range index; moved it to Redis logical DB ${index}" >&2
+        echo "♻️  '${seat}' held an out-of-range index; moved it to Valkey logical DB ${index}" >&2
       else
-        echo "✅ allocated Redis logical DB ${index} to '${seat}'" >&2
+        echo "✅ allocated Valkey logical DB ${index} to '${seat}'" >&2
       fi
       # A freed index keeps whatever keys its previous seat left behind unless that seat was
       # released through this script. Handing those to a new seat is the phaze-fwo7 shape from the
@@ -478,10 +480,10 @@ cmd_allocate() {
       ;;
     exhausted)
       echo "" >&2
-      echo "❌ All $((cap - 1)) allocatable Redis logical DBs on ${redis_container} are held; no index left for '${seat}'." >&2
+      echo "❌ All $((cap - 1)) allocatable Valkey logical DBs on ${redis_container} are held; no index left for '${seat}'." >&2
       echo "   (${cap} logical DBs exist; DB 0 is the allocation registry, so seats get 1..$((cap - 1)).)" >&2
       echo "   Refusing to wrap onto a shared index -- that would silently reintroduce the cross-worktree" >&2
-      echo "   Redis interference this registry exists to prevent (phaze-fwo7)." >&2
+      echo "   Valkey interference this registry exists to prevent (phaze-fwo7)." >&2
       echo "" >&2
       echo "   Reclaim first -- neither of these stops or clears the shared harness:" >&2
       echo "     just test-db-seats                  # who holds what, and which seats look stale" >&2
@@ -490,9 +492,9 @@ cmd_allocate() {
       echo "     just test-db-release <other-seat>   # hand back one named seat you know is done" >&2
       echo "" >&2
       echo "   Only if the sweep frees nothing and every seat is genuinely live, raise the space:" >&2
-      echo "     PHAZE_TEST_REDIS_DATABASES=$((cap * 2)) just test-db" >&2
-      echo "   (that resize recreates the Redis container, so it refuses while any seat is connected;" >&2
-      echo "   do NOT reach for \`just test-db-down\` -- it removes the Postgres+Redis pair every" >&2
+      echo "     PHAZE_TEST_VALKEY_DATABASES=$((cap * 2)) just test-db" >&2
+      echo "   (that resize recreates the Valkey container, so it refuses while any seat is connected;" >&2
+      echo "   do NOT reach for \`just test-db-down\` -- it removes the Postgres+Valkey pair every" >&2
       echo "   concurrent worktree shares and destroys their databases mid-run, phaze-ieqg.)" >&2
       exit 3
       ;;
@@ -637,7 +639,7 @@ drop_seat_databases() {
     if docker exec "$pg_container" psql -U phaze -d postgres -tAc "DROP DATABASE IF EXISTS \"${db}\"" >/dev/null 2>&1; then
       echo "   dropped Postgres database '${db}'"
     else
-      echo "⚠️  could not drop Postgres database '${db}' for freed seat '${name}' -- check ${pg_container}'s logs; its Redis index was freed regardless." >&2
+      echo "⚠️  could not drop Postgres database '${db}' for freed seat '${name}' -- check ${pg_container}'s logs; its Valkey index was freed regardless." >&2
     fi
   done
 }
@@ -657,7 +659,7 @@ free_seat() {
   local redis_live
   redis_live="$(live_redis_indices)"
   if [ "$index" -ge 1 ] && seat_is_redis_live "$index" "$redis_live"; then
-    free_seat_refusal="a Redis client connected to DB ${index} since classification (L1)"
+    free_seat_refusal="a Valkey client connected to DB ${index} since classification (L1)"
     return 1
   fi
 
@@ -718,7 +720,7 @@ free_seat() {
   if [ "$drop_databases_this_seat" -eq 1 ]; then
     drop_seat_databases "$name"
   elif [ "$drop_pg" -eq 1 ]; then
-    echo "⚠️  freed '${name}''s Redis index without dropping its Postgres databases: L2 evidence was not obtained (${pg_evidence}). Its two databases are now orphaned; a later, evidenced sweep will still find them." >&2
+    echo "⚠️  freed '${name}''s Valkey index without dropping its Postgres databases: L2 evidence was not obtained (${pg_evidence}). Its two databases are now orphaned; a later, evidenced sweep will still find them." >&2
   fi
 }
 
@@ -750,7 +752,7 @@ cmd_release() {
     # and the observed failure was exactly a wrong-guessed name -- hyphen vs. underscore -- read as
     # success because this used to return 0. Point at the two non-destructive ways to find the real
     # identifier or free what is actually stale, same as the exhaustion message does.
-    echo "🟡 '${seat}' holds no Redis logical DB; nothing was released." >&2
+    echo "🟡 '${seat}' holds no Valkey logical DB; nothing was released." >&2
     echo "   If this name was a guess, \`just test-db-seats\` lists every real identifier and the" >&2
     echo "   evidence behind it. \`just test-db-reclaim\` (dry run) / \`just test-db-reclaim --apply\`" >&2
     echo "   frees whatever is genuinely stale by reading liveness, not by trusting a name." >&2
@@ -768,14 +770,14 @@ cmd_release() {
     index="$raw"
   else
     index=0
-    echo "⚠️  '${seat}' has a corrupt registry value '${raw}', which is not an index. No Redis logical" >&2
+    echo "⚠️  '${seat}' has a corrupt registry value '${raw}', which is not an index. No Valkey logical" >&2
     echo "    DB can correspond to it, so there is nothing to clear; releasing the entry itself." >&2
   fi
   seen_at="$(registry_cli HGET "$SEEN_KEY" "$seat")"
 
   # What the success line calls the thing that was freed. A corrupt value has no logical DB to name,
   # and reporting the sanitized 0 would name the registry's own database.
-  local freed_what="Redis logical DB ${index}"
+  local freed_what="Valkey logical DB ${index}"
   [ "$index" -ge 1 ] || freed_what="corrupt registry entry '${raw}'"
 
   if [ "$force" -eq 1 ]; then
@@ -795,7 +797,7 @@ cmd_release() {
   # `-ge 1` for the same reason free_seat has it: index 0 is the registry's own connection and is
   # always "live", so a sanitized-to-0 corrupt value must never reach the L1 check.
   if [ "$index" -ge 1 ] && seat_is_redis_live "$index" "$redis_live"; then
-    echo "❌ Refusing to release '${seat}': a client is connected to Redis logical DB ${index} right now." >&2
+    echo "❌ Refusing to release '${seat}': a client is connected to Valkey logical DB ${index} right now." >&2
     echo "   Releasing it would clear keys a running suite is using. Wait for it, or --force." >&2
     exit 4
   fi
@@ -917,7 +919,7 @@ classify_seats() {
     fi
 
     if seat_is_redis_live "$index" "$redis_live"; then
-      reason="a Redis client is connected to DB ${index} (L1)"
+      reason="a Valkey client is connected to DB ${index} (L1)"
     elif [ "$pg_evidence" = "obtained" ] && seat_is_postgres_live "$name" "$pg_live"; then
       reason="a Postgres backend is connected to phaze_${name}_test (L2)"
     elif [ "$index" -ge "$cap" ]; then
@@ -968,7 +970,7 @@ require_postgres_evidence() {
   else
     echo "❌ No --pg-container given, so a running suite in a seat would be invisible." >&2
   fi
-  echo "   pytest holds a Postgres connection for its whole session and often none to Redis, so without" >&2
+  echo "   pytest holds a Postgres connection for its whole session and often none to Valkey, so without" >&2
   echo "   that evidence a live seat looks idle and the sweep could clear a suite's keys mid-run." >&2
   echo "   Start the harness (\`just test-db\`), or pass --no-postgres-check to sweep on the remaining" >&2
   echo "   evidence alone -- only do that when you know no suite is running." >&2
@@ -985,10 +987,10 @@ cmd_list() {
   fi
   records="$(classify_seats "$cap")"
   if [ -z "$records" ]; then
-    echo "No Redis logical DBs are allocated on ${redis_container} (capacity ${cap}, index 0 reserved for the registry)."
+    echo "No Valkey logical DBs are allocated on ${redis_container} (capacity ${cap}, index 0 reserved for the registry)."
     return 0
   fi
-  echo "Redis seat allocations on ${redis_container} (capacity ${cap}, lease ${lease_hours}h):"
+  echo "Valkey seat allocations on ${redis_container} (capacity ${cap}, lease ${lease_hours}h):"
   echo ""
   printf '  %-6s  %-40s  %-9s  %s\n' "DB" "SEAT" "STATE" "EVIDENCE"
   local state
@@ -1025,7 +1027,7 @@ cmd_reclaim() {
       echo "    evidence (L2) was collected and used anyway. Seats with a live backend are still protected." >&2
     else
       echo "⚠️  --no-postgres-check: sweeping without the Postgres evidence (L2). A suite that is running" >&2
-      echo "    but not currently touching Redis is invisible to this sweep." >&2
+      echo "    but not currently touching Valkey is invisible to this sweep." >&2
     fi
   elif [ "$pg_evidence" != "obtained" ]; then
     # require_postgres_evidence passed its probe, then the liveness query itself failed. Reading
@@ -1039,7 +1041,7 @@ cmd_reclaim() {
 
   records="$(classify_seats "$cap")"
   if [ -z "$records" ]; then
-    echo "No Redis logical DBs are allocated on ${redis_container}; nothing to reclaim."
+    echo "No Valkey logical DBs are allocated on ${redis_container}; nothing to reclaim."
     return 0
   fi
 
@@ -1098,9 +1100,9 @@ cmd_reclaim() {
   echo ""
   if [ "$apply" -eq 1 ]; then
     if [ "$will_drop_databases" -eq 1 ]; then
-      echo "🧹 reclaimed ${freed} seat(s) (Redis index freed and its own 2 Postgres databases dropped); left ${kept} in-use seat(s) alone."
+      echo "🧹 reclaimed ${freed} seat(s) (Valkey index freed and its own 2 Postgres databases dropped); left ${kept} in-use seat(s) alone."
     else
-      echo "🧹 reclaimed ${freed} seat(s) (Redis index freed; Postgres databases NOT dropped -- L2 evidence is ${pg_evidence}); left ${kept} in-use seat(s) alone."
+      echo "🧹 reclaimed ${freed} seat(s) (Valkey index freed; Postgres databases NOT dropped -- L2 evidence is ${pg_evidence}); left ${kept} in-use seat(s) alone."
     fi
     echo "   Every other Postgres database, and both containers, were left alone."
     if [ "$raced" -gt 0 ]; then

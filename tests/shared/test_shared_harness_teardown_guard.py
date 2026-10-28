@@ -1,7 +1,7 @@
 """Guard: ``just test-db-down`` must refuse while another seat is using the shared harness (phaze-ieqg).
 
-``phaze-test-db`` and ``phaze-test-redis`` are deliberately ONE pair of containers shared by every
-concurrent worktree -- ``just test-db-for <name>`` isolates seats by carving a database and a Redis
+``phaze-test-db`` and ``phaze-test-valkey`` are deliberately ONE pair of containers shared by every
+concurrent worktree -- ``just test-db-for <name>`` isolates seats by carving a database and a Valkey
 logical DB out of them, not by giving each seat its own container. That makes ``docker rm -f`` on
 either container a cluster-wide destructive act.
 

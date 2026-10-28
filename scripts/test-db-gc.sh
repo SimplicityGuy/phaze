@@ -139,7 +139,7 @@ fi
 # unknown for every database, and a database that IS registered but looks unreachable-unregistered
 # would be dropped out from under a live seat.
 if ! docker exec "$redis_container" redis-cli PING >/dev/null 2>&1; then
-  echo "❌ Redis container '${redis_container}' is not reachable, so registration status (signal 1) is" >&2
+  echo "❌ Valkey container '${redis_container}' is not reachable, so registration status (signal 1) is" >&2
   echo "   unknown for every database. Refusing rather than reading unknown as unregistered. Start the" >&2
   echo "   harness (\`just test-db\`)." >&2
   exit 1
@@ -204,7 +204,7 @@ while IFS='|' read -r dbname age_seconds; do
   if [ "$dbname" = "$SHARED_MAIN_DB" ] || [ "$dbname" = "$SHARED_MIGRATIONS_DB" ]; then
     reason="the shared canonical pair is never a candidate"
   elif is_protected "$dbname"; then
-    reason="a live seat in the Redis registry names this database"
+    reason="a live seat in the Valkey registry names this database"
   elif backends_on "$dbname"; then
     reason="a Postgres backend is connected to it right now"
   elif [ -z "$age_seconds" ] || [ "$age_seconds" -lt "$age_floor_seconds" ]; then

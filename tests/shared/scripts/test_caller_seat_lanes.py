@@ -43,6 +43,7 @@ from scripts.parallel_test_runner import (
     RegistryUnavailableError,
     SupervisorDependencies,
     classify_caller_seat,
+    harness_valkey_setting,
     production_dependencies,
     registry_seat_index,
 )
@@ -63,11 +64,12 @@ _JUST = shutil.which("just") or "just"
 _BASH = shutil.which("bash") or "bash"
 _DOCKER = shutil.which("docker") or "docker"
 _PG_PORT = "5433"
-# phaze-8o294: the harness Redis these tests drive is whichever the justfile resolves -- the same env
-# overrides (test_redis_port / test_redis_container), so a seat verifying against its own throwaway
-# harness Redis does not have `just test-db-for` provision on one container while these read another.
-_REDIS_PORT = os.environ.get("PHAZE_TEST_REDIS_PORT", "6380")
-_REDIS_CONTAINER = os.environ.get("PHAZE_TEST_REDIS_CONTAINER", "phaze-test-redis")
+# phaze-8o294: the harness Valkey these tests drive is whichever the justfile resolves -- the same env
+# overrides (test_valkey_port / test_valkey_container, with the pre-rename PHAZE_TEST_REDIS_* names as
+# fallbacks), so a seat verifying against its own throwaway harness Valkey does not have `just
+# test-db-for` provision on one container while these read another.
+_REDIS_PORT = harness_valkey_setting(os.environ, "PORT", "6380")
+_REDIS_CONTAINER = harness_valkey_setting(os.environ, "CONTAINER", "phaze-test-valkey")
 _SEAT = "phaze_qov36_48f37603"
 _MINTED = {
     "TEST_DATABASE_URL": f"postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_{_SEAT}_test",
@@ -89,7 +91,7 @@ class RecordingRegistry:
     def __call__(self, seat_id: str) -> str | None:
         self.probes.append(seat_id)
         if self.unavailable:
-            raise RegistryUnavailableError("exit 1: Redis container 'phaze-test-redis' is not reachable")
+            raise RegistryUnavailableError("exit 1: Valkey container 'phaze-test-valkey' is not reachable")
         return self.index
 
 
@@ -141,7 +143,7 @@ def test_any_opt_out_value_but_1_declines_a_valid_seat_to_serial(value: str) -> 
     ("registry", "reason"),
     [
         (RecordingRegistry(index=None), "is not registered -- released or reclaimed"),
-        (RecordingRegistry(index="12"), "names Redis DB 7, but the registry holds DB 12"),
+        (RecordingRegistry(index="12"), "names Valkey DB 7, but the registry holds DB 12"),
         (RecordingRegistry(unavailable=True), "registry could not be read"),
     ],
     ids=["released-or-reclaimed", "stale-redis-index", "registry-unreachable"],
@@ -322,7 +324,7 @@ def _redis_dbsize(index: str) -> int:
 
 
 _needs_harness = pytest.mark.skipif(
-    not _harness_is_up(), reason="needs the running local test harness (phaze-test-db + phaze-test-redis); `just test-db`"
+    not _harness_is_up(), reason="needs the running local test harness (phaze-test-db + phaze-test-valkey); `just test-db`"
 )
 
 
@@ -388,7 +390,7 @@ def test_the_real_cli_fails_loudly_on_a_stale_or_unreadable_seat(probe_caller: t
     }
     cases = {
         "not registered -- released or reclaimed": _runner_cli("--classify-caller-seat", environ=never_registered),
-        f"names Redis DB {other}, but the registry holds DB {index} for {caller_id!r}": _runner_cli(
+        f"names Valkey DB {other}, but the registry holds DB {index} for {caller_id!r}": _runner_cli(
             "--classify-caller-seat", environ={**caller, "PHAZE_REDIS_URL": caller["PHAZE_REDIS_URL"].rsplit("/", 1)[0] + f"/{other}"}
         ),
         "registry could not be read": _runner_cli("--classify-caller-seat", "--redis-container", "phaze-no-such-redis", environ=caller),

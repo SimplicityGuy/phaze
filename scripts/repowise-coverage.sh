@@ -133,7 +133,7 @@ echo "⏱️  This takes about 21 minutes (7043 tests, measured 2026-08-18). It 
 echo "    coverage contexts make it slower than \`just test\`. Nothing below is skippable."
 echo "    HEAD ${head_before}"
 echo "    DB   ${TEST_DATABASE_URL}"
-echo "    Redis ${PHAZE_REDIS_URL}"
+echo "    Valkey ${PHAZE_REDIS_URL}"
 echo ""
 
 # --- 1. reindex ----------------------------------------------------------------------------------

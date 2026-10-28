@@ -7,12 +7,12 @@ docker_bin="${DOCKER_BIN:-docker}"
 just_bin="${JUST_BIN:-just}"
 pg_image="${PHAZE_INTEGRATION_POSTGRES_IMAGE:-postgres:18-alpine}"
 pg_shm_size="${PHAZE_INTEGRATION_POSTGRES_SHM_SIZE:-256m}"
-redis_image="${PHAZE_INTEGRATION_REDIS_IMAGE:-valkey/valkey:9-alpine}"
+redis_image="${PHAZE_INTEGRATION_VALKEY_IMAGE:-valkey/valkey:9-alpine}"
 bind_ip="${PHAZE_INTEGRATION_BIND_IP:-127.0.0.1}"
 fixed_pg_port="${PHAZE_INTEGRATION_DB_PORT:-0}"
-fixed_redis_port="${PHAZE_INTEGRATION_REDIS_PORT:-0}"
+fixed_redis_port="${PHAZE_INTEGRATION_VALKEY_PORT:-0}"
 pg_prefix="${PHAZE_INTEGRATION_DB_PREFIX:-phaze-integration-test-db}"
-redis_prefix="${PHAZE_INTEGRATION_REDIS_PREFIX:-phaze-integration-test-redis}"
+redis_prefix="${PHAZE_INTEGRATION_VALKEY_PREFIX:-phaze-integration-test-valkey}"
 
 die() {
   echo "❌ $*" >&2
@@ -83,7 +83,7 @@ wait_for_postgres() {
 
 wait_for_redis() {
   local container="$1"
-  echo "⏳ Waiting for Redis to accept connections..."
+  echo "⏳ Waiting for Valkey to accept connections..."
   for _ in $(seq 1 30); do
     if "$docker_bin" exec "$container" redis-cli ping >/dev/null 2>&1; then
       return 0
@@ -96,7 +96,7 @@ wait_for_redis() {
 
 run_suite() {
   validate_port "$fixed_pg_port" PHAZE_INTEGRATION_TEST_DB_PORT
-  validate_port "$fixed_redis_port" PHAZE_INTEGRATION_TEST_REDIS_PORT
+  validate_port "$fixed_redis_port" PHAZE_INTEGRATION_TEST_VALKEY_PORT
 
   local run_id="${PHAZE_INTEGRATION_RUN_ID:-$$_${RANDOM}}"
   validate_run_id "$run_id"
@@ -148,7 +148,7 @@ run_suite() {
 
   export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${pg_port}/phaze_test"
   export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${pg_port}/phaze_migrations_test"
-  # DB 0 is safe here because every run owns a separate Redis container and host port.
+  # DB 0 is safe here because every run owns a separate Valkey container and host port.
   export PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"
   echo "🧪 Dedicated run ${run_id}: Postgres ${pg_port}, Redis ${redis_port}; running the validation-grade coverage suite."
   "$just_bin" test-cov

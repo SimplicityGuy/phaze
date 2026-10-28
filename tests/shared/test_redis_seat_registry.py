@@ -25,7 +25,7 @@ re-implement exactly the logic under test. So each test drives ``scripts/redis-s
 — the same entry point the justfile recipe calls — against a **throwaway** container this module
 starts and removes itself. It has a random name, publishes **no port at all** (everything goes
 through ``docker exec``), and is configured with a deliberately tiny 6-database space so
-exhaustion is reachable in four allocations. It is never the shared ``phaze-test-redis`` on 6380;
+exhaustion is reachable in four allocations. It is never the shared ``phaze-test-valkey`` on 6380;
 touching that is what this bead exists to make unnecessary. The L2 tests start a throwaway
 **Postgres** under the same discipline, for the same reason: L2 is the guard that stands between a
 sweep and a running suite, and demonstrating it needs a real backend on a real database — which is
@@ -112,7 +112,7 @@ pytestmark = pytest.mark.skipif(not _docker_usable(), reason="needs a working do
 def throwaway_redis() -> Iterator[str]:
     """A private Redis container for this module alone.
 
-    Deliberately NOT the shared ``phaze-test-redis``: a test that allocated, released and swept
+    Deliberately NOT the shared ``phaze-test-valkey``: a test that allocated, released and swept
     entries on the harness every other worktree depends on would be the very hazard this bead is
     about. No port is published, so it cannot collide with 6380 (or anything else) even if two
     worktrees run this module at the same time.
@@ -550,7 +550,7 @@ def test_exhaustion_names_the_non_destructive_remedy_first(registry: str, tmp_pa
     assert "just test-db-release" in message
 
     reclaim_at = message.index("just test-db-reclaim")
-    resize_at = message.index("PHAZE_TEST_REDIS_DATABASES")
+    resize_at = message.index("PHAZE_TEST_VALKEY_DATABASES")
     assert reclaim_at < resize_at, "reclaiming must be offered before the remedy that recreates the container"
 
     teardown_lines = [line for line in message.splitlines() if "test-db-down" in line]
@@ -1621,7 +1621,7 @@ def test_a_no_op_release_through_the_real_recipe_never_prints_the_left_in_place_
         [
             just,
             "--set",
-            "test_redis_container",
+            "test_valkey_container",
             registry,
             "--set",
             "test_db_container",
@@ -1665,7 +1665,7 @@ def _run_test_db_release_recipe(redis_container: str, pg_container: str, *args: 
         [
             just,
             "--set",
-            "test_redis_container",
+            "test_valkey_container",
             redis_container,
             "--set",
             "test_db_container",
@@ -1685,7 +1685,7 @@ def _run_test_db_seats_recipe(redis_container: str, pg_container: str) -> subpro
     just = shutil.which("just")
     assert just is not None
     return subprocess.run(  # noqa: S603 - fixed executable; every argument is a test literal or a throwaway container name
-        [just, "--set", "test_redis_container", redis_container, "--set", "test_db_container", pg_container, "test-db-seats"],
+        [just, "--set", "test_valkey_container", redis_container, "--set", "test_db_container", pg_container, "test-db-seats"],
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,

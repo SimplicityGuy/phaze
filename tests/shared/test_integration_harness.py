@@ -69,9 +69,9 @@ def test_cleanup_removes_only_the_selected_owned_stale_run(tmp_path: Path) -> No
     result, log = _cleanup(tmp_path, owner=_owner_id(), pid=999_999_999)
 
     assert result.returncode == 0, result.stderr
-    assert "rm -f phaze-integration-test-db-run_42 phaze-integration-test-redis-run_42" in log
+    assert "rm -f phaze-integration-test-db-run_42 phaze-integration-test-valkey-run_42" in log
     assert "phaze-test-db" not in log
-    assert "phaze-test-redis" not in log
+    assert "phaze-test-valkey" not in log
 
 
 def test_cleanup_refuses_a_live_run(tmp_path: Path) -> None:
@@ -96,7 +96,7 @@ def test_readiness_waits_for_the_final_tcp_server() -> None:
     assert "pg_isready -h 127.0.0.1 -U phaze -d phaze_test" in source
 
 
-def test_each_run_labels_unique_postgres_and_redis_containers_and_uses_the_real_gate() -> None:
+def test_each_run_labels_unique_postgres_and_valkey_containers_and_uses_the_real_gate() -> None:
     source = HARNESS.read_text(encoding="utf-8")
 
     assert 'run_id="${PHAZE_INTEGRATION_RUN_ID:-$$_${RANDOM}}"' in source
@@ -112,4 +112,4 @@ def test_dedicated_redis_db_zero_cannot_be_shared_between_runs() -> None:
 
     assert '-p "$redis_publish" "$redis_image"' in source
     assert 'PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"' in source
-    assert "every run owns a separate Redis container" in source
+    assert "every run owns a separate Valkey container" in source

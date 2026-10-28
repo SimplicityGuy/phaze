@@ -25,7 +25,7 @@ durable record: bead phaze-robzi.2):
 arithmetic are properties of real evidence, not of anything mockable. Every test drives
 ``scripts/test-db-gc.sh`` -- the same entry point the justfile recipe calls -- against THROWAWAY
 containers this module starts and removes itself, never the shared ``phaze-test-db`` /
-``phaze-test-redis`` harness that this bead exists to make safe to reap.
+``phaze-test-valkey`` harness that this bead exists to make safe to reap.
 
 **The age clock, measured rather than assumed (phaze-robzi.2, 2026-08-28, against
 ``postgres:18-alpine`` in a throwaway container).** ``pg_database`` carries no creation timestamp
@@ -88,7 +88,7 @@ pytestmark = pytest.mark.skipif(not _docker_usable(), reason="needs a working do
 
 @pytest.fixture(scope="module")
 def throwaway_redis() -> Iterator[str]:
-    """A private Redis for this module alone -- never the shared ``phaze-test-redis``."""
+    """A private Redis for this module alone -- never the shared ``phaze-test-valkey``."""
     container = f"phaze-gc-test-redis-{uuid4().hex[:10]}"
     started = _docker("run", "-d", "--name", container, "valkey/valkey:9-alpine", "redis-server", "--databases", "16")
     if started.returncode != 0:

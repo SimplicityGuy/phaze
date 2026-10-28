@@ -14,7 +14,7 @@ if ((set_count > 0)); then
     echo "❌ Caller-owned test configuration must set TEST_DATABASE_URL, MIGRATIONS_TEST_DATABASE_URL, and PHAZE_REDIS_URL together." >&2
     exit 1
   fi
-  echo "↩️  Preserving caller-owned Postgres and Redis settings." >&2
+  echo "↩️  Preserving caller-owned Postgres and Valkey settings." >&2
   exit 0
 fi
 

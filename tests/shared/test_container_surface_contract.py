@@ -34,9 +34,9 @@ def test_topology_sensitive_recipes_name_compose_files_explicitly() -> None:
         "up-dev": ["docker-compose.yml", "docker-compose.dev.yml"],
         "down-dev": ["docker-compose.yml", "docker-compose.dev.yml"],
         "up-agent": ["docker-compose.agent.yml"],
-        "agent-down": ["docker-compose.agent.yml"],
-        "cloud-agent-up": ["docker-compose.cloud-agent.yml"],
-        "cloud-agent-down": ["docker-compose.cloud-agent.yml"],
+        "down-agent": ["docker-compose.agent.yml"],
+        "up-cloud-agent": ["docker-compose.cloud-agent.yml"],
+        "down-cloud-agent": ["docker-compose.cloud-agent.yml"],
         "up-all": ["docker-compose.yml", "docker-compose.agent.yml"],
         "down-all": ["docker-compose.yml", "docker-compose.agent.yml"],
     }

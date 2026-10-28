@@ -35,16 +35,16 @@ belong in the suite)::
     just test-db-for seat-b          # -> PHAZE_REDIS_URL=redis://localhost:6380/2
 
     # BEFORE the fix, both seats used /0. Simulate that shared-database state:
-    docker exec phaze-test-redis redis-cli -n 0 SET exec:victim live-data
+    docker exec phaze-test-valkey redis-cli -n 0 SET exec:victim live-data
     PHAZE_REDIS_URL=redis://localhost:6380/0 uv run pytest \
         tests/review/routers/test_execution_dispatch.py::test_dispatch_summary_in_redis_hash
-    docker exec phaze-test-redis redis-cli -n 0 EXISTS exec:victim    # -> 0, DESTROYED
+    docker exec phaze-test-valkey redis-cli -n 0 EXISTS exec:victim    # -> 0, DESTROYED
 
     # AFTER the fix, the seats hold different logical databases:
-    docker exec phaze-test-redis redis-cli -n 1 SET exec:victim live-data
+    docker exec phaze-test-valkey redis-cli -n 1 SET exec:victim live-data
     PHAZE_REDIS_URL=redis://localhost:6380/2 uv run pytest \
         tests/review/routers/test_execution_dispatch.py::test_dispatch_summary_in_redis_hash
-    docker exec phaze-test-redis redis-cli -n 1 EXISTS exec:victim    # -> 1, survived
+    docker exec phaze-test-valkey redis-cli -n 1 EXISTS exec:victim    # -> 1, survived
 """
 
 from __future__ import annotations
