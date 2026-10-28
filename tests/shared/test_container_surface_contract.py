@@ -84,7 +84,7 @@ def test_non_ui_workflows_do_not_install_tailwind() -> None:
 
 
 def test_local_image_recipes_delegate_to_one_helper() -> None:
-    for recipe in ("push-image", "build-image-arm64", "push-image-arm64"):
+    for recipe in ("push-image", "build-image-arm64"):
         body = _recipe(recipe)
         assert "scripts/container-images.sh" in body, recipe
         assert "ghcr.io" not in body, recipe

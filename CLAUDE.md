@@ -40,6 +40,8 @@ just check-all             # THE molecule gate: every pre-commit hook + the full
 just check-branch-coverage # Per-bead BRANCH-coverage gate. Free when a same-tree artifact exists
 just up-test-db            # Bring up the shared test Postgres (5433) + Valkey (6380) harness
 just provision-test-db-seat <name> # Carve an isolated seat — REQUIRED for concurrent worktrees
+just test-integration      # Full suite on its own throwaway Postgres + Valkey; torn down on success, failure or Ctrl-C
+just clean-integration-test # Reap integration-test leftovers this checkout owns (after a kill -9); never a live run
 ```
 
 > Bare `uv run pytest` needs the harness up (`just up-test-db`); without it the integration tests skip,

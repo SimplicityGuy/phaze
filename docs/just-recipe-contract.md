@@ -29,9 +29,9 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `check-docs` | operator convenience | deterministic maintained-document and source-cited diagram-asset gate | `docs-check` |
 | `check-fast` | external contract | Beadhive check/submit/merge validation | — |
 | `check-parity` | operator convenience | local arm64/x86 analysis parity mirror | `parity-check` |
-| `check-security` | operator convenience | aggregate local dependency/SAST checks | `security-all` |
 | `check-worker-health` | operator convenience | application-server SAQ worker probe | `worker-health` |
 | `check-worktree-integrity` | internal helper | first step of `check` and `check-fast` (checkout-integrity probe, phaze-ofrxb); focused diagnosis of a hollowed seat | `worktree-integrity` |
+| `clean-integration-test` | operator convenience | reap stale integration-test runs this checkout owns (replaces `integration-test-down RUN_ID`) | — |
 | `combine-coverage` | external contract | `.github/workflows/tests.yml` coverage fan-in | `coverage-combine` |
 | `create-db-revision` | operator convenience | create a reviewed Alembic revision | `db-revision` |
 | `default` | external contract | bare `just` command-selection contract | — |
@@ -42,14 +42,11 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `down-benchmark-db` | operator convenience | dispose the dedicated synthetic benchmark database | `benchmark-db-down` |
 | `down-cloud-agent` | operator convenience | cloud-agent deployment teardown | `cloud-agent-down` |
 | `down-dev` | operator convenience | live-reload development topology teardown | — |
-| `down-integration-test` | operator convenience | recover stale dedicated integration containers | `integration-test-down` |
 | `down-test-db` | operator convenience | guarded shared-harness teardown after all seats stop | `test-db-down` |
 | `downgrade-db` | operator convenience | migration rollback during development | `db-downgrade` |
 | `download-models` | external contract | model provisioning runbooks and image parity workflows | — |
 | `dump-parity` | external contract | `.github/workflows/docker-publish.yml` parity jobs | `parity-dump` |
 | `explain-benchmark-db` | operator convenience | measure query plans and pipeline-stat latency | `benchmark-explain` |
-| `fix-lint` | operator convenience | apply Ruff lint fixes | `lint-fix` |
-| `format` | operator convenience | apply Ruff formatting | `fmt` |
 | `gc-test-dbs` | operator convenience | reap old unregistered test databases | `test-db-gc` |
 | `install` | external contract | README local UI bootstrap | — |
 | `install-test-browser` | operator convenience | one-time local browser installation | `test-browser-install` |
@@ -63,21 +60,18 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `provision-test-db-seat` | external contract | AGENTS.md per-worktree isolation contract | `test-db-for` |
 | `ps-docker` | operator convenience | inspect the application-server topology | `docker-ps` |
 | `push-image` | operator convenience | local GHCR application-image publish fallback | `image-push` |
-| `push-image-arm64` | operator convenience | local GHCR arm64-image publish fallback | `image-push-arm64` |
 | `rebuild` | operator convenience | rebuild/restart the application-server topology | — |
 | `reclaim-test-db-seats` | operator convenience | reclaim stale registered test seats | `test-db-reclaim` |
 | `refresh-repowise-coverage` | operator convenience | refresh the local Repowise coverage map | `repowise-coverage` |
 | `refresh-repowise-coverage-ci` | operator convenience | refresh Repowise from a CI coverage artifact | `repowise-coverage-ci` |
 | `regen-parity-golden` | operator convenience | regenerate a local x86 parity reference | `parity-golden-regen` |
 | `release-test-db-seat` | external contract | AGENTS.md non-destructive seat cleanup | `test-db-release` |
-| `restart-worker` | operator convenience | restart the application-server worker | `worker-restart` |
-| `run-bandit` | internal helper | `check-security`; focused local Python SAST | `bandit` |
-| `run-pip-audit` | internal helper | `check-security`; focused dependency audit | `pip-audit` |
+| `run-bandit` | external contract | `.github/workflows/security.yml` and the local pre-commit `bandit` hook | `bandit` |
+| `run-benchmarks` | operator convenience | one-shot benchmark suite: up, seed, explain, analyze, always down | — |
+| `run-pip-audit` | external contract | `.github/workflows/security.yml` dependency audit | `pip-audit` |
 | `run-pre-commit` | external contract | `check-all` and CI code-quality workflow | `pre-commit` |
-| `run-vulture` | operator convenience | non-blocking dead-code candidate sweep | `vulture` |
 | `seed-benchmark-db` | operator convenience | provision the reusable synthetic scale corpus | `benchmark-seed` |
 | `setup` | external contract | Beadhive worktree provisioning and dependency refresh | — |
-| `shell-api` | operator convenience | open an application API shell | `docker-shell` |
 | `show-db-history` | operator convenience | inspect Alembic history | `db-history` |
 | `show-db-revision` | operator convenience | inspect the active Alembic revision | `db-current` |
 | `test` | operator convenience | fast fail-first local pytest loop | — |
@@ -87,7 +81,6 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `test-cov` | internal helper | full-suite coverage primitive used by validation recipes | — |
 | `test-cov-parallel` | internal helper | default local full-suite runner | — |
 | `test-fast` | internal helper | `check-fast` change-selected pytest step | — |
-| `test-file` | operator convenience | focused test-file iteration | — |
 | `test-integration` | operator convenience | isolated full-suite integration diagnosis | `integration-test` |
 | `test-validate` | internal helper | full-suite runner used by `check` and `check-all` | — |
 | `test-validate-serial` | internal helper | explicit serial full-suite fallback | — |
@@ -119,7 +112,7 @@ The justfile header states both rules, and `tests/shared/test_just_recipe_contra
     `<verb>-test-db-seat(s)` for the per-worktree seats.
   - `check-*` returns a pass/fail verdict (`check`, `check-fast`, `check-all`, `check-docs`, ...).
   - A recipe named only for the tool it runs, with no truer verb, is `run-<tool>` (`run-bandit`,
-    `run-pre-commit`, `run-pip-audit`, `run-vulture`).
+    `run-pre-commit`, `run-pip-audit`).
 
   `check`, `check-fast`, `check-all` and `setup` are never renamed: Beadhive's validation
   boundaries and worktree provisioning call them.
@@ -131,7 +124,7 @@ The justfile header states both rules, and `tests/shared/test_just_recipe_contra
 - **Aliases.** Every renamed recipe keeps its old name as a `[private]` just `alias` (the last
   column above), so CI, scripts, the Beadhive config, muscle memory and incident write-ups that
   quote an old name all still resolve. Private aliases keep `just --list` to one line per recipe;
-  `just --summary` (what this inventory tracks) lists only the new names. phaze-aje5d renamed 55
+  `just --summary` (what this inventory tracks) lists only the new names. phaze-aje5d renamed 47
   recipes this way; `tests/shared/test_just_recipe_contract.py` fails if an old name stops running
   its recipe.
 
@@ -145,5 +138,23 @@ grades remain distinct: `test` is local fail-fast iteration, `check-fast` is cha
 `test-ci` was deleted because no workflow or script consumed it and it omitted the explicit line
 floor. The duplicate `sync` recipe was deleted; `setup` is now the one dependency-sync primitive,
 used by `install` and `scripts/update-project.sh`. The former broad `security` name now reads
-`run-bandit` (once `bandit`), while `check-security` (once `security-all`) accurately describes the two local checks it aggregates rather than
-claiming to reproduce every CI security scanner.
+`run-bandit` (once `bandit`). Its aggregate, `security-all`, was removed in phaze-aje5d with the other
+recipes below.
+
+## Integration tests: run, then clean up
+
+```
+just test-integration          # one run on its own Postgres + Valkey; torn down on success, failure or Ctrl-C
+just clean-integration-test    # reap leftovers (e.g. after kill -9); never a live run, never another worktree's
+```
+
+## Removed recipes
+
+Operator decisions 9 and 10c on bead phaze-aje5d (2026-10-28) removed these outright, with no
+alias: `docker-shell`, `fmt`, `lint-fix`, `security-all`, `vulture`, `worker-restart`,
+`image-push-arm64`, `integration-test-down` and `test-file`. Their direct equivalents are
+`docker compose -f docker-compose.yml exec api bash`, `uv run ruff format .`,
+`uv run ruff check . --fix`, `just run-pip-audit && just run-bandit`,
+`uv run vulture src/phaze vulture_whitelist.py --min-confidence 80`,
+`docker compose -f docker-compose.yml restart worker`, `bash scripts/container-images.sh push arm64 <tag>`,
+`just clean-integration-test` and `uv run pytest <file> -x -v`.

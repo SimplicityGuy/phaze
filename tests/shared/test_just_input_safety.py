@@ -30,12 +30,10 @@ def _dry_run(recipe: str, *arguments: str) -> str:
 def test_single_value_recipes_shell_quote_sentinel_inputs() -> None:
     sentinel = "space ' quote; $(touch second-command)"
     cases = {
-        "test-file": [sentinel],
         "create-db-revision": [sentinel],
         "download-models": [sentinel],
         "build-image-arm64": [sentinel],
         "refresh-repowise-coverage-ci": [sentinel],
-        "down-integration-test": [sentinel],
     }
     for recipe, arguments in cases.items():
         rendered = _dry_run(recipe, *arguments)
@@ -48,7 +46,6 @@ def test_single_value_recipes_shell_quote_sentinel_inputs() -> None:
 def test_whitespace_bearing_paths_and_messages_survive_as_one_argument() -> None:
     path = "tests/path with spaces/test_file.py"
     message = "migration message with spaces"
-    assert path in shlex.split(_dry_run("test-file", path))
     assert message in shlex.split(_dry_run("create-db-revision", message))
     assert path in shlex.split(_dry_run("download-models", path))
 
@@ -121,9 +118,9 @@ def test_invalid_integration_run_id_fails_before_docker(tmp_path: Path) -> None:
     fake.write_text(f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\n", encoding="utf-8")
     fake.chmod(0o755)
     result = subprocess.run(  # noqa: S603 - fixed in-repository script and controlled fake executable
-        ["/bin/bash", REPO_ROOT / "scripts" / "integration-test-harness.sh", "cleanup", "bad;run"],
+        ["/bin/bash", REPO_ROOT / "scripts" / "integration-test-harness.sh", "run"],
         cwd=REPO_ROOT,
-        env=os.environ | {"DOCKER_BIN": str(fake)},
+        env=os.environ | {"DOCKER_BIN": str(fake), "PHAZE_INTEGRATION_RUN_ID": "bad;run"},
         text=True,
         capture_output=True,
         check=False,
@@ -147,7 +144,55 @@ def test_invalid_benchmark_counts_fail_before_database_or_python(tmp_path: Path)
         )
         assert result.returncode != 0, recipe
         assert "positive integer" in result.stderr, recipe
+    for arguments in (["0; touch bad"], ["10", "0"], ["10", "20", "x"]):
+        result = subprocess.run(  # noqa: S603 - resolved Just binary with explicit argv and controlled PATH
+            [JUST, "run-benchmarks", *arguments], cwd=REPO_ROOT, env=env, text=True, capture_output=True, check=False
+        )
+        assert result.returncode != 0, arguments
+        assert "positive integers" in result.stderr, arguments
     assert not marker.exists()
+
+
+def _run_benchmarks_against_a_stub_just(tmp_path: Path, fail_at: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run the REAL `run-benchmarks` recipe; the `just` it calls for each step is a logging stub.
+
+    The recipe body calls bare `just`, so a stub earlier on PATH receives every step while the outer
+    invocation is the real binary by absolute path. ``fail_at`` names the step the stub fails.
+    """
+    log = tmp_path / "steps"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    stub = fake_bin / "just"
+    stub.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >>"$STEP_LOG"\n[ "$1" = "$FAIL_AT" ] && exit 7\nexit 0\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    env = os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "STEP_LOG": str(log), "FAIL_AT": fail_at}
+    result = subprocess.run(  # noqa: S603 - resolved Just binary with explicit argv and controlled PATH
+        [JUST, "run-benchmarks", "50", "3", "2"], cwd=REPO_ROOT, env=env, text=True, capture_output=True, check=False
+    )
+    return result, log.read_text(encoding="utf-8").splitlines()
+
+
+def test_the_benchmark_runner_runs_every_step_in_order_then_brings_the_db_down(tmp_path: Path) -> None:
+    result, steps = _run_benchmarks_against_a_stub_just(tmp_path, fail_at="none")
+
+    assert result.returncode == 0, result.stderr
+    assert steps == [
+        "up-benchmark-db",
+        "seed-benchmark-db 50",
+        "explain-benchmark-db 3",
+        "measure-analyze-workspace 2",
+        "down-benchmark-db",
+    ]
+
+
+def test_the_benchmark_runner_brings_the_db_down_when_a_step_fails(tmp_path: Path) -> None:
+    result, steps = _run_benchmarks_against_a_stub_just(tmp_path, fail_at="seed-benchmark-db")
+
+    assert result.returncode != 0
+    assert steps == ["up-benchmark-db", "seed-benchmark-db 50", "down-benchmark-db"]
 
 
 def test_variadic_flags_are_forwarded_as_discrete_argv(tmp_path: Path) -> None:

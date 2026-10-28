@@ -82,25 +82,15 @@ alias docker-compose-validate := validate-compose
 [private]
 alias docker-ps := ps-docker
 [private]
-alias docker-shell := shell-api
-[private]
 alias docker-validate := validate-dockerfiles
 [private]
 alias docs-check := check-docs
-[private]
-alias fmt := format
 [private]
 alias image-build-arm64 := build-image-arm64
 [private]
 alias image-push := push-image
 [private]
-alias image-push-arm64 := push-image-arm64
-[private]
 alias integration-test := test-integration
-[private]
-alias integration-test-down := down-integration-test
-[private]
-alias lint-fix := fix-lint
 [private]
 alias lock-upgrade := upgrade-lock
 [private]
@@ -117,8 +107,6 @@ alias pre-commit := run-pre-commit
 alias repowise-coverage := refresh-repowise-coverage
 [private]
 alias repowise-coverage-ci := refresh-repowise-coverage-ci
-[private]
-alias security-all := check-security
 [private]
 alias tailwind := build-tailwind
 [private]
@@ -140,13 +128,9 @@ alias test-db-release := release-test-db-seat
 [private]
 alias test-db-seats := list-test-db-seats
 [private]
-alias vulture := run-vulture
-[private]
 alias worker-health := check-worker-health
 [private]
 alias worker-logs := logs-worker
-[private]
-alias worker-restart := restart-worker
 [private]
 alias worktree-integrity := check-worktree-integrity
 
@@ -808,11 +792,6 @@ test-fast:
         ;;
     esac
 
-[doc('Run one test file, verbose and fail-fast')]
-[group('test')]
-test-file FILE:
-    uv run pytest {{quote(FILE)}} -x -v
-
 # phaze-tzy6s.14: the real-browser suite. Boots the actual app (uvicorn + real lifespan + real
 # Alembic migrations) against its OWN database, derived from this worktree's TEST_DATABASE_URL seat
 # by appending `_browser`, and drives it with Playwright.
@@ -852,17 +831,6 @@ install-test-browser-ci:
 [group('test')]
 test-browser: build-tailwind
     uv run --group browser pytest tests/browser tests/shared/test_tailwind_source_parity.py -m browser -q
-
-# Non-blocking dead-code sweep (CLEAN-02). NOT a CI/pre-commit gate — framework-invoked
-# code produces false-positives that need per-candidate human reachability judgment. A
-# nonzero exit merely lists remaining candidates to hand-verify. vulture_whitelist.py is a
-# hand-audited suppression list for framework false-positives (FastAPI handlers, Pydantic
-# validators, transient ORM attrs, SAQ hooks, CLI entry points).
-# Non-blocking: a nonzero exit lists candidates to hand-verify.
-[doc('List dead-code candidates in src/phaze (non-blocking)')]
-[group('maintenance')]
-run-vulture:
-    uv run vulture src/phaze vulture_whitelist.py --min-confidence 80 --ignore-decorators "@router.*,@app.*,@field_validator,@model_validator,@validator,@pytest.fixture"
 
 # PHAZE_COVERAGE_GREENLET=greenlet is REQUIRED alongside --cov-context=test (phaze-bein3): without
 # it coverage.py runs on sys.monitoring, which records only the first test per line. See the
@@ -1575,31 +1543,37 @@ down-test-db:
     docker rm -f "{{test_valkey_container}}" >/dev/null 2>&1 || true
     echo "🧹 Removed {{test_db_container}} + {{test_valkey_container}}"
 
-# Refuses active or foreign runs.
-[doc('Remove one stale integration-test run this worktree owns')]
-[group('test')]
-down-integration-test RUN_ID:
-    PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_VALKEY_PREFIX={{quote(integration_valkey_container_prefix)}} bash scripts/integration-test-harness.sh cleanup {{quote(RUN_ID)}}
-
-# Per-invocation containers; always tears down only its own run.
+# HOW TO RUN AND CLEAN UP INTEGRATION TESTS (operator decision 10c, 2026-10-28, bead phaze-aje5d:
+# "remove them all, but make sure for integration tests we have clear ways to run the tests and
+# clean up after the tests"):
+#
+#     just test-integration          # run; its own containers go away on success, failure or Ctrl-C
+#     just clean-integration-test    # reap leftovers (e.g. after a kill -9); never touches a live run
+#
+# `test-integration` starts a fresh Postgres + Valkey pair for this one run (names carry a
+# per-invocation id; ports are dynamic unless pinned), runs the validation-grade coverage suite on
+# it, and removes both containers from an EXIT trap. SIGINT / SIGTERM / SIGHUP are trapped too: the
+# harness stops the suite and exits through that same teardown, so an interrupted run leaves nothing
+# behind. Only SIGKILL (or a host crash) can strand a run -- that is what `clean-integration-test`
+# is for. tests/shared/test_integration_harness.py drives all four endings against a fake docker.
 [doc('Full coverage suite on a throwaway Postgres + Valkey pair')]
 [group('test')]
 test-integration:
     PHAZE_INTEGRATION_POSTGRES_IMAGE={{quote(postgres_image)}} PHAZE_INTEGRATION_VALKEY_IMAGE={{quote(test_valkey_image)}} PHAZE_INTEGRATION_POSTGRES_SHM_SIZE={{quote(postgres_shm_size)}} PHAZE_INTEGRATION_BIND_IP={{quote(test_db_bind_ip)}} PHAZE_INTEGRATION_DB_PORT={{quote(integration_db_port)}} PHAZE_INTEGRATION_VALKEY_PORT={{quote(integration_valkey_port)}} PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_VALKEY_PREFIX={{quote(integration_valkey_container_prefix)}} bash scripts/integration-test-harness.sh run
+
+# The replacement for the removed `integration-test-down RUN_ID` (phaze-aje5d): the same ownership
+# rules, with no run id to look up. It finds every labelled integration-test container, removes the
+# runs THIS checkout owns whose recorded pid is gone, and leaves alone (and names) any run that is
+# still active or that another worktree owns.
+[doc('Remove stale integration-test runs this checkout owns')]
+[group('test')]
+clean-integration-test:
+    PHAZE_INTEGRATION_DB_PREFIX={{quote(integration_db_container_prefix)}} PHAZE_INTEGRATION_VALKEY_PREFIX={{quote(integration_valkey_container_prefix)}} bash scripts/integration-test-harness.sh clean
+
 [doc('Run the ruff linter')]
 [group('lint')]
 lint:
     uv run ruff check .
-
-[doc('Run the ruff linter with auto-fix')]
-[group('lint')]
-fix-lint:
-    uv run ruff check . --fix
-
-[doc('Format code with ruff')]
-[group('lint')]
-format:
-    uv run ruff format .
 
 [doc('Run the mypy type checker')]
 [group('lint')]
@@ -1760,19 +1734,10 @@ run-pip-audit:
 run-bandit:
     uv run bandit -r src/ -x tests -s B608
 
-[doc('Run the local dependency audit and Python SAST')]
-[group('security')]
-check-security: run-pip-audit run-bandit
-
 [doc('Follow the application-server worker logs')]
 [group('stack')]
 logs-worker:
     docker compose -f docker-compose.yml logs -f worker
-
-[doc('Restart the application-server worker')]
-[group('stack')]
-restart-worker:
-    docker compose -f docker-compose.yml restart worker
 
 [doc('Check SAQ worker health')]
 [group('stack')]
@@ -1801,12 +1766,6 @@ push-image:
 [group('docker')]
 build-image-arm64 TAG="latest":
     bash scripts/container-images.sh build arm64 {{quote(TAG)}}
-
-# Operator fallback; the CI push is parity-gated (plan 47-04).
-[doc('Build and push the arm64 agent image to GHCR')]
-[group('docker')]
-push-image-arm64 TAG="latest":
-    bash scripts/container-images.sh push arm64 {{quote(TAG)}}
 
 # Operator path, from the reference clip; CI (plan 47-04) is authoritative.
 [doc('Regenerate the x86 parity golden JSON locally')]
@@ -1898,11 +1857,6 @@ check-parity TAG="latest":
 [group('docker')]
 validate-compose:
     bash scripts/validate-containers.sh compose
-
-[doc('Open a shell in the API container')]
-[group('stack')]
-shell-api:
-    docker compose -f docker-compose.yml exec api bash
 
 [doc('List the application-server containers')]
 [group('stack')]
@@ -1996,6 +1950,33 @@ measure-analyze-workspace ITERATIONS='10':
     iterations="$1"
     [[ "$iterations" =~ ^[1-9][0-9]*$ ]] || { echo "❌ ITERATIONS must be a positive integer" >&2; exit 2; }
     uv run python scripts/perf_analyze_workspace.py --dsn "{{benchmark_db_dsn}}" --iterations "$iterations"
+
+# THE ONE-SHOT BENCHMARK RUN (operator decision 10b, 2026-10-28, bead phaze-aje5d; selected label:
+# "Group + one-shot runner (Recommended)"): up -> seed -> explain -> analyze -> down. The EXIT trap
+# brings the benchmark DB down however the run ends -- a failed seed, a failed measurement, or an
+# interrupt -- so a broken run never leaves the 5545 container holding a seeded corpus. Each step is
+# the ordinary recipe, so the input validation and the scripts are the ones the steps already use.
+# tests/shared/test_just_input_safety.py drives the runner against a stub `just` to prove the
+# teardown on success and on a mid-run failure.
+[doc('Run the benchmark suite: up, seed, explain, analyze, down')]
+[group('benchmark')]
+run-benchmarks COUNT='200000' EXPLAIN_ITERATIONS='20' ANALYZE_ITERATIONS='10':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    count="$1"
+    explain_iterations="$2"
+    analyze_iterations="$3"
+    for value in "$count" "$explain_iterations" "$analyze_iterations"; do
+        [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "❌ COUNT and both ITERATIONS must be positive integers" >&2; exit 2; }
+    done
+    trap 'just down-benchmark-db' EXIT
+    # An untrapped SIGINT/SIGTERM would kill bash without running the EXIT trap; exit through it instead.
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    just up-benchmark-db
+    just seed-benchmark-db "$count"
+    just explain-benchmark-db "$explain_iterations"
+    just measure-analyze-workspace "$analyze_iterations"
 
 # Explicit: phaze never downloads them at runtime (phaze-ynv6w).
 [doc('Provision the essentia ML models into DIR')]

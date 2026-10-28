@@ -53,6 +53,30 @@ def test_obsolete_public_recipes_and_unused_descriptions_are_gone() -> None:
     assert "test-ci" not in recipes
     assert "sync" not in recipes
     assert "UNUSED" not in listing
+    # Operator decisions 9 and 10c on phaze-aje5d (2026-10-28): removed outright, under either name,
+    # with no alias left behind.
+    removed = {
+        "docker-shell",
+        "shell-api",
+        "fmt",
+        "format",
+        "lint-fix",
+        "fix-lint",
+        "security-all",
+        "check-security",
+        "vulture",
+        "run-vulture",
+        "worker-restart",
+        "restart-worker",
+        "image-push-arm64",
+        "push-image-arm64",
+        "integration-test-down",
+        "down-integration-test",
+        "test-file",
+    }
+    aliases = set(_ALIAS_RE.findall(JUSTFILE_PATH.read_text(encoding="utf-8")))
+    assert not removed & recipes
+    assert not removed & {name for pair in aliases for name in pair}
 
 
 def test_required_external_recipe_names_remain_public() -> None:
@@ -102,16 +126,11 @@ _RENAMED = {
     "docker-build": "build-docker",
     "docker-compose-validate": "validate-compose",
     "docker-ps": "ps-docker",
-    "docker-shell": "shell-api",
     "docker-validate": "validate-dockerfiles",
     "docs-check": "check-docs",
-    "fmt": "format",
     "image-build-arm64": "build-image-arm64",
     "image-push": "push-image",
-    "image-push-arm64": "push-image-arm64",
     "integration-test": "test-integration",
-    "integration-test-down": "down-integration-test",
-    "lint-fix": "fix-lint",
     "lock-upgrade": "upgrade-lock",
     "parity-check": "check-parity",
     "parity-dump": "dump-parity",
@@ -120,7 +139,6 @@ _RENAMED = {
     "pre-commit": "run-pre-commit",
     "repowise-coverage": "refresh-repowise-coverage",
     "repowise-coverage-ci": "refresh-repowise-coverage-ci",
-    "security-all": "check-security",
     "tailwind": "build-tailwind",
     "test-browser-install": "install-test-browser",
     "test-browser-install-ci": "install-test-browser-ci",
@@ -131,10 +149,8 @@ _RENAMED = {
     "test-db-reclaim": "reclaim-test-db-seats",
     "test-db-release": "release-test-db-seat",
     "test-db-seats": "list-test-db-seats",
-    "vulture": "run-vulture",
     "worker-health": "check-worker-health",
     "worker-logs": "logs-worker",
-    "worker-restart": "restart-worker",
     "worktree-integrity": "check-worktree-integrity",
 }
 
