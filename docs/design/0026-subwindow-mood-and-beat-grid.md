@@ -206,3 +206,45 @@ any pooling of overlapping frames is an attribution rule that counts each frame 
 such a rule, the coarse value is exactly recoverable from its parts, and that recovery is the test.
 The rule is written down here and in `iter_subwindows`' docstring, so it applies to any later pooling
 of per-patch output (for example, per-window embeddings).
+
+## 8. What the pooling and stitching beads settled
+
+Written by phaze-x3gak and phaze-0296l (batch `analysis-outputs`), after running the real extractor and the real graphs.
+
+**Beat seams: pre-roll.** `RhythmExtractor2013` never ticks a beat in its buffer's first samples, so a fine
+window decoded from exactly its own start loses the beat that sits on the seam, about one beat per seam.
+Operator decision, 2026-11-11, recorded on phaze-0296l. Question as put: "Beat grid (phaze-0296l), a
+real-essentia finding: RhythmExtractor2013 never places a beat in a window's first samples. So when the
+per-window beat ticks are stitched into one per-file grid, each window seam loses about 1 beat. The bead's
+acceptance asks for no missing beat at a seam. How should seams be handled?" Answer as given: "Fix at
+source: pre-roll (Recommended)".
+
+The fine pass therefore decodes each window `BEAT_PREROLL_SEC` = 4 s early (never before 0) and runs the
+tracker on that longer buffer for TICKS only. `bpm` and `musical_key` still come from the window's own samples,
+so they are unchanged (the recorded equivalence tests pass untouched). The length is from measurement, on a
+120 BPM click track with windows starting at 30 s and 60 s: with 0, 1 or 2 s of pre-roll the seam beat is absent
+from at least one window; with 3, 4, 6 and 8 s it is present in both. 4 s is one second over the smallest length
+that worked. A window keeps ticks from `SEAM_TOLERANCE_SEC` = 0.1 s before its start, because the seam beat is
+ticked a quantum (11.61 ms) early; a beat seen from both sides is dropped by the half-interval duplicate rule.
+Cost: one extra tracker call on a 34 s buffer for every window but the first, and a 4 s overlap of decode per
+window, so the chunk's PCM bound is unchanged for practical purposes. `gaps` stays for real gaps: silence and
+undetectable sections. Tests: `test_real_ticks_lose_and_double_nothing_at_each_seam`, and
+`test_without_the_pre_roll_the_same_seams_lose_a_beat` as its control.
+
+**`MIN_BEAT_CONFIDENCE` = 1.0 (the implementer's decision, open to review).** A window whose tracker
+confidence is below 1.0 keeps its `bpm` but contributes no beats, and so leaves a recorded gap. 1.0 is
+essentia's own boundary for "low" confidence on the extractor's [0, 5.32] scale. The measurement behind it: on a
+window holding only a few leaked edge samples (a click track with its middle 30 s zeroed), the extractor returned
+39 confident-looking beats at tempo 80.3 BPM with confidence 0.19, while the clean windows of the same file scored
+3.94. What it drops: beats from sparse or ambient sections where the tracker is unsure. Those sections show as
+gaps rather than as a plausible-looking grid that is not there. What it does not touch: stored `bpm`. The threshold
+rests on this one measured pair; the first archive-wide re-analysis is the place to check it against real sets.
+
+**Silent coarse windows have no sub-window rows.** A coarse window with no analyzable signal runs no mood graph,
+so there is no patch matrix to pool: it contributes no `analysis_subwindow` rows at all, rather than rows of NULL
+mood. A NULL row (section 2) means "a slice with no patch centre inside a window that was analyzed".
+
+**The patch matrix never crosses a process boundary.** `_predict_single` returns its mean as a `PatchMean`
+carrying the matrix, and `_run_model_sets_over_windows` pools it into plain floats in the same process, inside the
+sweep, before anything is returned. Only plain lists and floats reach the JSON line the child writes. The new output
+is opt-in (`analyze_file(include_grids=True)`); the child must request it.

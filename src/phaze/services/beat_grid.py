@@ -56,6 +56,19 @@ def stored_beat_grid(beats: Iterable[float]) -> list[float]:
 # against 3.94 on the clean windows of the same file. Such a window contributes no beats and so leaves a
 # recorded gap, exactly as a silent one does. The implementer's choice (phaze-0296l), open to review.
 MIN_BEAT_CONFIDENCE = 1.0
+# PRE-ROLL (operator decision, phaze-0296l). RhythmExtractor2013 never ticks a beat in its buffer's first
+# samples, so a window decoded from exactly its own start loses the beat that sits on the seam. MEASURED
+# (essentia 2.1-beta6-dev, macOS arm64, 120 BPM click track, windows starting at 30 s and 60 s, ticks kept
+# in [start, start + 2)): with 0, 1 or 2 s of pre-roll the seam beat is absent from at least one window;
+# with 3, 4, 6 and 8 s it is present in both, at 29.99x / 59.99x. The fine pass therefore decodes each window
+# BEAT_PREROLL_SEC earlier, runs the tracker on that longer buffer for ticks only (bpm and key still come
+# from the window's own samples, byte-identical to before), and keeps the ticks from the window's start on.
+# 4 s is one second over the smallest length that worked, about 8 beats at 120 BPM and 4 at 60.
+BEAT_PREROLL_SEC = 4.0
+# The seam beat is ticked just BEFORE the seam (29.994 for a beat at 30.0: the tick quantum is 11.61 ms), so
+# a window owns ticks from this far before its start. A beat seen from both sides is dropped by the
+# duplicate rule below. 0.1 s is under half a beat up to 300 BPM.
+SEAM_TOLERANCE_SEC = 0.1
 # A beat closer than this fraction of the local median interval to the previous accepted beat is the
 # SAME beat seen from two windows (or a spurious double tick), and is dropped.
 DUPLICATE_FRACTION = 0.5

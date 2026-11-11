@@ -26,9 +26,9 @@ import numpy as np
 import pytest
 
 from phaze.services import analysis as analysis_mod
-from phaze.services.analysis import _beat_grid_payload, _measure_fine_window
+from phaze.services.analysis import _beat_grid_payload, _measure_fine_window, _owned_ticks
 from phaze.services.analysis_windows import FineWindow
-from phaze.services.beat_grid import DUPLICATE_FRACTION, GAP_FACTOR, stitch_beat_grid, to_stored_precision
+from phaze.services.beat_grid import BEAT_PREROLL_SEC, DUPLICATE_FRACTION, GAP_FACTOR, SEAM_TOLERANCE_SEC, stitch_beat_grid, to_stored_precision
 
 
 _INTERVAL = 0.5  # 120 BPM
@@ -207,3 +207,39 @@ def test_the_stitcher_stays_free_of_numpy_and_essentia() -> None:
     assert not hasattr(module, "np")
     assert not hasattr(module, "essentia")
     assert analysis_mod.stitch_beat_grid is stitch_beat_grid
+
+
+def test_ticks_inside_the_pre_roll_are_dropped_but_the_seam_beat_just_before_the_start_is_kept() -> None:
+    # Buffer starts at 56 s (4 s pre-roll of a window starting at 60 s). Ticks at 56.5 and 59.0 are the previous
+    # window's; 59.994 is the beat on the seam (ticked a quantum early) and stays; 60.5 is the window's own.
+    ticks = np.array([0.5, 3.0, 3.994, 4.5], dtype=np.float32)
+    assert _owned_ticks(ticks, 56.0, 60.0) == pytest.approx((59.994, 60.5))
+    assert SEAM_TOLERANCE_SEC < 0.5 * _INTERVAL
+
+
+def test_with_a_pre_roll_bpm_and_key_come_from_the_windows_own_samples_and_ticks_from_the_longer_buffer() -> None:
+    seen: list[int] = []
+
+    def rhythm(buf: np.ndarray) -> tuple[float, np.ndarray, float, None, None]:
+        seen.append(len(buf))
+        return (120.0, np.array([0.1, 4.0, 4.5], dtype=np.float32), 3.0, None, None)
+
+    key = MagicMock(return_value=("A", "minor", 0.9))
+    rate = analysis_mod._FINE_SAMPLE_RATE
+    full = np.full(rate * 34, 0.1, dtype=np.float32)  # 4 s pre-roll + a 30 s window starting at 60 s
+    measured = _measure_fine_window(rhythm, key, (2, 60.0, 90.0), {2: full}, MagicMock(), BEAT_PREROLL_SEC)
+    assert measured is not None
+    assert seen == [rate * 30, rate * 34]  # window samples first (bpm), then the pre-rolled buffer (ticks)
+    assert len(key.call_args.args[0]) == rate * 30
+    assert measured.bpm == 120.0
+    assert measured.beats == pytest.approx((60.0, 60.5))  # 56.1 is in the pre-roll and dropped
+
+
+def test_the_first_window_has_no_pre_roll_and_one_tracker_call() -> None:
+    calls = MagicMock(return_value=(120.0, np.array([0.5], dtype=np.float32), 3.0, None, None))
+    measured = _measure_fine_window(
+        calls, MagicMock(return_value=("A", "minor", 0.9)), (0, 0.0, 30.0), {0: np.full(1000, 0.1, dtype=np.float32)}, MagicMock(), BEAT_PREROLL_SEC
+    )
+    assert measured is not None
+    assert calls.call_count == 1
+    assert measured.beats == pytest.approx((0.5,))

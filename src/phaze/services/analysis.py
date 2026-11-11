@@ -78,7 +78,14 @@ from phaze.services.analysis_windows import (
     aggregate_key,
     iter_subwindows,
 )
-from phaze.services.beat_grid import MIN_BEAT_CONFIDENCE, stitch_beat_grid, stored_beat_grid, to_stored_precision
+from phaze.services.beat_grid import (
+    BEAT_PREROLL_SEC,
+    MIN_BEAT_CONFIDENCE,
+    SEAM_TOLERANCE_SEC,
+    stitch_beat_grid,
+    stored_beat_grid,
+    to_stored_precision,
+)
 from phaze.telemetry import instruments as telemetry, tracing as otel
 
 
@@ -1001,6 +1008,7 @@ def _measure_fine_window(
     span: tuple[int, float, float],
     decoded_chunk: dict[int, Any],
     on_skip: Callable[[int, float, float, bool], None],
+    preroll_sec: float = 0.0,
 ) -> FineWindow | None:
     """Consume ONE window's PCM out of a decoded chunk and measure its tempo and key.
 
@@ -1022,14 +1030,26 @@ def _measure_fine_window(
     ``on_skip``'s ``exc_info=True`` still renders the live exception's traceback.
     """
     idx, start, end = span
-    buf = decoded_chunk.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
-    if buf is None:
+    full = decoded_chunk.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
+    if full is None:
         return None  # no audio for this window; already reported by the decode
+    # With a pre-roll the decoded buffer starts ``lead`` seconds before the window. bpm and key are measured
+    # on the window's OWN samples (a view past the lead, so no copy and byte-identical to the pre-roll-free
+    # decode); only the beat ticks come from the longer buffer. See beat_grid.BEAT_PREROLL_SEC.
+    lead = min(preroll_sec, start)
+    lead_samples = round(lead * _FINE_SAMPLE_RATE)
+    buf = full[lead_samples:] if lead_samples else full
     try:
         if not _has_analyzable_signal(buf):
             return FineWindow(window_index=idx, start_sec=start, end_sec=end, bpm=None, musical_key=None)
         bpm, beat_ticks, confidence, _, _beats_intervals = rhythm_extractor(buf)
         key, scale, _strength = key_extractor(buf)
+        tick_origin = start
+        if lead_samples:
+            _bpm, beat_ticks, beat_confidence, _, _ = rhythm_extractor(full)
+            tick_origin = start - lead
+        else:
+            beat_confidence = confidence
         return FineWindow(
             window_index=idx,
             start_sec=start,
@@ -1039,13 +1059,23 @@ def _measure_fine_window(
             confidence=float(confidence),
             # Window-relative ticks -> file-relative seconds. Python floats, so no essentia array
             # outlives the window (phaze-0296l).
-            beats=tuple(start + float(tick) for tick in beat_ticks) if confidence >= MIN_BEAT_CONFIDENCE else (),
+            beats=_owned_ticks(beat_ticks, tick_origin, start) if beat_confidence >= MIN_BEAT_CONFIDENCE else (),
         )
     except Exception:  # per-window failure isolation: skip, never fail the file
         on_skip(idx, start, end, True)
         return None
     finally:
-        del buf
+        del buf, full
+
+
+def _owned_ticks(ticks: Any, origin_sec: float, start_sec: float) -> tuple[float, ...]:
+    """File-relative ticks a window owns: those from ``SEAM_TOLERANCE_SEC`` before its start on.
+
+    ``origin_sec`` is the file time of the buffer the ticks are relative to (the window start, or the
+    start of its pre-roll). Ticks inside the pre-roll belong to the previous window and are dropped.
+    """
+    floor = start_sec - SEAM_TOLERANCE_SEC
+    return tuple(t for t in (origin_sec + float(tick) for tick in ticks) if t >= floor)
 
 
 def _analyze_fine_windows(
@@ -1143,7 +1173,9 @@ def _analyze_fine_windows(
                     decoded = _decode_windows(
                         file_path,
                         _FINE_SAMPLE_RATE,
-                        chunk,
+                        # Each window is decoded from BEAT_PREROLL_SEC early (never before 0): a few seconds of
+                        # overlap per window, so the chunk's PCM bound (D-07) is unchanged for practical purposes.
+                        [(idx, max(0.0, start - BEAT_PREROLL_SEC), end) for idx, start, end in chunk],
                         _skip,
                         stop_at_sec=_chunk_stop_sec(chunks, position),
                         # Keeps the per-window EasyLoader fallback audible to the stall watchdog; see
@@ -1155,7 +1187,7 @@ def _analyze_fine_windows(
                     # "inference proper", so it gets the same per-unit histogram treatment
                     # (acceptance 1 -- the two tiers must be comparable).
                     with otel.timed_metric("phaze.analysis.fine_window.duration"):
-                        measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip)
+                        measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip, BEAT_PREROLL_SEC)
                     if measured is None:
                         continue  # no audio, or a failed measurement already reported in-handler
                     fine_windows.append(measured)
