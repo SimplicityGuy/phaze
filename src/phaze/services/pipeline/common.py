@@ -11,10 +11,14 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import ColumnElement, Select as _Select, exists, func, select
 import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
+from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJobStatus
+from phaze.models.file import FileRecord
+from phaze.models.provider_source import ProviderRecordingCandidate, ProviderSourceObservation
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -122,3 +126,50 @@ async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) ->
 # Reverse of STAGE_TO_FUNCTION -- shared by jobs/orphans/stages, so it lives in the
 # package's lowest-level module rather than in any one consumer (jobs <-> stages would cycle).
 _BUSY_FUNCTION_TO_STAGE: dict[str, str] = {fn: stage for stage, fn in STAGE_TO_FUNCTION.items()}
+
+
+# CUE-first scheduling (phaze-tdton): shared by the pending set and the cloud staging walk so they cannot drift.
+
+
+def cue_linked_media_clause(file_id: Any = FileRecord.id) -> ColumnElement[bool]:
+    """``EXISTS`` a recording candidate for this file whose observation was parsed from a CUE sheet.
+
+    This is "CUE-linked media" (phaze-tdton): the media a CUE observation targets, at ANY review status.
+    A CUE's track offsets can only be paired with analysis windows once the media it points at is
+    analysed, so these files are scheduled ahead of the general backlog. ``source_format`` is the same
+    payload key ``services/source_workspace.py`` uses to recognise a CUE observation.
+
+    The documented count query (before/after a run) is
+    ``cue_linked_analysis_coverage_stmt`` below.
+
+    ``file_id`` is the files-id column the EXISTS correlates to (default ``FileRecord.id``); the staging cursor passes an alias.
+    """
+    return exists(
+        select(ProviderRecordingCandidate.id)
+        .join(ProviderSourceObservation, ProviderSourceObservation.id == ProviderRecordingCandidate.observation_id)
+        .where(
+            ProviderRecordingCandidate.media_id == file_id,
+            ProviderSourceObservation.payload["source_format"].as_string() == "cue",
+        )
+    )
+
+
+def cue_linked_analysis_coverage_stmt() -> _Select[int, int, int]:
+    """Counts of CUE-linked media: ``total``, ``with_analysis`` (a completed analysis row) and ``without_analysis``.
+
+    Read-only; run it before and after an analysis pass to report coverage. "With analysis" means an
+    ``analysis`` row with ``analysis_completed_at`` set and no ``failed_at`` (the row alone is not
+    enough: a stamped-failed row carries no windows).
+    """
+    done = exists(
+        select(AnalysisResult.id).where(
+            AnalysisResult.file_id == FileRecord.id,
+            AnalysisResult.analysis_completed_at.is_not(None),
+            AnalysisResult.failed_at.is_(None),
+        )
+    )
+    return select(
+        func.count().label("total"),
+        func.count().filter(done).label("with_analysis"),
+        func.count().filter(~done).label("without_analysis"),
+    ).where(FileRecord.missing_at.is_(None), cue_linked_media_clause())

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast as type_cast
 
-from sqlalchemy import String, and_, cast, exists, false, func, literal, or_, select, tuple_
+from sqlalchemy import String, and_, case, cast, exists, false, func, literal, or_, select, tuple_
 import structlog
 
 from phaze.config import get_settings
@@ -19,7 +19,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.services.agent_liveness import non_local_backend_kinds
-from phaze.services.pipeline.common import _ACTIVE_CLOUD_STATUSES, _safe_count
+from phaze.services.pipeline.common import _ACTIVE_CLOUD_STATUSES, _safe_count, cue_linked_media_clause
 from phaze.services.stage_status import (
     awaiting_candidate_clause,
     failed_clause,
@@ -326,11 +326,14 @@ async def get_cloud_staging_candidates(
     re-serve the tied rows. FIFO semantics are unchanged: ``created_at`` still dominates, ``id`` only orders
     within a tie that previously had no defined order at all.
     """
+    # phaze-tdton: CUE-linked candidates sort first (rank 0), then FIFO as before. Membership and the bounded
+    # ``limit`` are untouched -- only WHICH parked rows fill the window changes.
+    cue_rank = case((cue_linked_media_clause(), 0), else_=1)
     stmt = (
         select(FileRecord, CloudJob.updated_at)
         .join(CloudJob, CloudJob.file_id == FileRecord.id)
         .where(awaiting_candidate_clause())
-        .order_by(FileRecord.created_at.asc(), FileRecord.id.asc())
+        .order_by(cue_rank.asc(), FileRecord.created_at.asc(), FileRecord.id.asc())
         .limit(limit)
         .with_for_update(of=CloudJob, skip_locked=True)
     )
@@ -338,8 +341,12 @@ async def get_cloud_staging_candidates(
         # Row-value comparison -- the exact keyset form Postgres can drive from the composite ordering,
         # and the only spelling that is correct across a ``created_at`` tie.
         # BOUND params typed off the columns themselves (never interpolated SQL, T-42-03/T-49-02).
-        cursor = tuple_(literal(after[0], FileRecord.created_at.type), literal(after[1], FileRecord.id.type))
-        stmt = stmt.where(tuple_(FileRecord.created_at, FileRecord.id) > cursor)
+        # The cursor is still the last row's ``(created_at, id)``; its CUE rank is re-derived from that id so the
+        # keyset matches the three-part ORDER BY. (A link added since the cursor was taken can only move where the
+        # walk resumes, never what may be routed -- the walk wraps to the head.)
+        cursor_rank = select(case((cue_linked_media_clause(literal(after[1], FileRecord.id.type)), 0), else_=1)).scalar_subquery()
+        cursor = tuple_(cursor_rank, literal(after[0], FileRecord.created_at.type), literal(after[1], FileRecord.id.type))
+        stmt = stmt.where(tuple_(cue_rank, FileRecord.created_at, FileRecord.id) > cursor)
     return [(file, updated_at) for file, updated_at in (await session.execute(stmt)).all()]
 
 

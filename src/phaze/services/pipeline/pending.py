@@ -22,7 +22,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.pipeline.buckets import _safe_bucket_snapshot
-from phaze.services.pipeline.common import _ACTIVE_CLOUD_STATUSES, MUSIC_VIDEO_TYPES
+from phaze.services.pipeline.common import _ACTIVE_CLOUD_STATUSES, MUSIC_VIDEO_TYPES, cue_linked_media_clause
 from phaze.services.stage_status import (
     MISSING_BUCKET,
     dedup_resolved_clause,
@@ -66,6 +66,11 @@ async def get_discovered_files_with_duration(session: AsyncSession) -> list[tupl
     guard -- see ``_ACTIVE_CLOUD_STATUSES``: a cloud-held/pushing file carries NO ``process_file`` ledger
     row, so ``eligible_clause``'s ``~inflight`` alone would re-admit it to the local analyze set.
 
+    phaze-tdton: the result is ORDERED CUE-linked media first (:func:`cue_linked_media_clause`), then the rest.
+    Every consumer enqueues in list order (``enqueue_router`` preserves encounter order within an agent group and
+    the background enqueue loop is sequential), so CUE-linked media without analysis reach the queue ahead of the
+    general backlog. This changes ORDER only -- the membership is untouched -- and adds no time bound of any kind.
+
     The duration is the joined ``FileMetadata.duration`` (or ``None`` when no metadata row exists yet).
     The LEFT OUTER JOIN is PRESERVED (the per-file cloud duration-router reads ``FileMetadata.duration``);
     it is captured into the in-memory list here because ``FileRecord.file_metadata`` is ``lazy="noload"``
@@ -81,6 +86,7 @@ async def get_discovered_files_with_duration(session: AsyncSession) -> list[tupl
             FileRecord.missing_at.is_(None),
             ~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_(_ACTIVE_CLOUD_STATUSES))),
         )
+        .order_by(cue_linked_media_clause().desc(), FileRecord.id)
     )
     result = await session.execute(stmt)
     return [(record, duration) for record, duration in result.all()]
