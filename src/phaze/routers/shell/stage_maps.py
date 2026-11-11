@@ -106,8 +106,8 @@ STAGE_PARTIALS: dict[str, str] = {
     # literal (T-57-01: `stage` is never spliced into a template path). Beside Dedupe: both review copies
     # of content, and neither moves a file until the operator approves.
     "junk": "pipeline/partials/junk_workspace.html",
-    # Phase 60 (60-04, REVIEW-04): the real Cue preview workspace (in-memory .cue preview cards + an
-    # APPROVE wired to /cue/{id}/generate + visibly gated ineligible cards) supersedes the placeholder --
+    # Phase 60 (60-04, REVIEW-04): the real Cue workspace supersedes the placeholder (phaze-zimli: the
+    # per-tracklist APPROVE is gone; generation runs from a selected CUE source, legacy cards are gated) --
     # a STATIC string literal (T-57-01). This is the LAST of the six Review workspaces; every placeholder
     # is now superseded. Supersede-in-place; the legacy template stays reachable until CUT-02 (Phase 62).
     "cue": "pipeline/partials/cue_workspace.html",

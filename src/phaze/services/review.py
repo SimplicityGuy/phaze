@@ -2,8 +2,8 @@
 
 Routers and documented callers keep importing from this module. Concrete SQLAlchemy readers live
 in responsibility-named modules; this facade injects its collaborator globals on every call so
-established test patch points such as ``review.get_proposals_page`` and
-``review.generate_cue_content`` retain their resolution behavior. Every concrete reader owns its
+established test patch points such as ``review.get_proposals_page`` retain their resolution
+behavior. Every concrete reader owns its
 ``session.begin_nested()`` scope and never commits, rolls back, enqueues work, or writes files.
 """
 
@@ -12,8 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from phaze.services.collision import get_review_collision_ids
-from phaze.services.cue_generator import generate_cue_content
-from phaze.services.cue_review import build_cue_tracks_for_versions, eligible_tracklist_stmt, gated_tracklist_stmt, get_eligible_tracklist_query
+from phaze.services.cue_review import gated_tracklist_stmt
 from phaze.services.dedup import GROUP_PAGE_SIZE, find_duplicate_groups_with_metadata, score_group
 from phaze.services.proposal_queries import (
     count_pending_above_confidence,
@@ -81,7 +80,6 @@ __all__ = [
     "build_dupe_group_card",
     "count_cue_review_candidates",
     "dedupe_subcount_text",
-    "generate_cue_content",
     "get_changes_review_page",
     "get_cue_review_cards",
     "get_dedupe_groups",
@@ -130,11 +128,7 @@ def _dedupe_reader() -> SqlDedupeReviewReader:
 def _cue_reader() -> SqlCueReviewReader:
     return SqlCueReviewReader(
         max_rows=_MAX_REVIEW_ROWS,
-        eligible_tracklist_stmt=eligible_tracklist_stmt,
         gated_tracklist_stmt=gated_tracklist_stmt,
-        get_eligible_tracklist_query=get_eligible_tracklist_query,
-        build_cue_tracks_for_versions=build_cue_tracks_for_versions,
-        generate_cue_content=generate_cue_content,
     )
 
 
@@ -214,5 +208,5 @@ async def count_cue_review_candidates(session: AsyncSession, *, strict: bool = F
 
 
 async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
-    """Return eligible preview cards followed by gated CUE cards, without writing files."""
+    """Return the gated, display-only legacy CUE cards (ADR-0027 (retire legacy timestamp qualification)), without writing files."""
     return await _cue_reader().get_cue_review_cards(session)

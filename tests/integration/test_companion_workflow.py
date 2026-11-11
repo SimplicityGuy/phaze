@@ -526,7 +526,7 @@ async def test_physical_competing_sources_native_independent_choices_preserve_ma
             await native_import(client, media, raw_b)
             assert (await get_file_tracklist_review(session, media.id)).tracklist.id == legacy.id
             assert (await _get_accepted_discogs_link(session, media.id)).id == accepted.id
-            assert not build_track_segments((await get_file_tracklist_review(session, media.id)).tracks, [], 30, media_id=media.id)
+            assert not build_track_segments((await get_file_tracklist_review(session, media.id)).tracks, [], 30)
             legacy_cue = await build_cue_tracks_for_file(session, media.id)
             assert all(row.timestamp_seconds is None for row in legacy_cue)
             assert "INDEX 01" not in generate_cue_content("recording.mp3", "mp3", legacy_cue)

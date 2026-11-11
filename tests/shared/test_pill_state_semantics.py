@@ -134,33 +134,26 @@ def test_summary_template_renders_a_separate_failed_badge() -> None:
     assert "1 failed" in pills
 
 
-# --- (b) Cue prerequisites reflect whether they are met ---------------------------------------------
+# --- (b) Cue cards never claim a state their data cannot reach ---------------------------------------
+#
+# phaze-zimli, ADR-0027 (retire legacy timestamp qualification): every card the Cue reader builds is a
+# legacy tracklist whose timing is display-only, so the old prerequisite chips -- which promised that
+# adding timestamps would unblock generation -- were removed. A legacy card's pill says what it is.
 
 
 def _cue_html(cards: list[dict[str, Any]]) -> str:
     return _render("pipeline/partials/cue_workspace.html", cue_cards=cards)
 
 
-def test_cue_prerequisites_unmet_when_no_card_exists() -> None:
-    pills = _pills(_cue_html([]))
-    assert "needs applied file" in pills
-    assert "needs approved tracklist" in pills
-    assert "file applied" not in pills
-    assert "tracklist approved" not in pills
-
-
-def test_cue_prerequisites_met_when_every_card_is_eligible() -> None:
-    card = {"tracklist_id": "t", "set_name": "s", "eligible": True, "build_error": False, "cue_text": "x", "version_id": "v", "file_id": "f"}
+def test_a_legacy_cue_card_is_labelled_display_only_never_ready() -> None:
+    card = {"tracklist_id": "t", "set_name": "s", "eligible": False, "build_error": False, "cue_text": None, "version_id": None, "file_id": "f"}
     pills = _pills(_cue_html([card]))
-    assert "file applied" in pills
-    assert "tracklist approved" in pills
-    assert "timestamps present" in pills
+    assert pills == ["display only"]
+    assert not any("ready" in pill or "timestamps" in pill for pill in pills)
 
 
-def test_cue_timestamps_flagged_when_a_card_is_blocked() -> None:
-    blocked = {"tracklist_id": "t", "set_name": "s", "eligible": False, "build_error": False, "cue_text": None, "version_id": None, "file_id": "f"}
-    pills = _pills(_cue_html([blocked]))
-    assert "timestamps required (1 blocked)" in pills
+def test_an_empty_cue_workspace_shows_no_legacy_pill_and_no_prerequisite_chips() -> None:
+    assert _pills(_cue_html([])) == []
 
 
 # --- (c) Queued rows are not "in flight" -------------------------------------------------------------

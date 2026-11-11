@@ -107,7 +107,6 @@
     "POST /api/v1/extract-metadata",
     "POST /api/v1/proposals/generate",
     "POST /cue/files/{media_id}/generate",
-    "POST /cue/{tracklist_id}/generate",
     "POST /duplicates/resolve-all",
     "POST /duplicates/review-all",
     "POST /duplicates/undo-all",

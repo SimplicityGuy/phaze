@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
 
@@ -15,49 +14,32 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.asyncio
-async def test_cue_gate_and_preview(
+async def test_cue_workspace_lists_legacy_tracklists_as_display_only_cards(
     client: AsyncClient,
     seed_cue_set: Callable[..., Awaitable[object]],
 ) -> None:
-    """REVIEW-04 -- Cue Sheets is an artifact workspace with prerequisites, preview, generation, and source actions.
+    """REVIEW-04 after ADR-0027 (retire legacy timestamp qualification).
 
-    One eligible set (approved tracklist, EXECUTED file, a timestamped track) and one ineligible set (no
-    timestamped track) are seeded. The eligible card renders the in-memory ``.cue`` preview ``<pre>`` and an
-    APPROVE that POSTs ``/cue/{id}/generate`` (generate IS approve/write -- there is NO ``/approve`` route);
-    the ineligible card is ``opacity-60`` with "awaiting tracklist match…" and NO approve control.
+    Legacy tracklists -- timed or not -- are listed as gated, display-only cards: no ``.cue``
+    preview, no generation control, no per-tracklist POST. Generation lives on the selected-source
+    sections the workspace loads beside them.
     """
-    eligible = await seed_cue_set(eligible=True)
-    _gated = await seed_cue_set(eligible=False)
-    eligible_tracklist_id = eligible[1].id  # (file, tracklist, version)
+    timed = await seed_cue_set(timestamped=True)
+    untimed = await seed_cue_set(timestamped=False)
 
     frag = await client.get("/s/cue", headers={"HX-Request": "true"})
     assert frag.status_code == 200
     body = frag.text
 
-    assert "Cue sheets" in body and "Generated artifact" in body
-    assert "Applied file:" in body and "Tracklist:" in body and "Timestamps:" in body
-    assert "<pre" in body, "the eligible card renders the in-memory .cue preview block"
-    assert f'hx-post="/cue/{eligible_tracklist_id}/generate"' in body
-    assert "/approve" not in body, "there is no /cue/{id}/approve route -- generate IS the write"
-    assert "Generate cue sheet" in body and "Open source record" in body and "Tracklist workspace" in body
-    assert "Preview and generation are unavailable" in body and "! required" in body
-    assert body.count("Generate cue sheet") == 1, "only the eligible card carries a generation control"
-
-
-@pytest.mark.asyncio
-async def test_cue_preview_failure_is_not_reported_as_missing_timestamps(
-    client: AsyncClient,
-    seed_cue_set: Callable[..., Awaitable[object]],
-) -> None:
-    """A renderer failure is a red preview error, not an amber prerequisite diagnosis."""
-    await seed_cue_set(eligible=True)
-    with patch("phaze.services.review.generate_cue_content", side_effect=ValueError("synthetic preview failure")):
-        response = await client.get("/s/cue", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    assert "preview failed" in response.text
-    assert "timestamps were not classified as missing" in response.text
-    assert "Preview and generation are unavailable until" not in response.text
+    assert "Cue sheets" in body and "Legacy stored tracklists" in body
+    for _file, tracklist, _version in (timed, untimed):  # type: ignore[misc]
+        assert f'id="cue-card-{tracklist.id}"' in body
+        assert f"/cue/{tracklist.id}/generate" not in body
+    assert body.count("display only") >= 2
+    assert "<pre" not in body, "a legacy card renders no .cue preview"
+    assert "Generate cue sheet" not in body and 'hx-post="/cue/' not in body
+    assert "Open source record" in body and "Tracklist workspace" in body
+    assert "/pipeline/local-source-sets?kind=cue" in body, "the selected-source CUE sections still load"
 
 
 @pytest.mark.asyncio

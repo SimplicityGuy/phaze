@@ -181,24 +181,23 @@ def test_the_index_returns_members_in_the_callers_own_order() -> None:
 def test_the_track_segment_join_of_a_twelve_hour_set_is_identical_to_the_scan() -> None:
     """40 tracks over 1,680 windows: the third scan finding 6 named, and the one whose result is
     read straight onto the screen rather than into a column."""
-    from types import SimpleNamespace
     import uuid
 
+    from phaze.tracklist_providers.domain import ProviderTrack, Timestamp
     from tests._timing import qualified_timing
 
     media_id = uuid.uuid4()
     tracks = [
-        SimpleNamespace(
+        ProviderTrack(
             position=index + 1,
-            timestamp=f"{(index * 18) // 60}:{(index * 18) % 60:02d}:00",
             title=f"Track {index + 1}",
-            timestamp_evidence=qualified_timing(f"{(index * 18) // 60}:{(index * 18) % 60:02d}:00", media_id),
+            timestamp=Timestamp.model_validate(qualified_timing(f"{(index * 18) // 60}:{(index * 18) % 60:02d}:00", media_id)),
         )
         for index in range(40)
     ]
     windows = [*FINE, *COARSE]
 
-    segments = build_track_segments(tracks, windows, DURATION_SEC, media_id=media_id)
+    segments = build_track_segments(tracks, windows, DURATION_SEC)
 
     assert len(segments) == 40
     for segment in segments:
