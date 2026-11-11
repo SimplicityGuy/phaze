@@ -41,7 +41,11 @@ async def _seed(engine: AsyncEngine) -> dict[str, uuid.UUID]:
     """Insert one of everything the views project, plus rows each view's filter must exclude."""
     ids = {name: uuid.uuid4() for name in ("file", "tl", "tl_propagated", "v1", "v2", "obj", "obs", "other_obs", "other_file")}
     async with engine.begin() as conn:
-        await conn.execute(text("INSERT INTO agents (id, name, kind, created_at, updated_at) VALUES ('a1', 'a1', 'fileserver', NOW(), NOW())"))
+        await conn.execute(
+            text(
+                "INSERT INTO agents (id, name, kind, scan_roots, created_at, updated_at) VALUES ('a1', 'a1', 'fileserver', '[\"/x\"]'::jsonb, NOW(), NOW())"
+            )
+        )
         for key, name in (("file", "set"), ("other_file", "other")):
             await conn.execute(
                 text(
@@ -288,7 +292,7 @@ async def test_downgrade_drops_the_views_and_the_grants_and_upgrade_is_repeatabl
         async with engine.connect() as conn:
             assert (await conn.execute(text(views))).scalar_one() == 0
         for _ in range(2):  # the second pass proves the role surviving a downgrade (cluster-wide) does not break re-upgrade
-            await asyncio.to_thread(upgrade_to, cfg, "095")
+            await asyncio.to_thread(upgrade_to, cfg, "head")
             async with engine.connect() as conn:
                 assert (await conn.execute(text(views))).scalar_one() == len(EXPECTED_COLUMNS)
                 assert (await conn.execute(text(grants), {"r": _ROLE})).scalar_one() == len(EXPECTED_COLUMNS)

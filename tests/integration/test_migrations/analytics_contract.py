@@ -13,6 +13,7 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "file_size",
         "missing_at",
         "created_at",
+        "agent_id",
     ],
     "analytics_file_analysis": [
         "file_id",
@@ -99,5 +100,13 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "offset_numerator",
         "offset_denominator",
         "offset_seconds",
+    ],
+    "analytics_agent_path_prefixes": [
+        "agent_id",
+        "name",
+        "kind",
+        "active",
+        "prefix_ordinal",
+        "path_prefix",
     ],
 }
