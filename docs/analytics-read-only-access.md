@@ -1,7 +1,7 @@
 # Read-only analytics access
 
 A read-only consumer of phaze's data connects as the dedicated Postgres role **`analytics_ro`**, never as the
-application role. The role can `SELECT` from six `analytics_*` views and from nothing else: no base table, no write, no DDL.
+application role. The role can `SELECT` from seven `analytics_*` views and from nothing else: no base table, no write, no DDL.
 Migration `095_analytics_ro_role.py` creates the role and the views; `tests/integration/test_migrations/test_095_analytics_ro_role.py`
 connects as the role and proves each of those claims.
 
@@ -11,7 +11,7 @@ connects as the role and proves each of those claims.
 |---|---|
 | Name | `analytics_ro` |
 | Attributes | `LOGIN`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`, `NOREPLICATION`, `NOINHERIT` |
-| Grants | `USAGE` on schema `public`; `SELECT` on the six views below. Nothing on any base table |
+| Grants | `USAGE` on schema `public`; `SELECT` on the seven views below. Nothing on any base table |
 | Role setting | `default_transaction_read_only = on`, a second wall behind the missing write grants |
 | Password | **None until the operator sets one.** A migration is the wrong place for a secret |
 
@@ -133,9 +133,12 @@ The tracks of each canonical tracklist's **latest version** (highest `version_nu
 
 ### `analytics_cue_track_offsets`
 
-The per-track timestamps of each media's **selected** CUE source observation: one row per track of the CUE FILE the
-operator mapped to that media. Candidates that are pending or rejected, other observations, and tracks of other FILE
-entries are not exposed. Selection is the operator's decision, so a media with no selected CUE has no rows.
+The **intrinsic** per-track timestamps of each media's selected CUE source observation: one row per track of the CUE FILE
+the operator mapped to that media, exactly as the CUE file states them. Their origin is the CUE file, not the recording,
+and they are **not** filtered by availability: a row stays visible after the recording or the CUE changed on disk. Use them
+to see what the CUE says; use [`analytics_cue_recording_offsets`](#analytics_cue_recording_offsets) for offsets you may rely on
+as positions in the recording. Candidates that are pending or rejected, other observations, and tracks of other FILE entries
+are not exposed. Selection is the operator's decision, so a media with no selected CUE has no rows.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -154,8 +157,52 @@ entries are not exposed. Selection is the operator's decision, so a media with n
 | `offset_denominator` | bigint | Offset denominator; never zero |
 | `offset_seconds` | numeric | `offset_numerator / offset_denominator`; NULL when the track has no offset |
 
-`offset_usability` is the intrinsic judgement made when the CUE was parsed. A consumer that needs only trustworthy
-offsets filters on `offset_usability = 'qualified'`; treat `approximate` and `unusable` offsets as unusable for slicing.
+`offset_usability` is the intrinsic judgement made when the CUE was parsed; it says nothing about whether the CUE still
+describes the recording on disk. For offsets bound to the recording, read `analytics_cue_recording_offsets`.
+
+### `analytics_cue_recording_offsets`
+
+The **target-bound qualified** offsets: the tracks of the mapped CUE FILE whose offset is intrinsically `qualified`, re-bound
+to the recording, and only while the operator's selection is **current**. It is computed in SQL from
+`provider_recording_selections.target_mapping` and mirrors the application's read-time projection
+(`local_source_import._project_tracks` fed by `get_selected_recording_source`), so it returns the same offsets the CUE writer
+(`cue_generator`, through `cue_review.cue_tracks_from_selected`) uses. `origin` is `recording:<file_id>`, the recording, not the
+CUE file.
+
+A row appears only while **all** of these hold, each one the SQL form of a check the application makes:
+
+- the selection exists and its mapping names a CUE FILE (`cue_file_ordinal`);
+- the media is not missing, is a media type, and its `sha256_hash` equals the `media_sha256` the operator reviewed;
+- the source observation has status `found`, `incomplete` or `ambiguous`;
+- for a `companion` source: the CUE file is present, not marked ambiguous, still linked to this media, its `sha256_hash`
+  matches the captured inventory revision and the observation's full revision, and equals the `source_sha256` the operator
+  reviewed; for a `remote` source: no later stored read of the same object reported it absent; for a source with no
+  channel: the observation status alone;
+- the CUE file belongs to the same agent as the media.
+
+Reject, replacement and any sha drift on either file therefore remove the rows without any job running.
+
+**What SQL does not express, stated plainly:** a selection whose source channel is `embedded` (a CUE read from the recording's
+own tags) is **not exposed here at all**. Its currency check hashes processed tag text in Python
+(`embedded_revision`), which SQL cannot reproduce, so the view under-reports rather than risk reporting an offset the
+application would refuse. Read those through the application. A change to the file *content* that keeps the same recorded
+`sha256_hash` is outside what any database view can see.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `file_id` | uuid | The recording the selection is for |
+| `observation_id` | uuid | The selected observation |
+| `selected_at` | timestamptz | When the selection was made |
+| `cue_file_ordinal` | integer | The CUE `FILE` entry (1-based) mapped to this recording |
+| `position` | integer | Track position within the CUE |
+| `artist` | text | Track performer |
+| `title` | text | Track title |
+| `timestamp_original` | text | The `INDEX 01` time as written in the CUE, `MM:SS:FF` |
+| `timestamp_precision` | text | `cue_frame_75` or `second` for a qualified offset |
+| `origin` | text | `recording:<file_id>` |
+| `offset_numerator` | bigint | Offset into the recording, seconds, as an exact fraction: numerator |
+| `offset_denominator` | bigint | Offset denominator; never zero |
+| `offset_seconds` | numeric | `offset_numerator / offset_denominator` |
 
 ## Stability rule
 
