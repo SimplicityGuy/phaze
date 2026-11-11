@@ -74,6 +74,7 @@ Unresolved repository-local targets in historical snapshots are intentionally cl
 | **[Architecture Overview](architecture.md)** | 🏛️ System design, data flow, distributed agents, and source-cited HTML/SVG diagrams |
 | **[API Reference](api.md)** | 🔌 REST and HTMX UI endpoints, plus the distributed Agent API |
 | **[Database Schema & Migrations](database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
+| **[Read-only analytics access](analytics-read-only-access.md)** | 🔒 The `analytics_ro` role, its stable views and network exposure |
 | **[Companion Source Capture](operations/companion-capture.md)** | Revision-bound owning-agent text capture and immutable offline observations |
 | **[Companion Viewing](operations/companion-viewing.md)** | Music and video detail views, stored text, parsed sources, explicit selection and capture status |
 | **[Local Tracklist Syntax](design/local-tracklist-parser-implementation.md)** | Narrow CUE/text grammars, source origins, excluded lines and exact timing evidence |
