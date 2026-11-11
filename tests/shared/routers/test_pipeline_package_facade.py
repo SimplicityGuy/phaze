@@ -47,6 +47,9 @@ FROZEN_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/pipeline/lanes/{backend_id}"),
         # phaze-c5v4x: explicit selected/candidate source workspace and existing CUE inventory.
         ("GET", "/pipeline/local-source-sets"),
+        # phaze-2dxhd: bulk review of unambiguous CUE link candidates (new URLs, nothing moved).
+        ("GET", "/pipeline/cue-link-review"),
+        ("POST", "/pipeline/cue-link-review/decide"),
         ("POST", "/pipeline/match-tracklists"),
         ("POST", "/pipeline/metadata-failed/retry"),
         ("GET", "/pipeline/pending-files"),

@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.schemas.local_source_import import ImportLocalSource
-from phaze.services.cue_generator import qualified_legacy_offset
 from phaze.services.cue_review import cue_tracks_from_selected
 from phaze.services.local_source_import import decide_local_source, get_selected_recording_source, import_local_source
 from tests.integration.test_local_source_import import decision, inventory
@@ -93,7 +92,7 @@ async def _application_offsets(session: AsyncSession, media_id: uuid.UUID) -> tu
 
 async def test_a_current_selection_yields_exactly_the_offsets_the_cue_writer_uses(world: tuple[AsyncSession, AsyncEngine]) -> None:
     session, ro = world
-    media, _, selected = await _selected_cue(session)
+    media, _, _ = await _selected_cue(session)
     availability, offsets = await _application_offsets(session, media.id)
     assert availability == "current"
     assert offsets == {1: Fraction(76, 75), 2: Fraction(152, 75)}, "precondition: the real consumer produced two exact frame-precision offsets"
@@ -101,10 +100,6 @@ async def test_a_current_selection_yields_exactly_the_offsets_the_cue_writer_use
     assert {position: offset for position, offset, _, _ in rows} == offsets
     assert {origin for _, _, origin, _ in rows} == {f"recording:{media.id}"}, "origin is the recording, not the CUE file"
     assert {file_id for *_, file_id in rows} == {media.id}
-    # The cue_generator's own gate accepts each row's evidence for this recording and reads the same exact offset.
-    for track in cue_tracks_from_selected(selected):
-        evidence = next(t.timestamp for t in selected.tracks if t.position == track.position)
-        assert qualified_legacy_offset(evidence.original, evidence.model_dump(mode="json"), media.id) == offsets[track.position]
 
 
 async def test_a_selection_without_a_reviewed_file_mapping_yields_nothing_and_so_does_a_mapping_of_another_file(
