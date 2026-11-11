@@ -61,7 +61,7 @@ from sqlalchemy import delete, exists, or_, select, update
 import structlog
 
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
 from phaze.models.companion_content import CompanionContentFeatures
@@ -407,8 +407,8 @@ async def _merge_children(session: AsyncSession, *, keep: uuid.UUID, drop: uuid.
     Many-per-file history moves over whole: proposals (with their execution rows), tag writes,
     tracklists, companion links, force-skips. For a 1:1 table the kept row's own row wins, except
     that a SUCCESSFUL metadata or COMPLETED analysis on the duplicate replaces a failed/partial one
-    on the kept row (analysis moves with its windows, set profile, cloud job and cloud budget, which
-    describe that analysis run). What is left on ``drop`` afterwards is derived state the kept row
+    on the kept row (analysis moves with its windows, sub-windows, beat grid, set profile, cloud job and
+    cloud budget, which describe that analysis run). What is left on ``drop`` afterwards is derived state the kept row
     already holds for identical content, and ``delete_file_cascade`` removes it with the row.
     ``dedup_resolution`` never reaches here: either side carrying one is a retention blocker.
     """
@@ -424,7 +424,7 @@ async def _merge_children(session: AsyncSession, *, keep: uuid.UUID, drop: uuid.
     keep_done = await session.scalar(select(exists().where(AnalysisResult.file_id == keep, completed)))
     drop_done = await session.scalar(select(exists().where(AnalysisResult.file_id == drop, completed)))
     if drop_done and not keep_done:
-        for analysis_model in (AnalysisWindow, SetProfile, AnalysisResult, CloudJob, CloudBudget):
+        for analysis_model in (AnalysisWindow, AnalysisSubwindow, AnalysisBeatGrid, SetProfile, AnalysisResult, CloudJob, CloudBudget):
             await session.execute(delete(analysis_model).where(analysis_model.file_id == keep).execution_options(synchronize_session=False))
             await _reparent(session, analysis_model, keep, drop)
 

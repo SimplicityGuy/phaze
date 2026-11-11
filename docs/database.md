@@ -20,6 +20,8 @@ by Alembic using the async template (`alembic/`). Mutable operational models use
 | `metadata`            | Audio tag metadata (1:1 with `files`)                                  |
 | `analysis`            | BPM, key, mood, ranked style scores and dominant style (1:1 with `files`) |
 | `analysis_window`     | Per-window time series plus nullable energy and mood score projections (1:many with `files`, `ON DELETE CASCADE`) |
+| `analysis_subwindow`  | Mood per fixed 15 s sub-window of each coarse window, positional in `MOOD_ORDER` (1:many with `files`, `ON DELETE CASCADE`) |
+| `analysis_beat_grid`  | One continuous file-relative beat grid per file, float32 `real[]`, with recorded gaps (`file_id` PK/FK, 1:1 with `files`, `ON DELETE CASCADE`) |
 | `set_profile`         | Whole-set projection (`file_id` PK/FK, 1:1 with `files`, `ON DELETE CASCADE`) |
 | `proposals`           | AI-generated rename/move proposals (`ProposalStatus`)                  |
 | `execution_log`       | Per-proposal execution attempts and terminal status, with source/destination evidence               |
@@ -127,6 +129,22 @@ callback derives it through `services/set_projection_writer.py`; the resumable
 JSONB without re-running Essentia. Projection math and its fixed 11-value mood ordering live in
 `services/set_projection.py`.
 
+### Sub-window mood and the beat grid
+
+Migration `095` adds two tables for analysis output the pipeline used to discard
+([the storage decision](design/0026-subwindow-mood-and-beat-grid.md)). `analysis_subwindow`
+holds one row per 15 s slice of each coarse window, keyed `(file_id, window_index, sub_index)`,
+where `window_index` is the coarse window's own index. `start_sec` / `end_sec` are file seconds,
+and `mood_scores` is a `float8[]` positional in `MOOD_ORDER`, derived exactly like the coarse
+`analysis_window.mood_scores`. A slice that no mood patch centre falls in has `NULL` mood. There is no
+FK to `analysis_window`, because that table's `id` changes on every re-analysis.
+`analysis_beat_grid` holds one row per file. `beats` is a `real[]` of file-relative seconds, strictly
+ascending (`services/beat_grid.py` rounds them for the writer), `beat_count` must match its
+cardinality (CHECK), and `gaps`
+lists the `[start_sec, end_sec]` spans recorded instead of filled. Both tables cascade with their
+`files` row, and a content change or duplicate merge treats them like the rest of the analysis
+output.
+
 ### Agent attribution
 
 `files` and `scan_batches` each carry a non-null `agent_id` (`String(64)`) that foreign-keys
@@ -231,10 +249,10 @@ just show-db-history         # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-094)
+### Post-baseline chain (040-095)
 
-`alembic/versions/` holds **56** files: the `039` baseline plus a linear chain to the current
-head, **`094`**.
+`alembic/versions/` holds **57** files: the `039` baseline plus a linear chain to the current
+head, **`095`**.
 
 | Rev | Change |
 |-----|--------|
@@ -292,7 +310,8 @@ head, **`094`**.
 | `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`)  |
 | `092` | Persist remote lookup batch cursors, deduplicated recording/provider work, batch memberships and bounded successful-read continuation evidence |
 | `093` | Add nullable `metadata.duration_source` (`NULL` = legacy, `tags` = the tag reader's length, `audio_frames` = recomputed from the real MPEG frames behind a junk prefix), constrained to those values; existing rows untouched |
-| `094` | Add nullable `analysis.coarse_work_done` / `analysis.coarse_work_total`, the coarse work-step counters `coarse_work_percent` is computed from, so the analyze queue can show `step a/T`; `NULL` for existing rows and for agents that predate them — **head** |
+| `094` | Add nullable `analysis.coarse_work_done` / `analysis.coarse_work_total`, the coarse work-step counters `coarse_work_percent` is computed from, so the analyze queue can show `step a/T`; `NULL` for existing rows and for agents that predate them |
+| `095` | Create `analysis_subwindow` (mood per 15 s sub-window of each coarse window) and `analysis_beat_grid` (one stitched float32 beat grid per file); both start empty, existing tables untouched — **head** |
 
 **Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
@@ -317,8 +336,8 @@ to `head`) can be several revisions ahead of production. Check the live position
 ## Focused relationship views
 
 The overview above selects the core file facts. These views show related records without
-claiming to be a complete physical-schema export. Current ORM metadata declares **45 tables
-and 47 foreign keys**. Selected fields are shown; unlinked identifiers do not imply a SQL
+claiming to be a complete physical-schema export. Current ORM metadata declares **47 tables
+and 49 foreign keys**. Selected fields are shown; unlinked identifiers do not imply a SQL
 constraint. Provider observations and selection events preserve evidence; mutable work,
 memberships and read-cache rows have different lifetimes.
 
