@@ -91,17 +91,25 @@ wholesale, never updated.
 
 **Sizes, measured.** I loaded 1,000 synthetic files × 1 h each (240 slices/h, 11-value vectors of
 random float64) into PostgreSQL 18.6 on the test harness, then read `pg_total_relation_size` (table +
-TOAST + primary key). I scaled to the analyzed corpus of 11,492.2 h across 11,412 files
-(`docs/design/0002-fingerprint-removal.md`, measured 2026-07-28), and to the 120,429.1 h set-like
-inventory (`docs/spikes/phaze-5rhjq-collapse-ratio.md`) as the growth case. Row count = hours × 240.
+TOAST + primary key). I scaled the per-hour figures to the archive as it stands on 2026-11-11: 121,572.3 h of audio across
+101,000 files with a duration (a read-only production query,
+`SELECT count(*), sum(duration)/3600 FROM metadata WHERE duration IS NOT NULL`). Row count = hours ×
+240. The per-hour measurements are the ones this record was first written with; only the scale was restated.
+An earlier revision scaled them to 11,492.2 h across 11,412 files
+(`docs/design/0002-fingerprint-removal.md`, measured 2026-07-28) and to a 120,429.1 h set-like inventory
+(`docs/spikes/phaze-5rhjq-collapse-ratio.md`); the archive is about 10.6× the first of those and has
+overtaken the second, so neither is used here. The ranking of the shapes is the same at every scale,
+because every figure is linear in hours, so the choice below is unchanged.
 
-| Shape | Per hour of audio | At 11,492.2 h (2,758,128 rows) | At 120,429.1 h |
-|---|---|---|---|
-| **Child table, `float8[]` (chosen)** | **59.2 KB** | **680 MB** | **7.1 GB** |
-| Child table, `float8[]` + `created_at`/`updated_at` | 63.4 KB | 729 MB | — |
-| Child table, JSONB array | 93.4 KB | 1,073 MB | — |
-| Child table, `real[]` (float32) | 52.5 KB | 603 MB | — |
-| JSONB array of 12 vectors on the coarse `analysis_window` row (added bytes only) | 39.9 KB | 459 MB | — |
+| Shape | Per hour of audio | At 121,572.3 h (29,177,352 rows) |
+|---|---|---|
+| **Child table, `float8[]` (chosen)** | **59.2 KB** | **7.2 GB** |
+| Child table, `float8[]` + `created_at`/`updated_at` | 63.4 KB | 7.7 GB |
+| Child table, JSONB array | 93.4 KB | 11.4 GB |
+| Child table, `real[]` (float32) | 52.5 KB | 6.4 GB |
+| JSONB array of 12 vectors on the coarse `analysis_window` row (added bytes only) | 39.9 KB | 4.9 GB |
+
+At this scale the chosen table is about 29 million rows, not the 2.8 million the earlier scale gave.
 
 Rejected shapes:
 
@@ -138,12 +146,12 @@ agent sends is what a read returns, bit for bit.
 density depends on tempo; 128 BPM is the bead's own reference. A 2 h set at 128 BPM is 15,360 beats,
 and the longest file is about 92,700.
 
-| Shape | Per hour of audio | At 11,492.2 h | At 120,429.1 h |
-|---|---|---|---|
-| **`real[]` (chosen)** | **33.3 KB** | **383 MB** | **4.0 GB** |
-| float32 `bytea` | 33.8 KB | 388 MB | — |
-| float64 `bytea` | 64.4 KB | 740 MB | — |
-| JSONB array | 66.5 KB | 764 MB | — |
+| Shape | Per hour of audio | At 121,572.3 h |
+|---|---|---|
+| **`real[]` (chosen)** | **33.3 KB** | **4.0 GB** |
+| float32 `bytea` | 33.8 KB | 4.1 GB |
+| float64 `bytea` | 64.4 KB | 7.8 GB |
+| JSONB array | 66.5 KB | 8.1 GB |
 
 Rejected shapes:
 
