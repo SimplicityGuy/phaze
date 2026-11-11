@@ -76,6 +76,7 @@ from phaze.services.analysis_windows import (
     aggregate_dominant,
     aggregate_key,
 )
+from phaze.services.beat_grid import stitch_beat_grid, stored_beat_grid, to_stored_precision
 from phaze.telemetry import instruments as telemetry, tracing as otel
 
 
@@ -1001,7 +1002,7 @@ def _measure_fine_window(
     try:
         if not _has_analyzable_signal(buf):
             return FineWindow(window_index=idx, start_sec=start, end_sec=end, bpm=None, musical_key=None)
-        bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
+        bpm, beat_ticks, confidence, _, _beats_intervals = rhythm_extractor(buf)
         key, scale, _strength = key_extractor(buf)
         return FineWindow(
             window_index=idx,
@@ -1010,6 +1011,9 @@ def _measure_fine_window(
             bpm=round(float(bpm), 1) if confidence > 0.0 else None,
             musical_key=f"{key} {scale}" if _strength > 0.0 else None,
             confidence=float(confidence),
+            # Window-relative ticks -> file-relative seconds. Python floats, so no essentia array
+            # outlives the window (phaze-0296l).
+            beats=tuple(start + float(tick) for tick in beat_ticks),
         )
     except Exception:  # per-window failure isolation: skip, never fail the file
         on_skip(idx, start, end, True)
@@ -1360,6 +1364,7 @@ def analyze_file(
     fine_min_sec: int = _DEFAULT_FINE_MIN_SEC,
     progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    include_grids: bool = False,
 ) -> dict[str, Any]:
     """Analyze a single audio file via essentia as a two-tier time-series.
 
@@ -1446,6 +1451,12 @@ def analyze_file(
     now decides "stuck" from ABSENCE OF PROGRESS rather than from elapsed wall clock — see
     ``services/analysis_exec.py``. It carries no I/O either; the child turns it into a
     protocol line and the parent turns that into a watchdog reset.
+
+    ``include_grids`` (phaze-0296l, default ``False``) adds the ``beat_grid`` key to the result: the one
+    stitched file-relative beat grid. Off, the returned dict is byte-for-byte what it was before the key
+    existed -- the contract the completion PUT and the recorded equivalence tests pin. The grid is
+    computed either way (a few floats per beat); the flag only decides whether it travels, so the wire
+    bead can switch it on once the control plane accepts it.
     """
     _suppress_essentia_logging()
 
@@ -1462,6 +1473,7 @@ def analyze_file(
             fine_window_sec=fine_window_sec,
             coarse_window_sec=coarse_window_sec,
             fine_min_sec=fine_min_sec,
+            include_grids=include_grids,
         )
 
 
@@ -1474,6 +1486,7 @@ def _analyze_file_traced(
     fine_window_sec: int,
     coarse_window_sec: int,
     fine_min_sec: int,
+    include_grids: bool = False,
 ) -> dict[str, Any]:
     """:func:`analyze_file`'s body, inside its root span (phaze-m1drf.1).
 
@@ -1504,7 +1517,7 @@ def _analyze_file_traced(
         coarse_windows, coarse_total = _analyze_coarse_windows(
             file_path, total_sec, coarse_window_sec, models_dir, signals=signals, fine_analyzed=len(fine_windows), fine_total=fine_total
         )
-        result = _assemble_analysis_result(file_path, fine_windows, fine_total, coarse_windows, coarse_total)
+        result = _assemble_analysis_result(file_path, fine_windows, fine_total, coarse_windows, coarse_total, include_grids=include_grids)
         outcome = "ok"
     finally:
         telemetry.record("phaze.analysis.run.duration", time.perf_counter() - started, outcome=outcome)
@@ -1524,12 +1537,30 @@ def _analyze_file_traced(
     return result
 
 
+def _beat_grid_payload(fine_windows: list[FineWindow]) -> dict[str, Any]:
+    """The file's one stitched beat grid, at stored (float32) precision (phaze-0296l).
+
+    Positions are rounded BEFORE stitching, so "strictly ascending" and "no duplicate at the seam"
+    are judged on the values that will actually be stored. Silent or failed windows add no beats and
+    are left as recorded gaps, never interpolated.
+    """
+    stitched = stitch_beat_grid(
+        tuple(to_stored_precision(beat) for beat in window.beats) for window in sorted(fine_windows, key=lambda w: w.start_sec)
+    )
+    return {
+        "beats": stored_beat_grid(stitched.beats),
+        "gaps": [[to_stored_precision(start), to_stored_precision(end)] for start, end in stitched.gaps],
+    }
+
+
 def _assemble_analysis_result(
     file_path: str,
     fine_windows: list[FineWindow],
     fine_total: int,
     coarse_windows: list[CoarseWindow],
     coarse_total: int,
+    *,
+    include_grids: bool = False,
 ) -> dict[str, Any]:
     """The zibn floor plus the returned aggregate dict, unchanged. See :func:`analyze_file`."""
 
@@ -1551,7 +1582,7 @@ def _assemble_analysis_result(
     # See _log_job_peak_rss's docstring for what this does and does not measure post-15sw.
     _log_job_peak_rss()
 
-    return {
+    result: dict[str, Any] = {
         "bpm": aggregate_bpm(fine_windows),
         "musical_key": aggregate_key(fine_windows),
         "mood": aggregate_dominant(coarse_windows, "mood"),
@@ -1564,3 +1595,6 @@ def _assemble_analysis_result(
         "coarse_windows_analyzed": len(coarse_windows),
         "coarse_windows_total": coarse_total,
     }
+    if include_grids:
+        result["beat_grid"] = _beat_grid_payload(fine_windows)
+    return result

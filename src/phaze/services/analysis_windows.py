@@ -34,6 +34,10 @@ class FineWindow:
     bpm: float | None
     musical_key: str | None
     confidence: float = 0.0
+    # Beat ticks in FILE-relative seconds (window ticks + start_sec); empty for a silent window.
+    # Deliberately NOT in as_payload_dict: the per-window payload is unchanged, and the stitched
+    # per-file grid travels separately (phaze-0296l).
+    beats: tuple[float, ...] = ()
 
     def as_payload_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""

@@ -14,13 +14,15 @@ of the resolution the ticks carry in the first place.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from itertools import pairwise
+from statistics import median
 import struct
 from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
 
 _FLOAT32 = struct.Struct("<f")
@@ -44,3 +46,72 @@ def stored_beat_grid(beats: Iterable[float]) -> list[float]:
             msg = f"beat grid must be strictly ascending at float32 precision: {previous!r} then {current!r}"
             raise ValueError(msg)
     return stored
+
+
+# Stitching: one file-relative grid out of per-fine-window beat ticks (phaze-0296l)
+
+# A beat closer than this fraction of the local median interval to the previous accepted beat is the
+# SAME beat seen from two windows (or a spurious double tick), and is dropped.
+DUPLICATE_FRACTION = 0.5
+# A stretch between two accepted beats wider than this multiple of the local median interval is a gap:
+# recorded, never filled.
+GAP_FACTOR = 1.5
+# How many trailing intervals define the "local" median at a seam.
+_LOCAL_INTERVALS = 16
+
+
+@dataclass(frozen=True)
+class StitchedBeatGrid:
+    """The stitched grid: strictly ascending file-relative ``beats``, and the ``gaps`` left unfilled."""
+
+    beats: list[float] = field(default_factory=list)
+    gaps: list[tuple[float, float]] = field(default_factory=list)
+
+
+def _local_median_interval(accepted: Sequence[float], window_beats: Sequence[float]) -> float | None:
+    """Median beat interval near a seam: the accepted tail's, else the incoming window's own."""
+    tail = accepted[-(_LOCAL_INTERVALS + 1) :]
+    intervals = [b - a for a, b in pairwise(tail) if b > a]
+    if not intervals:
+        intervals = [b - a for a, b in pairwise(window_beats) if b > a]
+    return float(median(intervals)) if intervals else None
+
+
+def stitch_beat_grid(windows: Iterable[Sequence[float]]) -> StitchedBeatGrid:
+    """Stitch per-window beat positions (ALREADY file-relative seconds) into one continuous grid.
+
+    ``windows`` yields each analyzed fine window's beats in window order. A silent or failed window
+    contributes an empty sequence, or is simply absent: either way it adds no beats, and the span it
+    leaves between two accepted beats is what the gap rule below records.
+
+    At every step the next candidate beat is compared with the last ACCEPTED beat, against the
+    LOCAL median interval (the trailing accepted intervals, falling back to the incoming window's own
+    when fewer than two beats exist yet):
+
+    - closer than :data:`DUPLICATE_FRACTION` x median (or not strictly later): a duplicate -- dropped;
+    - wider than :data:`GAP_FACTOR` x median: a gap -- ``(last, candidate)`` is RECORDED and the
+      candidate is kept. Nothing is interpolated: a gap holds no invented beats.
+
+    Where no median can be formed (fewer than two beats on either side of the seam) no gap can be
+    judged, so none is recorded; the beats are simply concatenated. Silence before the first beat or
+    after the last is not a gap between beats and is not recorded either.
+    """
+    beats: list[float] = []
+    gaps: list[tuple[float, float]] = []
+    for window_beats in windows:
+        for beat in window_beats:
+            if not beats:
+                beats.append(beat)
+                continue
+            last = beats[-1]
+            if beat <= last:
+                continue
+            local = _local_median_interval(beats, window_beats)
+            delta = beat - last
+            if local is not None:
+                if delta < DUPLICATE_FRACTION * local:
+                    continue
+                if delta > GAP_FACTOR * local:
+                    gaps.append((last, beat))
+            beats.append(beat)
+    return StitchedBeatGrid(beats=beats, gaps=gaps)
