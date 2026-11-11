@@ -56,7 +56,8 @@ def stored_beat_grid(beats: Iterable[float]) -> list[float]:
 # against 3.94 on the clean windows of the same file. Such a window contributes no beats and so leaves a
 # recorded gap, exactly as a silent one does. The implementer's choice (phaze-0296l), open to review.
 MIN_BEAT_CONFIDENCE = 1.0
-# PRE-ROLL (operator decision, phaze-0296l). RhythmExtractor2013 never ticks a beat in its buffer's first
+# PRE-ROLL (operator decision 2026-11-11, bead phaze-0296l; the question as put and the answer as given are in
+# docs/design/0026-subwindow-mood-and-beat-grid.md section 8). RhythmExtractor2013 never ticks a beat in its buffer's first
 # samples, so a window decoded from exactly its own start loses the beat that sits on the seam. MEASURED
 # (essentia 2.1-beta6-dev, macOS arm64, 120 BPM click track, windows starting at 30 s and 60 s, ticks kept
 # in [start, start + 2)): with 0, 1 or 2 s of pre-roll the seam beat is absent from at least one window;
