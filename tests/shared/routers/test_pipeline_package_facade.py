@@ -50,6 +50,9 @@ FROZEN_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # phaze-2dxhd: bulk review of unambiguous CUE link candidates (new URLs, nothing moved).
         ("GET", "/pipeline/cue-link-review"),
         ("POST", "/pipeline/cue-link-review/decide"),
+        # phaze-drote: the CUE conflicts queue, one card per recording (new URLs, nothing moved).
+        ("GET", "/pipeline/cue-conflicts"),
+        ("POST", "/pipeline/cue-conflicts/resolve"),
         ("POST", "/pipeline/match-tracklists"),
         ("POST", "/pipeline/metadata-failed/retry"),
         ("GET", "/pipeline/pending-files"),

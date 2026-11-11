@@ -1,0 +1,22 @@
+{# phaze-drote: the CUE conflicts queue -- recordings the bulk CUE link review refuses as ambiguous,
+   one card each. Read-only until the operator confirms a card. #}
+<div id="cue-conflicts">
+    <p class="text-sm text-gray-600 dark:text-gray-300">
+        <strong data-cue-conflicts-total>{{ total | thousands }}</strong> recording{{ '' if total == 1 else 's' }} with an ambiguous CUE
+        {%- if total %} ({% for reason, count in counts.items() if count %}<span data-cue-conflicts-count="{{ reason }}">{{ count | thousands }} {{ 'with more than one CUE file' if reason == 'multiple_cues' else 'with an undetermined FILE entry' }}</span>{{ ', ' if not loop.last }}{% endfor %}){% endif %}.
+        {% if identical_total %}<span data-cue-conflicts-identical>{{ identical_total | thousands }}</span> have identical CUE files and a preselected choice.{% endif %}
+        Confirming a card selects the checked CUE and rejects that recording's other CUE files; each decision is recorded.
+    </p>
+    {% if conflicts %}
+    <div class="mt-3 flex flex-col gap-3">
+        {% for conflict in conflicts %}{% include "pipeline/partials/_cue_conflict_card.html" %}{% endfor %}
+    </div>
+    <nav class="mt-3 flex items-center gap-3 text-sm" aria-label="CUE conflict pages">
+        {% if page > 1 %}<a href="/pipeline/cue-conflicts?page={{ page - 1 }}" hx-get="/pipeline/cue-conflicts?page={{ page - 1 }}" hx-target="#cue-conflicts" hx-swap="outerHTML" class="text-link">Previous</a>{% endif %}
+        <span>Page {{ page }}</span>
+        {% if has_next %}<a href="/pipeline/cue-conflicts?page={{ page + 1 }}" hx-get="/pipeline/cue-conflicts?page={{ page + 1 }}" hx-target="#cue-conflicts" hx-swap="outerHTML" class="text-link">Next</a>{% endif %}
+    </nav>
+    {% else %}
+    <p class="mt-3 text-sm text-muted" data-cue-conflicts-empty>No recording has an ambiguous CUE.</p>
+    {% endif %}
+</div>
