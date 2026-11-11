@@ -1,0 +1,17 @@
+---
+# phaze-luy62: the sanctioned READ-ONLY consumer view of the archive audio.
+#
+# For a consumer that needs to read archive audio (e.g. to refine track offsets) and must never
+# change it. Copy next to the consumer, set ARCHIVE_MOUNT to the consumer-side mount of the
+# read-only export (docs/operations/readonly-archive-access.md), and replace `command`.
+# Nothing here touches the file-server host: the export itself is an operator step in the runbook.
+#
+# The :ro suffix is the enforcement, and tests/agents/deployment/test_readonly_archive.py pins it.
+# Stored phaze paths are CONTAINER paths: map them with GET /api/v1/agents/path-prefixes.
+services:
+  archive-reader:
+    image: alpine:3
+    command: ["sleep", "infinity"]
+    volumes:
+      - "${ARCHIVE_MOUNT:?ARCHIVE_MOUNT required}:/data/music:ro"
+    restart: "no"

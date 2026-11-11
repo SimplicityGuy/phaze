@@ -1,8 +1,8 @@
 # Read-only analytics access
 
 A read-only consumer of phaze's data connects as the dedicated Postgres role **`analytics_ro`**, never as the
-application role. The role can `SELECT` from seven `analytics_*` views and from nothing else: no base table, no write, no DDL.
-Migration `095_analytics_ro_role.py` creates the role and the views; `tests/integration/test_migrations/test_095_analytics_ro_role.py`
+application role. The role can `SELECT` from eight `analytics_*` views and from nothing else: no base table, no write, no DDL.
+Migration `095_analytics_ro_role.py` creates the role and the first seven views, and `096_analytics_agent_path_prefixes.py` adds the eighth; `tests/integration/test_migrations/test_095_analytics_ro_role.py`
 connects as the role and proves each of those claims.
 
 ## What the role is
@@ -11,7 +11,7 @@ connects as the role and proves each of those claims.
 |---|---|
 | Name | `analytics_ro` |
 | Attributes | `LOGIN`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`, `NOREPLICATION`, `NOINHERIT` |
-| Grants | `USAGE` on schema `public`; `SELECT` on the seven views below. Nothing on any base table |
+| Grants | `USAGE` on schema `public`; `SELECT` on the eight views below. Nothing on any base table |
 | Role setting | `default_transaction_read_only = on`, a second wall behind the missing write grants |
 | Password | **None until the operator sets one.** A migration is the wrong place for a secret |
 
@@ -53,6 +53,7 @@ One row per file record.
 | `file_size` | bigint | Size in bytes |
 | `missing_at` | timestamptz | Set when a reconcile found the content nowhere; NULL means "not known to be missing", never "verified present" |
 | `created_at` | timestamptz | When the record was created |
+| `agent_id` | varchar(64) | The agent that owns the file; joins to `analytics_agent_path_prefixes.agent_id` (added last, migration `096`) |
 
 ### `analytics_file_analysis`
 
@@ -203,6 +204,26 @@ application would refuse. Read those through the application. A change to the fi
 | `offset_numerator` | bigint | Offset into the recording, seconds, as an exact fraction: numerator |
 | `offset_denominator` | bigint | Offset denominator; never zero |
 | `offset_seconds` | numeric | `offset_numerator / offset_denominator` |
+
+### `analytics_agent_path_prefixes`
+
+How to turn a stored path into a path under your own mount of the archive. phaze stores **container** paths: a file's
+`current_path` starts with one of its owning agent's prefixes (for example `<archive-mount-in-container>`). One row per
+agent and prefix. Credential material is never projected. Agents that own no archive paths (compute agents) have no rows.
+
+To open a stored path: join `analytics_files.agent_id` to this view's `agent_id`, keep rows with `active`, take the prefix
+that `current_path` starts with (the longest one if several do), and replace it with the mount point where you mounted the
+read-only archive view (see [Read-only access to archive audio](operations/readonly-archive-access.md)). A path that starts
+with none of its agent's prefixes is not resolvable: skip it rather than guess.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `agent_id` | varchar(64) | Agent identity |
+| `name` | varchar(128) | Agent display name |
+| `kind` | varchar(16) | `fileserver` or `compute` |
+| `active` | boolean | `false` once the agent's credential was revoked; do not resolve against inactive agents |
+| `prefix_ordinal` | integer | 1-based position of the prefix in the agent's scan roots |
+| `path_prefix` | text | A container path prefix the agent's stored file paths start with |
 
 ## Stability rule
 

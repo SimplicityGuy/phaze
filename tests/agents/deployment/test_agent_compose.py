@@ -768,3 +768,16 @@ def test_deployment_doc_matches_live_media_and_compute_scratch_mounts() -> None:
     assert "`worker-analyze`, `worker-io`, and `watcher` mount it `ro`" in normalized_deployment
     assert "host-bound scratch" in deployment
     assert "named scratch" not in deployment
+
+
+def test_readonly_archive_runbook_documents_mapping_operator_steps_and_check() -> None:
+    """phaze-luy62: the runbook names the path-prefix view, the operator-only steps and the write-refusal check."""
+    text = (DEPLOYMENT_DOC_PATH.parent / "operations" / "readonly-archive-access.md").read_text()
+    for needle in (
+        "analytics_agent_path_prefixes",
+        "Operator steps",
+        "scripts/check_readonly_archive.py",
+        "docker-compose.readonly-archive.example.yml",
+        "ro,root_squash",
+    ):
+        assert needle in text, needle
