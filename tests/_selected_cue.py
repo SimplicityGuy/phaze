@@ -17,7 +17,7 @@ import uuid
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.schemas.agent_companion_capture import CaptureReport, CaptureTarget
-from phaze.schemas.local_source_import import ImportLocalSource, SourceDecision
+from phaze.schemas.local_source_import import ImportLocalSource, ImportResult, SourceDecision
 from phaze.services.companion_capture import store_capture_report
 from phaze.services.local_source_import import decide_local_source, import_local_source
 from phaze.tracklist_providers.domain import SourceRead
@@ -40,26 +40,29 @@ def cue_sheet(*tracks: tuple[str | None, str, str | None], performer: str = "Syn
     return "\n".join(lines) + "\n"
 
 
-async def select_cue(session: AsyncSession, media: FileRecord, text: str) -> None:
-    """Capture ``text`` as ``media``'s companion CUE, import it, and select its FILE 1.
+async def import_cue(
+    session: AsyncSession, media: FileRecord, text: str, *, method: str | None = None, name: str | None = None
+) -> tuple[FileRecord, ImportResult]:
+    """Capture ``text`` as a companion CUE of ``media`` and import it, leaving its candidate PENDING.
 
-    ``media`` must already be flushed with a ``sha256_hash`` and ``agent_id``: the selection binds
-    both content hashes, and the companion lives on the same agent.
+    ``method`` is the companion link's ``derivation_method`` (``None`` = recorded before derivations
+    existed); ``name`` the CUE's file name, defaulting to one unique per recording.
     """
     directory = PurePosixPath(media.current_path).parent
+    filename = name or f"{media.id}.cue"
     companion = FileRecord(
         id=uuid.uuid4(),
         agent_id=media.agent_id,
-        original_path=str(directory / f"{media.id}.cue"),
-        current_path=str(directory / f"{media.id}.cue"),
-        original_filename=f"{media.id}.cue",
+        original_path=str(directory / filename),
+        current_path=str(directory / filename),
+        original_filename=filename,
         file_type="cue",
         sha256_hash=hashlib.sha256(text.encode()).hexdigest(),
         file_size=len(text.encode()),
     )
     session.add(companion)
     await session.flush()
-    session.add(FileCompanion(companion_id=companion.id, media_id=media.id))
+    session.add(FileCompanion(companion_id=companion.id, media_id=media.id, derivation_method=method))
     await session.flush()
     report = CaptureReport(
         target=CaptureTarget(
@@ -85,6 +88,17 @@ async def select_cue(session: AsyncSession, media: FileRecord, text: str) -> Non
     capture = await store_capture_report(session, media.agent_id, report)
     imported = await import_local_source(session, ImportLocalSource(media_id=media.id, raw_observation_id=capture.observation_id))
     assert imported.tracklist_observation_id is not None
+    return companion, imported
+
+
+async def select_cue(session: AsyncSession, media: FileRecord, text: str) -> None:
+    """Capture ``text`` as ``media``'s companion CUE, import it, and select its FILE 1.
+
+    ``media`` must already be flushed with a ``sha256_hash`` and ``agent_id``: the selection binds
+    both content hashes, and the companion lives on the same agent.
+    """
+    companion, imported = await import_cue(session, media, text)
+    assert imported.tracklist_observation_id is not None
     await decide_local_source(
         session,
         SourceDecision(
@@ -102,6 +116,24 @@ async def select_cue(session: AsyncSession, media: FileRecord, text: str) -> Non
         actor="reviewer",
     )
     await session.flush()
+
+
+async def media_row(session: AsyncSession, *, filename: str = "recording.mp3", agent_id: str = "test-fileserver") -> FileRecord:
+    """A fresh, flushed mp3 media row in its own synthetic folder."""
+    folder = uuid.uuid4().hex[:8]
+    media = FileRecord(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        original_path=f"/synthetic/{folder}/{filename}",
+        current_path=f"/synthetic/{folder}/{filename}",
+        original_filename=filename,
+        file_type="mp3",
+        sha256_hash=hashlib.sha256(f"media:{uuid.uuid4()}".encode()).hexdigest(),
+        file_size=1024,
+    )
+    session.add(media)
+    await session.flush()
+    return media
 
 
 async def selected_cue_media(session: AsyncSession, text: str, *, filename: str = "recording.mp3", agent_id: str = "test-fileserver") -> FileRecord:
