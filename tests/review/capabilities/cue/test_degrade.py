@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 import uuid
 
 import pytest
@@ -12,7 +11,6 @@ import pytest
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.cue_generator import generate_cue_content as _real_generate_cue_content
 from phaze.services.review import (
     get_cue_review_cards,
 )
@@ -36,8 +34,8 @@ class _RaisingSession:
         raise RuntimeError("db down")
 
 
-async def _seed_eligible_cue_tracklist(session: AsyncSession, *, artist: str) -> Tracklist:
-    """Insert an approved + applied tracklist with one timestamped track (an eligible cue card)."""
+async def _seed_timed_legacy_cue_tracklist(session: AsyncSession, *, artist: str) -> Tracklist:
+    """Insert an approved + applied tracklist with one track carrying formerly qualifying evidence."""
     file_id = uuid.uuid4()
     filename = f"{artist}.mp3"
     session.add(
@@ -102,70 +100,18 @@ async def test_get_cue_review_cards_degrades_to_empty_and_logs(caplog: pytest.Lo
 
 
 @pytest.mark.asyncio
-async def test_get_cue_review_cards_isolates_one_bad_card_from_the_rest(session: AsyncSession, caplog: pytest.LogCaptureFixture) -> None:
-    """phaze-hcsb: a single card's build failure must not blank the whole Cue review workspace.
+async def test_a_legacy_tracklist_with_formerly_qualifying_evidence_is_a_gated_card(session: AsyncSession) -> None:
+    """ADR-0027 (retire legacy timestamp qualification): every legacy card is gated, display-only.
 
-    Before the fix, the per-card ``_build_cue_tracks``/``generate_cue_content`` calls lived inside
-    the SAME ``try`` as the SAVEPOINT open -- any exception there hit the outer ``except Exception:
-    return []`` and dropped EVERY other eligible + gated card, not just the offending one.
+    The seeded track carries the exact evidence the retired qualification accepted, on the latest
+    version, for an approved tracklist on an applied file -- the old "eligible" input. It renders as
+    a gated card with no cue text and no version pin, and still surfaces rather than being dropped.
     """
-    good = await _seed_eligible_cue_tracklist(session, artist="Good Artist")
-    bad = await _seed_eligible_cue_tracklist(session, artist="Bad Artist")
-
-    def _boom_for_bad(audio_filename: str, file_type: str, tracks: list) -> str:  # type: ignore[type-arg]
-        if audio_filename.startswith("Bad Artist"):
-            raise ValueError("simulated per-card build failure")
-        return _real_generate_cue_content(audio_filename, file_type, tracks)
-
-    with caplog.at_level(logging.WARNING), patch("phaze.services.review.generate_cue_content", side_effect=_boom_for_bad):
-        cards = await get_cue_review_cards(session)
-
-    by_id = {card["tracklist_id"]: card for card in cards}
-
-    # The workspace is NOT blanked -- both tracklists still produce a card.
-    assert good.id in by_id
-    assert bad.id in by_id
-
-    # The good card is unaffected: still eligible with a real in-memory preview.
-    assert by_id[good.id]["eligible"] is True
-    assert by_id[good.id]["cue_text"]
-
-    # The bad card is distinct from a genuine missing-timestamps gate.
-    assert by_id[bad.id]["eligible"] is False
-    assert by_id[bad.id]["build_error"] is True
-    assert by_id[bad.id]["cue_text"] is None
-
-    assert any("cue_review_card_build_failed" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_get_cue_review_cards_gates_stale_version_timestamps(session: AsyncSession) -> None:
-    """phaze-dboy: review.py's gated_stmt shares the same defective any-version predicate as
-    cue.py -- a tracklist whose only timestamped track is on an OLDER version than
-    ``latest_version_id`` must render as a GATED card (no approve control), not be omitted from
-    both sets entirely.
-    """
-    tracklist = await _seed_eligible_cue_tracklist(session, artist="Stale Version")
-
-    v2_id = uuid.uuid4()
-    session.add(TracklistVersion(id=v2_id, tracklist_id=tracklist.id, version_number=2))
-    await session.flush()
-    session.add(
-        TracklistTrack(
-            id=uuid.uuid4(),
-            version_id=v2_id,
-            position=1,
-            artist="Untimed Track",
-            title="Untimed Title",
-            timestamp=None,
-        )
-    )
-    tracklist.latest_version_id = v2_id
-    await session.commit()
+    tracklist = await _seed_timed_legacy_cue_tracklist(session, artist="Formerly Eligible")
 
     cards = await get_cue_review_cards(session)
     by_id = {card["tracklist_id"]: card for card in cards}
 
-    assert tracklist.id in by_id, "the tracklist must still surface -- as gated, not silently dropped"
+    assert tracklist.id in by_id
     assert by_id[tracklist.id]["eligible"] is False
-    assert by_id[tracklist.id]["cue_text"] is None
+    assert by_id[tracklist.id]["cue_text"] is None and by_id[tracklist.id]["version_id"] is None

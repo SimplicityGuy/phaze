@@ -3,7 +3,10 @@
 An unresolved ("ID - ID") row is stored with artist and title both NULL (see
 ``TracklistTrackPayload.is_unresolved``). The consumers found by reading the code, and the test for each:
 
-* CUE writer      -- ``cue_review.build_cue_tracks_for_versions`` + ``cue_generator`` (``test_cue_*``)
+* CUE writer      -- ``cue_generator.generate_cue_content`` (``test_cue_*``). Legacy rows never reach it since
+                     ADR-0027 (retire legacy timestamp qualification): ``build_cue_tracks_for_file`` gives
+                     them no CUE tracks, so the test hands the writer the rows with the offsets a selected
+                     source would supply and checks the writer's own unresolved-row handling
 * Tag writer      -- ``tag_proposal.compute_proposed_tags`` reads only Tracklist-level artist/event, never
                      a track row; the one path from a track row into tags is an accepted Discogs link,
                      which needs the Discogs matcher below (``test_tag_*``)
@@ -16,16 +19,18 @@ Rows are synthetic stored tracklists; no provider pages or parser are needed.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 import uuid
 
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.cue_generator import generate_cue_content
-from phaze.services.cue_review import build_cue_tracks_for_versions
+from phaze.services.cue_generator import CueTrackData, generate_cue_content
+from phaze.services.cue_review import build_cue_tracks_for_file
 from phaze.services.discogs_matcher import match_track_to_discogs
 from phaze.services.tag_proposal import compute_proposed_tags
 from phaze.services.track_segments import build_track_segments
+from phaze.tracklist_providers.domain import ProviderTrack, Timestamp
 from tests._timing import qualified_timing
 
 
@@ -38,6 +43,7 @@ UNRESOLVED_POSITION = 5
 
 
 async def _store(session: AsyncSession, file_id: uuid.UUID | None = None, *, timestamped: bool = False) -> tuple[Tracklist, TracklistVersion]:
+    # ``timestamped`` stores raw display text only: legacy timing never qualifies (ADR-0027 (retire legacy timestamp qualification)).
     """Persist a synthetic tracklist containing an unresolved row."""
     tracklist = Tracklist(
         external_id=uuid.uuid4().hex[:8], source_url="https://example.invalid/t", file_id=file_id, artist="Some Artist", event="Some Event"
@@ -57,7 +63,6 @@ async def _store(session: AsyncSession, file_id: uuid.UUID | None = None, *, tim
                 title=None if position == UNRESOLVED_POSITION else "Title",
                 label=None,
                 timestamp=f"{position}:00" if timestamped else None,
-                timestamp_evidence=qualified_timing(f"{position}:00", file_id) if timestamped and file_id else None,
                 is_mashup=False,
                 remix_info=None,
             )
@@ -76,10 +81,17 @@ async def _unresolved_row(session: AsyncSession, version: TracklistVersion) -> T
 
 
 async def test_cue_writer_emits_a_bare_timed_track_never_performer_id(session: AsyncSession, make_file) -> None:
+    from sqlalchemy import select
+
     file = await make_file()
     _, version = await _store(session, file.id, timestamped=True)
 
-    cue_tracks = (await build_cue_tracks_for_versions(session, [version.id]))[version.id]
+    assert (
+        await build_cue_tracks_for_file(session, file.id) == []
+    )  # legacy rows are never a CUE source (ADR-0027 (retire legacy timestamp qualification))
+    rows = (await session.execute(select(TracklistTrack).where(TracklistTrack.version_id == version.id).order_by(TracklistTrack.position))).scalars()
+    # The offsets a reviewed selected source would supply; the writer's unresolved-row handling is the subject.
+    cue_tracks = [CueTrackData(position=t.position, title=t.title, artist=t.artist, timestamp_seconds=Fraction(t.position * 60)) for t in rows]
     sheet = generate_cue_content("set.mp3", "mp3", cue_tracks)
 
     assert len(cue_tracks) == 52
@@ -139,7 +151,13 @@ async def test_segment_join_gives_an_unresolved_row_no_title(session: AsyncSessi
         (await session.execute(select(TracklistTrack).where(TracklistTrack.version_id == version.id).order_by(TracklistTrack.position))).scalars()
     )
 
-    segments = {s.position: s for s in build_track_segments(tracks, [], 7200.0, media_id=file.id)}
+    assert build_track_segments(tracks, [], 7200.0) == []  # legacy rows are display-only (ADR-0027 (retire legacy timestamp qualification))
+    selected = [
+        ProviderTrack(position=t.position, artist=t.artist, title=t.title, timestamp=Timestamp.model_validate(qualified_timing(t.timestamp, file.id)))
+        for t in tracks
+    ]
+
+    segments = {s.position: s for s in build_track_segments(selected, [], 7200.0)}
 
     assert segments[UNRESOLVED_POSITION].title is None
     assert segments[1].title == "Title"

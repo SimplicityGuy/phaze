@@ -3,8 +3,9 @@
 **The two halves of CUE generation disagreed about which path they meant, and no test could
 see it because each half was tested against its own view of the world.**
 
-``routers/cue.py::generate_cue`` renders ``FILE "<basename>"`` from the UNRESOLVED
-``FileRecord.current_path``; ``tasks/cue_write.py::_write_sync`` resolves that same path
+``services/selected_cue.py`` (behind ``routers/cue.py::generate_selected_cue``; the per-tracklist
+``generate_cue`` this module first drove was retired by ADR-0027 (retire legacy timestamp
+qualification)) renders ``FILE "<basename>"`` from the UNRESOLVED ``FileRecord.current_path``; ``tasks/cue_write.py::_write_sync`` resolves that same path
 (``resolve_and_check_containment``) and writes the ``.cue`` beside the RESOLVED file. For an entry
 whose ``current_path`` is a symlink into a differently-named target, the sheet therefore lands in
 the target's directory naming the symlink's basename -- a file that is not beside it.
@@ -18,7 +19,8 @@ Both existing modules validate it against the PRODUCER's view instead:
   ``realpath`` is itself -- so producer and writer can never disagree about the basename.
 
 This module is written so neither mock can satisfy it: it drives the REAL ``POST
-/cue/{id}/generate``, hands the REAL enqueued payload to the REAL ``write_cue_sheet`` task, then
+/cue/files/{media_id}/generate`` over a really selected CUE source, hands the REAL enqueued payload
+to the REAL ``write_cue_sheet`` task (whose source check runs over authenticated agent HTTP), then
 performs the CONSUMER's operation -- read the ``FILE`` line out of the bytes on disk and resolve it
 from the directory the ``.cue`` actually occupies.
 
@@ -34,88 +36,57 @@ non-symlinked file, must stay green -- so a fix cannot discharge this module by 
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 import uuid
 
+from httpx import ASGITransport, AsyncClient
 import pytest
 
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.agent_client import PhazeAgentClient
+from phaze.services.selected_cue import build_selected_cue_artifact
 from phaze.tasks.cue_write import write_cue_sheet
 from tests._queue_fakes import install_fake_queues
-from tests._timing import qualified_timing
+from tests._selected_cue import cue_sheet, select_cue
 
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.models.agent import Agent
 
-async def _seed_generatable_tracklist(session: AsyncSession, current_path: str) -> Tracklist:
-    """An approved tracklist on an APPLIED file with timestamped tracks -- the generate gate's happy path.
 
-    Mirrors ``tests/review/routers/test_cue.py::_create_approved_tracklist_with_file`` in the parts
-    ``generate_cue`` gates on (READ-05/D-01: applied means an ``executed`` proposal exists, never
-    ``files.state``), kept local so this module's fixtures cannot drift when that one's do.
+async def _seed_generatable_selection(session: AsyncSession, agent: Agent, current_path: str) -> FileRecord:
+    """An APPLIED recording with a reviewed, selected CUE, on an agent that reports CUE support.
+
+    READ-05/D-01: applied means an ``executed`` proposal exists, never ``files.state``.
     """
-    file_id = uuid.uuid4()
-    session.add(
-        FileRecord(
-            id=file_id,
-            agent_id="test-fileserver",
-            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
-            original_path="/music/ingest/<set-01>.mp3",
-            original_filename="<set-01>.mp3",
-            current_path=current_path,
-            file_type="mp3",
-            file_size=50_000_000,
-        )
+    media = FileRecord(
+        id=uuid.uuid4(),
+        agent_id=agent.id,
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path="/music/ingest/<set-01>.mp3",
+        original_filename="<set-01>.mp3",
+        current_path=current_path,
+        file_type="mp3",
+        file_size=50_000_000,
     )
+    session.add(media)
     await session.flush()
-    session.add(
-        RenameProposal(
-            id=uuid.uuid4(),
-            file_id=file_id,
-            proposed_filename="<set-01>.mp3",
-            status=ProposalStatus.EXECUTED,
-        )
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=media.id, proposed_filename="<set-01>.mp3", status=ProposalStatus.EXECUTED))
+    await select_cue(
+        session,
+        media,
+        cue_sheet(("Track Artist 1", "Track Title 1", "10:00:00"), ("Track Artist 2", "Track Title 2", "20:00:00"), performer="DJ Example"),
     )
-
-    tracklist_id = uuid.uuid4()
-    version_id = uuid.uuid4()
-    tracklist = Tracklist(
-        id=tracklist_id,
-        external_id=f"ext-{uuid.uuid4().hex[:8]}",
-        source_url=f"https://example.invalid/tracklist/{uuid.uuid4().hex[:6]}",
-        file_id=file_id,
-        match_confidence=95,
-        artist="DJ Shadow",
-        event="Coachella 2024",
-        latest_version_id=version_id,
-        source="manual",
-        status="approved",
-    )
-    session.add(tracklist)
-    session.add(TracklistVersion(id=version_id, tracklist_id=tracklist_id, version_number=1))
-    await session.flush()
-    for i in range(1, 4):
-        session.add(
-            TracklistTrack(
-                id=uuid.uuid4(),
-                version_id=version_id,
-                position=i,
-                artist=f"Track Artist {i}",
-                title=f"Track Title {i}",
-                timestamp=f"0:{i * 10}:00",
-                timestamp_evidence=qualified_timing(f"0:{i * 10}:00", file_id),
-            )
-        )
+    agent.last_status = {"lanes": {"meta": {"selected_cue_v1": True, "selected_cue_v1_received_at": datetime.now(UTC).isoformat()}}}
     await session.commit()
-    return tracklist
+    return media
 
 
 def _agent_settings(scan_roots: list[str]) -> Any:
@@ -131,22 +102,32 @@ def _agent_settings(scan_roots: list[str]) -> Any:
     return cfg
 
 
-async def _generate_then_write(client: AsyncClient, tracklist: Tracklist, scan_root: Path) -> None:
+async def _generate_then_write(client: AsyncClient, session: AsyncSession, media: FileRecord, token: str, scan_root: Path) -> None:
     """Drive the REAL router, then the REAL agent task, over the payload the router really enqueued.
 
-    No hand-built payload: whatever ``generate_cue`` put on the wire (round-tripped through the
-    production SAQ serializer by ``FakeQueue``, phaze-9nz1g) is exactly what the writer receives.
+    No hand-built payload: whatever ``generate_selected_cue`` put on the wire (round-tripped through
+    the production SAQ serializer by ``FakeQueue``, phaze-9nz1g) is exactly what the writer receives.
     """
+    client.headers["Origin"] = "http://test"
+    artifact = await build_selected_cue_artifact(session, media.id)
     _controller_queue, router = install_fake_queues(client)
-    response = await client.post(f"/cue/{tracklist.id}/generate")
-    assert response.status_code == 200, response.text
+    response = await client.post(
+        f"/cue/files/{media.id}/generate", data={"binding": artifact.binding.model_dump_json(), "audio_path": media.current_path}
+    )
+    assert response.status_code == 200 and "artifact queued" in response.text, response.text
 
     assert len(router.captures) == 1, f"expected one enqueue, got {router.captures}"
     _queue_name, task_name, kwargs = router.captures[0]
     assert task_name == "write_cue_sheet"
 
-    with patch("phaze.tasks.cue_write.get_settings", return_value=_agent_settings([str(scan_root)])):
-        await write_cue_sheet({}, **kwargs)
+    async with AsyncClient(
+        transport=ASGITransport(app=client._transport.app),  # type: ignore[attr-defined]
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as agent_http:
+        api = PhazeAgentClient(base_url="http://test", token=token, _client=agent_http)
+        with patch("phaze.tasks.cue_write.get_settings", return_value=_agent_settings([str(scan_root)])):
+            await write_cue_sheet({"api_client": api}, **kwargs)
 
 
 def _assert_file_line_resolves_beside_the_cue(scan_root: Path) -> None:
@@ -174,7 +155,9 @@ def _assert_file_line_resolves_beside_the_cue(scan_root: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_file_line_names_a_sibling_of_the_written_cue(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+async def test_file_line_names_a_sibling_of_the_written_cue(
+    client: AsyncClient, session: AsyncSession, seed_test_agent: tuple[Agent, str], tmp_path: Path
+) -> None:
     """SEAM C5: a symlinked ``current_path`` whose target carries a DIFFERENT name.
 
     The realistic archive shape behind this: a symlink farm whose entries are named for the event
@@ -193,13 +176,16 @@ async def test_file_line_names_a_sibling_of_the_written_cue(client: AsyncClient,
     link = farm / "<set-01>.mp3"
     link.symlink_to(real_audio)
 
-    tracklist = await _seed_generatable_tracklist(session, str(link))
-    await _generate_then_write(client, tracklist, tmp_path)
+    agent, token = seed_test_agent
+    media = await _seed_generatable_selection(session, agent, str(link))
+    await _generate_then_write(client, session, media, token, tmp_path)
     _assert_file_line_resolves_beside_the_cue(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_file_line_resolves_for_a_name_preserving_symlink(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+async def test_file_line_resolves_for_a_name_preserving_symlink(
+    client: AsyncClient, session: AsyncSession, seed_test_agent: tuple[Agent, str], tmp_path: Path
+) -> None:
     """A symlink that keeps the target's basename is already correct, and must STAY correct.
 
     Green at HEAD: the two halves disagree about the DIRECTORY here but not about the NAME, and the
@@ -216,13 +202,16 @@ async def test_file_line_resolves_for_a_name_preserving_symlink(client: AsyncCli
     link = farm / "<set-01>.mp3"
     link.symlink_to(real_audio)
 
-    tracklist = await _seed_generatable_tracklist(session, str(link))
-    await _generate_then_write(client, tracklist, tmp_path)
+    agent, token = seed_test_agent
+    media = await _seed_generatable_selection(session, agent, str(link))
+    await _generate_then_write(client, session, media, token, tmp_path)
     _assert_file_line_resolves_beside_the_cue(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_file_line_resolves_for_a_plain_unsymlinked_file(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+async def test_file_line_resolves_for_a_plain_unsymlinked_file(
+    client: AsyncClient, session: AsyncSession, seed_test_agent: tuple[Agent, str], tmp_path: Path
+) -> None:
     """The overwhelming majority of the corpus: ``current_path`` IS its own realpath.
 
     The control case. It is green at HEAD and its job is to stay green -- the blast-radius guard for
@@ -233,6 +222,7 @@ async def test_file_line_resolves_for_a_plain_unsymlinked_file(client: AsyncClie
     real_audio = archive / "<set-01>.mp3"
     real_audio.write_text("fake audio")
 
-    tracklist = await _seed_generatable_tracklist(session, str(real_audio))
-    await _generate_then_write(client, tracklist, tmp_path)
+    agent, token = seed_test_agent
+    media = await _seed_generatable_selection(session, agent, str(real_audio))
+    await _generate_then_write(client, session, media, token, tmp_path)
     _assert_file_line_resolves_beside_the_cue(tmp_path)

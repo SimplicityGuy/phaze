@@ -100,7 +100,6 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.set_profile import SetProfile
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.set_projection import MOOD_ORDER, build_profile
-from tests._timing import qualified_timing
 
 
 if TYPE_CHECKING:
@@ -877,8 +876,9 @@ async def seed_populated(dsn: str, *, with_failures: bool = False) -> None:
                 )
             )
 
-            # An approved tracklist with timestamped tracks: the cue-eligibility gate, so /s/cue and
-            # /s/tracklist render real cards rather than their empty states.
+            # An approved tracklist on an applied file, so /s/cue and /s/tracklist render real cards
+            # rather than their empty states. Its timestamps are display-only text: legacy timing
+            # never qualifies as a CUE offset (ADR-0027 (retire legacy timestamp qualification)), so the cue card is a gated one.
             tracklist = Tracklist(
                 id=uuid.uuid4(),
                 external_id=f"ext-{uuid.uuid4().hex[:12]}",
@@ -900,7 +900,6 @@ async def seed_populated(dsn: str, *, with_failures: bool = False) -> None:
                         title=f"Synthetic Title {position}",
                         artist="Synthetic Artist",
                         timestamp=f"0{position - 1}:00:00",
-                        timestamp_evidence=qualified_timing(f"0{position - 1}:00:00", tracklist.file_id),
                     )
                     for position in (1, 2, 3)
                 ]
