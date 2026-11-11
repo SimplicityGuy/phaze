@@ -132,7 +132,10 @@ REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
 # phaze-6q6x2: 26 prose-floor modules measured on the isolated operator-copy seat:
 # 390 passed / 3 copy-related guard failures, 95.13 s pytest; failures were repaired, and
 # this cap was the intentional third failure. The new authored-copy module adds 9 focused tests.
-MAX_DOCS_FLOOR_MODULES = 26
+# phaze-p22p8 (test_analytics_read_only_docs.py, which reads tracked docs/analytics-read-only-access.md, joined the
+# floor): 27 modules, 430 passed + the cap test itself failing as expected, 125.34 s pytest (seat `phaze-p22p8`,
+# direct pytest, other seats' suites running; the new module itself is filesystem-only and runs in well under a second).
+MAX_DOCS_FLOOR_MODULES = 27
 
 # What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
 # costs milliseconds in the floor, a false negative is a guard that never runs on the local docs

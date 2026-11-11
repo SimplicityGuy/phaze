@@ -7,7 +7,7 @@ Every acceptance criterion of the bead is discharged here by a test that connect
   (``test_the_role_cannot_write_or_create``);
 * its grants are exactly SELECT on exactly the views (``test_the_role_holds_select_on_the_views_and_nothing_else``);
 * the views' column contract is pinned (``test_the_view_column_contract_is_stable``) and documented
-  (``test_the_docs_describe_every_view_and_column``), so a column change cannot land without both moving;
+  (``tests/shared/test_analytics_read_only_docs.py``), so a column change cannot land without both moving;
 * upgrade and downgrade round-trip (``test_downgrade_drops_the_views_and_the_grants_and_upgrade_is_repeatable``).
 
 The role is cluster-wide while every seat's database is not, so the password this fixture sets is a fixed, test-only
@@ -16,7 +16,6 @@ string: production leaves the role passwordless until the operator sets one.
 
 import asyncio
 from collections.abc import AsyncGenerator
-from pathlib import Path
 import uuid
 
 import pytest
@@ -26,114 +25,12 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from .analytics_contract import EXPECTED_COLUMNS
 from .conftest import MIGRATIONS_TEST_DATABASE_URL, _build_alembic_config, _reset_schema, downgrade_to, upgrade_to
 
 
 _ROLE = "analytics_ro"
 _TEST_ONLY_PASSWORD = "analytics-ro-test-only"
-_DOC = Path(__file__).resolve().parents[3] / "docs" / "analytics-read-only-access.md"
-
-# The stable interface: view -> ordered column names. Changing a line here is a contract change and must come with the
-# matching docs/analytics-read-only-access.md section and a migration that re-creates the view.
-EXPECTED_COLUMNS: dict[str, list[str]] = {
-    "analytics_files": [
-        "file_id",
-        "sha256_hash",
-        "original_path",
-        "original_filename",
-        "current_path",
-        "file_type",
-        "file_size",
-        "missing_at",
-        "created_at",
-    ],
-    "analytics_file_analysis": [
-        "file_id",
-        "bpm",
-        "musical_key",
-        "mood",
-        "dominant_style",
-        "style",
-        "fine_windows_analyzed",
-        "fine_windows_total",
-        "coarse_windows_analyzed",
-        "coarse_windows_total",
-        "analysis_completed_at",
-        "failed_at",
-    ],
-    "analytics_analysis_windows": [
-        "window_id",
-        "file_id",
-        "tier",
-        "window_index",
-        "start_sec",
-        "end_sec",
-        "bpm",
-        "musical_key",
-        "mood",
-        "style",
-        "danceability",
-        "energy",
-        "mood_scores",
-    ],
-    "analytics_tracklists": [
-        "tracklist_id",
-        "file_id",
-        "source",
-        "status",
-        "artist",
-        "event",
-        "date",
-        "match_confidence",
-        "auto_linked",
-        "created_at",
-    ],
-    "analytics_tracklist_tracks": [
-        "tracklist_id",
-        "version_id",
-        "version_number",
-        "position",
-        "artist",
-        "title",
-        "label",
-        "timestamp",
-        "timestamp_evidence",
-        "is_mashup",
-        "remix_info",
-        "confidence",
-    ],
-    "analytics_cue_track_offsets": [
-        "file_id",
-        "observation_id",
-        "selected_at",
-        "cue_file_ordinal",
-        "position",
-        "artist",
-        "title",
-        "timestamp_original",
-        "timestamp_kind",
-        "timestamp_precision",
-        "offset_usability",
-        "offset_numerator",
-        "offset_denominator",
-        "offset_seconds",
-    ],
-    "analytics_cue_recording_offsets": [
-        "file_id",
-        "observation_id",
-        "selected_at",
-        "cue_file_ordinal",
-        "position",
-        "artist",
-        "title",
-        "timestamp_original",
-        "timestamp_precision",
-        "origin",
-        "offset_numerator",
-        "offset_denominator",
-        "offset_seconds",
-    ],
-}
 
 
 def _ro_url() -> str:
@@ -378,17 +275,6 @@ async def test_the_view_column_contract_is_stable(seeded: tuple[AsyncEngine, Asy
                 .all()
             )
             assert actual == columns, f"{view}: a column change needs the docs and EXPECTED_COLUMNS updated in the same change"
-
-
-def test_the_docs_describe_every_view_and_column() -> None:
-    doc = _DOC.read_text(encoding="utf-8")
-    for view, columns in EXPECTED_COLUMNS.items():
-        assert f"### `{view}`" in doc, f"{view} has no section in {_DOC.name}"
-        section = doc.split(f"### `{view}`", 1)[1].split("\n### ", 1)[0].split("\n## ", 1)[0]
-        for column in columns:
-            assert f"| `{column}` |" in section, f"{view}.{column} is not documented"
-    for phrase in ("pg_hba", "listen_addresses", "hostssl", "Stability rule"):
-        assert phrase in doc
 
 
 async def test_downgrade_drops_the_views_and_the_grants_and_upgrade_is_repeatable() -> None:
