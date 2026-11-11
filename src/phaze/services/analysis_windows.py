@@ -62,6 +62,10 @@ class CoarseWindow:
     style: str | None
     danceability: float | None
     features: dict[str, Any] = field(default_factory=dict)
+    # One entry per sub-window slice of this window (see iter_subwindows): the pooled mood vector,
+    # positional in MOOD_ORDER, or None for a slice holding no patch centre. Empty when the patch
+    # matrices were unavailable. Not in as_payload_dict (phaze-x3gak).
+    subwindow_moods: tuple[tuple[float, ...] | None, ...] = ()
 
     def as_payload_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""
