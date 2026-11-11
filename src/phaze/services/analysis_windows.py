@@ -16,6 +16,7 @@ the import site for dependents and tests.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from statistics import mean, median
 from typing import Any
 
@@ -147,3 +148,38 @@ def _iter_windows(total_sec: float, win_sec: int, min_sec: int, *, drop_short_tr
         start = end
         idx += 1
     return windows
+
+
+# Sub-windows: the fixed slices of a COARSE window that sub-window mood is pooled into
+# (phaze-f6eeb; docs/design/0026-subwindow-mood-and-beat-grid.md).
+
+# 15 s divides both the 180 s coarse window and the 30 s fine window, so the default layout puts every
+# sub-window boundary on a file-wide 15 s grid that also lines up with the fine-window boundaries. It
+# divides NEITHER measured patch hop (musicnn 1.488 s, VGGish 0.93 s); patches are attributed to the
+# sub-window holding their centre, which is why it does not need to (the ADR's section 2).
+SUBWINDOW_SEC: int = 15
+
+
+def iter_subwindows(start_sec: float, end_sec: float, sub_sec: int = SUBWINDOW_SEC) -> list[tuple[int, float, float]]:
+    """``(sub_index, start_sec, end_sec)`` for the sub-windows of ONE coarse window, in file seconds.
+
+    ``ceil((end_sec - start_sec) / sub_sec)`` slices laid from the coarse window's own start, the last
+    one clipped to ``end_sec``, so a short trailing coarse window keeps a short trailing sub-window
+    instead of losing its audio. Relative to the coarse window rather than to file time zero: the
+    patch matrix a coarse window's inference returns starts at that window's ``start_sec``, so a
+    sub-window can only ever hold patches of one coarse window. With the defaults (coarse windows tiled
+    from 0 in 180 s strides) the two layouts coincide; with a ``coarse_window_sec`` that is not a
+    multiple of ``sub_sec`` only this one is right.
+
+    The bounds are stored on every ``analysis_subwindow`` row as well, so a reader never has to
+    re-derive them and a later change to ``SUBWINDOW_SEC`` cannot silently re-time rows already
+    written.
+    """
+    if sub_sec <= 0:
+        msg = f"sub_sec must be positive, got {sub_sec}"
+        raise ValueError(msg)
+    span = end_sec - start_sec
+    if span <= 0:
+        return []
+    count = math.ceil(span / sub_sec)
+    return [(i, start_sec + i * sub_sec, min(start_sec + (i + 1) * sub_sec, end_sec)) for i in range(count)]

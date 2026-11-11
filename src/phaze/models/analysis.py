@@ -3,8 +3,8 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import REAL, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from phaze.models.base import Base, TimestampMixin
@@ -155,3 +155,77 @@ class AnalysisWindow(TimestampMixin, Base):
         indexes on this in SQL, so there is nothing for a hybrid expression to serve.
         """
         return camelot_code(self.musical_key)
+
+
+class AnalysisSubwindow(Base):
+    """Mood for one fixed sub-window of one COARSE window (1:many with files; phaze-f6eeb).
+
+    The coarse ``analysis_window.mood_scores`` is one vector per 180 s; every mood graph already
+    returns a ``[patches, classes]`` matrix at a hop of a second or two, and the pipeline averaged it
+    away. A row here is that matrix pooled into one ``SUBWINDOW_SEC`` slice
+    (:func:`phaze.services.analysis_windows.iter_subwindows`): ``window_index`` is the coarse window's
+    own ``analysis_window.window_index``, ``sub_index`` counts the slices inside it from 0, and
+    ``start_sec`` / ``end_sec`` are file seconds, stored so no reader re-derives them.
+    docs/design/0026-subwindow-mood-and-beat-grid.md records the measured patch hops, why 15 s, how a
+    patch is attributed, and the alternatives that lost.
+
+    ``mood_scores`` is ``float8[]`` positional in :data:`phaze.services.set_projection.MOOD_ORDER`,
+    derived exactly like the coarse vector (the positive class by label, averaged across each set's
+    variants), so a sub-window vector and a coarse vector mean the same thing. It is NULL for a
+    sub-window no patch centre falls in (the trailing few seconds of a short trailing coarse window):
+    a recorded gap, never an invented vector. Postgres does not enforce the array length, so "11" is a
+    writer contract carried by ``MOOD_ORDER``'s own length, as on ``set_profile.mean_vector``.
+
+    A child TABLE rather than an array on the coarse row, so a track segment selects its sub-windows by
+    time in SQL and the coarse row stays narrow. No surrogate id: the composite key is the identity,
+    and the rows are written once and replaced wholesale with the file's windows, never updated, so
+    they carry no timestamps either. Not an FK to ``analysis_window``: that table's ``id`` changes on
+    every re-analysis (``_replace_analysis_windows`` deletes and re-inserts), so the link is the
+    ``(file_id, window_index)`` pair. ``ON DELETE CASCADE`` to ``files`` so this table never blocks a
+    file or scan deletion.
+    """
+
+    __tablename__ = "analysis_subwindow"
+
+    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), primary_key=True)
+    window_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sub_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    start_sec: Mapped[float] = mapped_column(Float, nullable=False)
+    end_sec: Mapped[float] = mapped_column(Float, nullable=False)
+    mood_scores: Mapped[list[float | None] | None] = mapped_column(ARRAY(Float), nullable=True)
+
+    # BARE constraint names: the ck naming convention adds the table prefix (phaze-x8tof).
+    __table_args__ = (
+        CheckConstraint("window_index >= 0 AND sub_index >= 0", name="indexes_nonneg"),
+        CheckConstraint("end_sec > start_sec", name="positive_span"),
+    )
+
+
+class AnalysisBeatGrid(TimestampMixin, Base):
+    """One file's continuous beat grid, 1:1 with files (phaze-f6eeb).
+
+    ``beats`` is every beat position in file-relative seconds, stitched across the fine-window seams,
+    strictly ascending, as ``real[]`` (float4). :func:`phaze.services.beat_grid.stored_beat_grid` is
+    the writer's one rounding step, and its module docstring carries the measurement that makes float32
+    lossless at the resolution essentia's ticks have. ``beat_count`` is stored beside it so a page can
+    show the count without detoasting the array, and the CHECK keeps the two from disagreeing. ``gaps`` is the list of ``[start_sec, end_sec]`` spans the
+    stitcher RECORDED rather than filled (a silent or failed fine window): a reader draws them as gaps
+    and never interpolates beats into them.
+
+    Its own table rather than a column on ``analysis``: every query that loads whole
+    ``AnalysisResult`` entities (``select(AnalysisResult)``, eager loads of the file's analysis) would
+    read a blob of up to ~370 KB (a 12 h set at 128 BPM) it never uses. ``ON DELETE CASCADE`` to ``files``, ``file_id`` as the key (the ``set_profile``
+    precedent).
+    """
+
+    __tablename__ = "analysis_beat_grid"
+
+    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), primary_key=True)
+    beats: Mapped[list[float]] = mapped_column(ARRAY(REAL), nullable=False)
+    beat_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    gaps: Mapped[list[list[float]]] = mapped_column(JSONB, nullable=False, server_default="[]")
+
+    __table_args__ = (
+        CheckConstraint("beat_count >= 0", name="beat_count_nonneg"),
+        CheckConstraint("cardinality(beats) = beat_count", name="beats_match_count"),
+    )
