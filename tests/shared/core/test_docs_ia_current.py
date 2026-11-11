@@ -200,7 +200,7 @@ def test_database_reference_tracks_migration_head_and_set_profile_relationship()
     heads = migration_heads(_REPO_ROOT)
     text = _read_text(_DATABASE)
     assert heads == {"095"}
-    assert "head, **`094`**" in text
+    assert "head, **`095`**" in text
     assert "| `set_profile`" in text
 
     from phaze.models.base import Base

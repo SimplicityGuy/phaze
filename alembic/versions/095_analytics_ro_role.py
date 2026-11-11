@@ -6,7 +6,10 @@ This migration gives it a dedicated role that can ``SELECT`` from a small, docum
 * ``analytics_files`` / ``analytics_file_analysis`` -- file identity and the per-file analysis summary;
 * ``analytics_analysis_windows`` -- the per-window time series;
 * ``analytics_tracklists`` / ``analytics_tracklist_tracks`` -- canonical tracklists and the tracks of their latest version;
-* ``analytics_cue_track_offsets`` -- the per-track timestamps of each media's SELECTED CUE source observation.
+* ``analytics_cue_track_offsets`` -- the INTRINSIC per-track timestamps of each media's SELECTED CUE source observation
+  (origin: the CUE file; no availability filtering);
+* ``analytics_cue_recording_offsets`` -- the TARGET-BOUND qualified offsets: the same tracks, only while the selection is
+  current, with origin = the recording. Mirrors ``local_source_import._project_tracks`` / ``get_selected_recording_source``.
 
 The views are a stable interface: their names, column names and column types are a contract with readers outside phaze,
 so a migration that touches a column any of them projects MUST update the view in the same change. The column contract
@@ -40,6 +43,10 @@ depends_on: str | Sequence[str] | None = None
 ROLE = "analytics_ro"
 
 _CUE_FILE_ORDINAL = r"substring(ev.item FROM '^FILE:(\d+):')"
+
+# files.file_type values that are media (companion_content.MEDIA_FILE_TYPES at the time of writing). Frozen here on purpose:
+# a migration must not change meaning when application code later changes.
+_MEDIA_TYPES = "'aac', 'aiff', 'avi', 'flac', 'flv', 'm4a', 'mkv', 'mov', 'mp2', 'mp3', 'mp4', 'ogg', 'opus', 'wav', 'webm', 'wma', 'wmv'"
 
 # Ordered so that drop order (reverse) never leaves a dependency; none of the views reads another view.
 VIEWS: dict[str, str] = {
@@ -147,6 +154,97 @@ VIEWS: dict[str, str] = {
               FROM jsonb_array_elements_text(COALESCE(tr.item -> 'evidence', '[]'::jsonb)) AS ev(item)
               WHERE {_CUE_FILE_ORDINAL}::integer = (s.target_mapping ->> 'cue_file_ordinal')::integer
           )
+    """,
+    "analytics_cue_recording_offsets": f"""
+        SELECT s.media_id AS file_id,
+               s.observation_id,
+               s.selected_at,
+               (s.target_mapping ->> 'cue_file_ordinal')::integer AS cue_file_ordinal,
+               (tr.item ->> 'position')::integer AS position,
+               tr.item ->> 'artist' AS artist,
+               tr.item ->> 'title' AS title,
+               tr.item -> 'timestamp' ->> 'original' AS timestamp_original,
+               tr.item -> 'timestamp' ->> 'precision' AS timestamp_precision,
+               'recording:' || s.media_id::text AS origin,
+               (tr.item -> 'timestamp' -> 'offset' ->> 'numerator')::bigint AS offset_numerator,
+               (tr.item -> 'timestamp' -> 'offset' ->> 'denominator')::bigint AS offset_denominator,
+               ((tr.item -> 'timestamp' -> 'offset' ->> 'numerator')::numeric
+                / NULLIF((tr.item -> 'timestamp' -> 'offset' ->> 'denominator')::numeric, 0)) AS offset_seconds
+        FROM provider_recording_selections s
+        JOIN provider_source_observations o ON o.id = s.observation_id
+        JOIN provider_source_objects so ON so.id = o.object_id
+        JOIN files m ON m.id = s.media_id
+        LEFT JOIN files sf ON sf.id = so.source_file_id
+        CROSS JOIN LATERAL (
+            SELECT CASE
+                       WHEN jsonb_typeof(o.payload -> 'provenance') = 'array' THEN o.payload -> 'provenance'
+                       WHEN o.payload ? 'provenance' THEN '[]'::jsonb
+                       WHEN jsonb_typeof(o.payload -> 'evidence') = 'array' THEN o.payload -> 'evidence'
+                       ELSE '[]'::jsonb
+                   END AS items
+        ) AS prov
+        CROSS JOIN LATERAL jsonb_array_elements(o.payload -> 'tracks') AS tr(item)
+        WHERE s.kind = 'tracklist'
+          AND o.payload ->> 'source_format' = 'cue'
+          AND jsonb_typeof(o.payload -> 'tracks') = 'array'
+          AND s.target_mapping ? 'cue_file_ordinal'
+          -- the media is present, is media, and is the file the operator reviewed (sha binding)
+          AND m.missing_at IS NULL
+          AND m.file_type IN ({_MEDIA_TYPES})
+          AND m.sha256_hash = s.target_mapping ->> 'media_sha256'
+          -- the source is available (provider_persistence.source_availability == 'current')
+          AND o.status IN ('found', 'incomplete', 'ambiguous')
+          AND (
+              so.channel IS NULL
+              OR (
+                  so.channel = 'remote'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM provider_source_reads r
+                      JOIN provider_source_observations o2 ON o2.id = r.observation_id
+                      WHERE r.object_id = so.id
+                        AND o2.status = 'absent'
+                        AND r.read_seq > (SELECT max(r2.read_seq) FROM provider_source_reads r2 WHERE r2.observation_id = o.id)
+                  )
+              )
+              OR (
+                  so.channel = 'companion'
+                  AND sf.id IS NOT NULL
+                  AND sf.missing_at IS NULL
+                  AND sf.companion_ambiguous_at IS NULL
+                  AND EXISTS (SELECT 1 FROM file_companions fc WHERE fc.companion_id = sf.id AND fc.media_id = m.id)
+                  AND (
+                      (SELECT count(*) FROM jsonb_array_elements_text(prov.items) AS pe(item) WHERE left(pe.item, 25) = 'capture:inventory_sha256:') <> 1
+                      OR sf.sha256_hash = (
+                          SELECT substring(pe.item FROM 26)
+                          FROM jsonb_array_elements_text(prov.items) AS pe(item)
+                          WHERE left(pe.item, 25) = 'capture:inventory_sha256:'
+                      )
+                  )
+                  AND NOT (
+                      prov.items ? 'revision:sha256:full'
+                      AND o.revision_scope = 'full'
+                      AND o.revision ~ '^[0-9a-f]{{64}}$'
+                      AND sf.sha256_hash <> o.revision
+                  )
+              )
+          )
+          -- the source file is the media's own agent's, and is the one the operator reviewed
+          AND (so.source_file_id IS NULL OR (sf.agent_id = m.agent_id AND sf.sha256_hash = s.target_mapping ->> 'source_sha256'))
+          -- a sectioned snapshot projects only the mapped section; the FILE ordinal selects the mapped CUE FILE
+          AND (
+              jsonb_array_length(CASE WHEN jsonb_typeof(o.payload -> 'sections') = 'array' THEN o.payload -> 'sections' ELSE '[]'::jsonb END) = 0
+              OR tr.item ->> 'section_ordinal' = s.target_mapping ->> 'text_section_ordinal'
+          )
+          AND EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements_text(COALESCE(tr.item -> 'evidence', '[]'::jsonb)) AS ev(item)
+              WHERE {_CUE_FILE_ORDINAL}::integer = (s.target_mapping ->> 'cue_file_ordinal')::integer
+          )
+          -- only an intrinsically qualified offset is ever re-bound to the recording
+          AND tr.item -> 'timestamp' ->> 'offset_usability' = 'qualified'
+          AND tr.item -> 'timestamp' ->> 'kind' = 'offset'
+          AND tr.item -> 'timestamp' -> 'offset' IS NOT NULL
     """,
 }
 
