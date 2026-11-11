@@ -33,6 +33,7 @@ tests/shared/test_adr_0018_weights.py
 tests/shared/test_adr_bare_citation_convention.py
 tests/shared/test_adr_citation_resolution.py
 tests/shared/test_adr_numbering.py
+tests/shared/test_analytics_read_only_docs.py
 tests/shared/test_change_gate.py
 tests/shared/test_ci_workflow_wiring.py
 tests/shared/test_developer_documentation.py
