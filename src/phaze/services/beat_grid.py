@@ -50,6 +50,12 @@ def stored_beat_grid(beats: Iterable[float]) -> list[float]:
 
 # Stitching: one file-relative grid out of per-fine-window beat ticks (phaze-0296l)
 
+# RhythmExtractor2013's own scale (essentia docs): confidence in [0, 5.32], below 1 is "low". A window
+# below it still reports a tempo (bpm is unchanged) but its ticks are not trusted: measured on a window
+# holding only a few edge clicks the extractor returned 39 confident-looking beats at confidence 0.19,
+# against 3.94 on the clean windows of the same file. Such a window contributes no beats and so leaves a
+# recorded gap, exactly as a silent one does. The implementer's choice (phaze-0296l), open to review.
+MIN_BEAT_CONFIDENCE = 1.0
 # A beat closer than this fraction of the local median interval to the previous accepted beat is the
 # SAME beat seen from two windows (or a spurious double tick), and is dropped.
 DUPLICATE_FRACTION = 0.5

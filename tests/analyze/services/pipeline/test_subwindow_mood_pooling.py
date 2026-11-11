@@ -50,7 +50,7 @@ def _matrix(n_patches: int, *, seed: int = 0) -> np.ndarray:
 
 
 def _n_patches(seconds: float, classifier_type: str) -> int:
-    """The closed form from ADR-0026 section 1, restated here so the test does not call the code under test."""
+    """The closed form from docs/design/0026-subwindow-mood-and-beat-grid.md section 1, restated here so the test does not call the code under test."""
     samples = int(seconds * 16000)
     frame, frame_hop, patch, hop = (512, 256, 187, 93) if classifier_type == "musicnn" else (400, 160, 96, 93)
     frames = (samples - frame) // frame_hop + 1
@@ -103,7 +103,7 @@ def test_an_overlong_centre_is_clipped_to_the_last_slice_never_indexed_past_it()
 
 
 def test_a_slice_with_no_centre_is_none_not_an_invented_vector() -> None:
-    # ADR-0026 section 2: a 16 s window's last musicnn centre is at 13.40 s, so the [15, 16) slice is empty.
+    # docs/design/0026-subwindow-mood-and-beat-grid.md section 2: a 16 s window's last musicnn centre is at 13.40 s, so the [15, 16) slice is empty.
     n = _n_patches(16.0, "musicnn")
     assert n == 9  # 1.496 + 1.488 * 8 = 13.4
     assert n_slices_for(0.0, 16.0) == 2

@@ -3,7 +3,7 @@
 Real essentia, real weights, real decode: no mock anywhere. It SKIPS where the weights are absent
 (CI today); that skip is a disclosed gap, not coverage -- the test says so in its reason.
 
-The discriminating claim (ADR-0026 section 2): every patch is attributed to exactly one sub-window, so
+The discriminating claim (docs/design/0026-subwindow-mood-and-beat-grid.md section 2): every patch is attributed to exactly one sub-window, so
 the patch-count-weighted mean of a coarse window's sub-window vectors IS that window's stored
 ``mood_scores`` source. Counts are derived here from the ADR's closed form for a graph's patch count and
 the centre rule, independently of ``analysis_subwindows``.
@@ -160,3 +160,33 @@ def test_a_pooling_that_double_counts_patches_is_rejected(audio: Path, monkeypat
 
     monkeypatch.setattr(analysis_mod, "pool_positive_class", overlap_pool)
     assert _worst_recovery_error(_run(audio)) > _TOL
+
+
+@requires_real_models
+@pytest.mark.integration
+async def test_sub_windows_and_beat_grid_survive_the_real_child_process_boundary(audio: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The consumer that matters (CLAUDE.md rule 3): the parent's own path to a child's result.
+
+    ``PatchMean`` carries its patch matrix as an attribute, and an ndarray subclass attribute does not
+    survive pickling, ``np.asarray``, copies or arithmetic. That is harmless exactly because the matrix is
+    pooled to plain floats inside the sweep, in the CHILD, before anything is returned. This test does not
+    argue that: it runs the real ``python -m phaze.analysis_child`` over a real file with the real graphs,
+    reads the result through ``run_analysis_subprocess`` (strict ``json.dumps`` in the child, a real pipe,
+    ``json.loads`` in the parent), and asserts the sub-windows and the beat grid arrive non-empty and equal
+    to the in-process result.
+    """
+    from phaze.analysis_child import _TARGET_ENV
+    from phaze.services.analysis_exec import run_analysis_subprocess
+
+    assert _MODELS_DIR is not None
+    monkeypatch.setenv(_TARGET_ENV, "tests.analyze._child_stubs:grids_analyze")
+    crossed = await run_analysis_subprocess(str(audio), _MODELS_DIR, fine_window_sec=30, coarse_window_sec=_COARSE, fine_min_sec=15)
+
+    assert crossed["subwindows"], "sub-windows were lost crossing the process boundary"
+    assert [len(crossed["subwindows"]), crossed["subwindows"][0]["sub_index"]] == [6, 0]
+    assert any(row["mood_scores"] is not None for row in crossed["subwindows"])
+    assert crossed["beat_grid"]["beats"], "the beat grid was lost crossing the process boundary"
+
+    in_process = _run(audio)
+    assert crossed["subwindows"] == in_process["subwindows"]
+    assert crossed["beat_grid"] == in_process["beat_grid"]

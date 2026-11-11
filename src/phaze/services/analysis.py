@@ -78,7 +78,7 @@ from phaze.services.analysis_windows import (
     aggregate_key,
     iter_subwindows,
 )
-from phaze.services.beat_grid import stitch_beat_grid, stored_beat_grid, to_stored_precision
+from phaze.services.beat_grid import MIN_BEAT_CONFIDENCE, stitch_beat_grid, stored_beat_grid, to_stored_precision
 from phaze.telemetry import instruments as telemetry, tracing as otel
 
 
@@ -1039,7 +1039,7 @@ def _measure_fine_window(
             confidence=float(confidence),
             # Window-relative ticks -> file-relative seconds. Python floats, so no essentia array
             # outlives the window (phaze-0296l).
-            beats=tuple(start + float(tick) for tick in beat_ticks),
+            beats=tuple(start + float(tick) for tick in beat_ticks) if confidence >= MIN_BEAT_CONFIDENCE else (),
         )
     except Exception:  # per-window failure isolation: skip, never fail the file
         on_skip(idx, start, end, True)
@@ -1579,7 +1579,7 @@ def _subwindow_payloads(coarse_windows: list[CoarseWindow]) -> list[dict[str, An
     """One dict per sub-window slice of every coarse window that carries pooled mood (phaze-x3gak).
 
     ``mood_scores`` is positional in ``MOOD_ORDER`` and ``None`` for a slice holding no patch centre
-    (ADR-0026 section 2). A window without pooled mood contributes no rows at all.
+    (docs/design/0026-subwindow-mood-and-beat-grid.md section 2). A window without pooled mood contributes no rows at all.
     """
     rows: list[dict[str, Any]] = []
     for window in coarse_windows:

@@ -178,6 +178,15 @@ def test_a_fine_window_carries_its_ticks_as_file_relative_seconds() -> None:
     assert measured.bpm == 120.0  # the tick change did not touch the tempo
 
 
+def test_a_low_confidence_window_keeps_its_bpm_but_contributes_no_beats() -> None:
+    rhythm = MagicMock(return_value=(88.9, np.array([0.7, 1.4, 2.1], dtype=np.float32), 0.19, None, None))
+    key = MagicMock(return_value=("A", "minor", 0.9))
+    measured = _measure_fine_window(rhythm, key, (1, 30.0, 60.0), {1: np.full(1000, 0.1, dtype=np.float32)}, MagicMock())
+    assert measured is not None
+    assert measured.bpm == 88.9
+    assert measured.beats == ()
+
+
 def test_a_silent_fine_window_has_no_beats_and_never_calls_the_extractor() -> None:
     rhythm = MagicMock()
     measured = _measure_fine_window(rhythm, MagicMock(), (1, 30.0, 60.0), {1: np.zeros(1000, dtype=np.float32)}, MagicMock())

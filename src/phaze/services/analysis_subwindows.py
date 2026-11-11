@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 
-# (patch length, patch hop) in seconds, MEASURED on the deployed graphs (ADR-0026 section 1):
+# (patch length, patch hop) in seconds, MEASURED on the deployed graphs (docs/design/0026-subwindow-mood-and-beat-grid.md section 1):
 # musicnn 187 frames / hop 93 at 256 samples per frame; VGGish 96 / 93 at 160 samples per frame; 16 kHz.
 PATCH_GEOMETRY: dict[str, tuple[float, float]] = {
     "musicnn": (187 * 256 / 16000, 93 * 256 / 16000),
