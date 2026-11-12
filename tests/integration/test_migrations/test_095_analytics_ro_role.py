@@ -1,4 +1,4 @@
-"""Migration 095 creates the ``analytics_ro`` role and the stable ``analytics_*`` views (phaze-p22p8).
+"""Migration 095 creates the stable ``analytics_*`` views and grants them to ``analytics_ro`` (phaze-p22p8, phaze-euo4a).
 
 Every acceptance criterion of the bead is discharged here by a test that connects AS ``analytics_ro``:
 
@@ -10,8 +10,10 @@ Every acceptance criterion of the bead is discharged here by a test that connect
   (``tests/shared/test_analytics_read_only_docs.py``), so a column change cannot land without both moving;
 * upgrade and downgrade round-trip (``test_downgrade_drops_the_views_and_the_grants_and_upgrade_is_repeatable``).
 
-The role is cluster-wide while every seat's database is not, so the password this fixture sets is a fixed, test-only
-string: production leaves the role passwordless until the operator sets one.
+The role itself is provisioned outside phaze, before the upgrade (the package conftest plays that step with
+``deploy/postgres-init/10-analytics-ro.sql``, as the deployment does), so the attribute and read-only-default checks here
+check that provisioning file. It is cluster-wide while every seat's database is not, so the password this fixture sets is
+a fixed, test-only string: production's comes from the deployment's secret store.
 """
 
 import asyncio

@@ -163,6 +163,10 @@ services:
       # issues. Mount the parent dir (not /var/lib/postgresql/data).
       # See: https://github.com/docker-library/postgres/pull/1259
       - pgdata:/var/lib/postgresql
+      # phaze-euo4a: provisions the read-only `analytics_ro` role on a FRESH volume (initdb scripts run once, as
+      # POSTGRES_USER). Migrations grant to it and never create it, and 095 refuses to run without it. An existing
+      # volume needs the same file run by hand -- docs/analytics-read-only-access.md, "Provisioning the role".
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
     ports:
       - "${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432"
     healthcheck:

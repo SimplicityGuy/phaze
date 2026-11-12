@@ -10,43 +10,32 @@ documentation asks production for. A role is cluster-wide while every seat's dat
 the role when it is absent and never drops it: other seats' databases hold grants to it.
 """
 
+from pathlib import Path
+
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 
 ANALYTICS_ROLE = "analytics_ro"
 
+# The deployment's own provisioning SQL, run verbatim: the harness provisions the role exactly as the documentation and the
+# compose stack do, so the three cannot drift apart.
+PROVISIONING_SQL = Path(__file__).resolve().parents[1] / "deploy" / "postgres-init" / "10-analytics-ro.sql"
+
 # Two seats provisioning at once must not race check-then-create. An advisory lock cannot serialize them (its key is
 # scoped to the current database), but a lock on the shared catalog pg_authid is cluster-wide. The harness user is a
-# superuser, so it may take it; no migration does (tests/shared/test_migrations_issue_no_role_ddl.py).
-_STATEMENTS: tuple[str, ...] = (
-    "LOCK TABLE pg_catalog.pg_authid IN SHARE UPDATE EXCLUSIVE MODE",
-    """
-    DO $$
-    BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analytics_ro') THEN
-            CREATE ROLE analytics_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
-        END IF;
-        IF NOT EXISTS (
-            SELECT 1
-            FROM pg_db_role_setting s
-            JOIN pg_roles r ON r.oid = s.setrole
-            WHERE r.rolname = 'analytics_ro' AND s.setdatabase = 0 AND 'default_transaction_read_only=on' = ANY (s.setconfig)
-        ) THEN
-            ALTER ROLE analytics_ro SET default_transaction_read_only = on;
-        END IF;
-    END
-    $$
-    """,
-)
+# superuser, so it may take it here; no migration does (tests/shared/test_migrations_issue_no_role_ddl.py).
+_LOCK_ROLE_CATALOG = "LOCK TABLE pg_catalog.pg_authid IN SHARE UPDATE EXCLUSIVE MODE"
 
 
 async def ensure_analytics_role(superuser_url: str) -> None:
     """Create ``analytics_ro`` on the cluster behind ``superuser_url`` if it is absent, read-only by default."""
-    engine = create_async_engine(superuser_url, poolclass=NullPool)
+    url = make_url(superuser_url)
+    engine = create_async_engine(url.set(drivername="postgresql+asyncpg"), poolclass=NullPool)
     try:
         async with engine.begin() as conn:
-            for statement in _STATEMENTS:
-                await conn.exec_driver_sql(statement)
+            await conn.exec_driver_sql(_LOCK_ROLE_CATALOG)
+            await conn.exec_driver_sql(PROVISIONING_SQL.read_text(encoding="utf-8"))
     finally:
         await engine.dispose()
