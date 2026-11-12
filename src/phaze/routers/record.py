@@ -242,7 +242,19 @@ async def build_file_record_context(
     windows = list((await session.execute(windows_stmt)).scalars().all())
     # phaze-bxp3m: the file's 15 s mood slices (docs/design/0026-subwindow-mood-and-beat-grid.md). Empty for a file analysed before sub-window
     # mood existed, which makes the track-segment join take its coarse path unchanged.
-    subwindows = list((await session.execute(select(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id))).scalars().all())
+    # Ordered by (window, sub) so the sub-window river reads them in time order; one load serves both
+    # the track segments and the timeline river (phaze-jvo7i).
+    subwindows = list(
+        (
+            await session.execute(
+                select(AnalysisSubwindow)
+                .where(AnalysisSubwindow.file_id == file_id)
+                .order_by(AnalysisSubwindow.window_index, AnalysisSubwindow.sub_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
     pending_rows, identity = await _load_pending_rows(session, file_id)
@@ -297,19 +309,8 @@ async def build_file_record_context(
     # facts list's Duration is the timeline's own analyzed extent and its Windows row is the
     # coverage chip's own sentence, so the sidebar cannot claim a length or a coverage the
     # picture beside it does not show.
-    # phaze-jvo7i: the sub-window slices and the beat grid, read by file_id (both are 1:many / 1:1 with files, so
-    # no join is needed). Empty and None for a file analyzed before they were stored: the timeline keeps the coarse river.
-    subwindows = list(
-        (
-            await session.execute(
-                select(AnalysisSubwindow)
-                .where(AnalysisSubwindow.file_id == file_id)
-                .order_by(AnalysisSubwindow.window_index, AnalysisSubwindow.sub_index)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    # phaze-jvo7i: the beat grid, read by file_id (1:1 with files). None for a file analyzed before it was
+    # stored: the timeline then draws no ruler. The sub-window rows loaded above are reused for the river.
     beat_grid = await session.get(AnalysisBeatGrid, file_id)
     timeline_context = build_analysis_timeline_context(
         windows, analysis=analysis, track_segments=track_segments, set_profile=set_profile, subwindows=subwindows, beat_grid=beat_grid
