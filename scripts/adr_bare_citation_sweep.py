@@ -127,8 +127,9 @@ LINE_GRANDFATHER = frozenset(
         ("tests/shared/test_adr_numbering.py", 25),
         # Line 266 until phaze-ofrxb inserted §3.8 above it (2026-09-21); line 292 until
         # phaze-4ggby inserted §3.9 above it (2026-09-23); line 314 until phaze-i252o inserted §3.10
-        # above it (2026-09-24); line 337 until phaze-2al7q.3 inserted §3.11 above it (2026-11-12).
-        ("docs/design/0016-transferred-model-verification.md", 356),
+        # above it (2026-09-24); line 337 until phaze-2al7q.3 inserted §3.11 above it (2026-11-12); line 356
+        # until phaze-euo4a inserted §3.12 above it (2026-11-12).
+        ("docs/design/0016-transferred-model-verification.md", 375),
     }
 )
 
