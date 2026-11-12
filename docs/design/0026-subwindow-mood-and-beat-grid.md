@@ -174,7 +174,19 @@ Both tables are analysis output of a file's bytes, and they move with the rest o
   wins a duplicate merge, and drops the kept row's copies.
 
 Re-analysis replaces them: the wire bead deletes and re-inserts them in the same transaction as
-`analysis_window`. Both tables start empty. Only a re-analysis fills them, and the archive-wide
+`analysis_window`.
+The grids belong to the run that wrote the windows (phaze-ek9zf). `put_analysis` therefore replaces
+both tables whenever it replaces the windows: written if the payload carries `subwindows` /
+`beat_grid`, DELETED if it omits them. Omission means "this run produced none", never "keep the old
+ones", so a re-analysis by an agent on the previous image leaves no stale grid beside its new windows.
+An aggregate-only PUT (no `windows`) touches them only if it carries them.
+
+**Rollout order: server first, then agents and burst images.** The two payload fields are optional, so an
+OLDER agent on a NEWER server is valid. The reverse is not: the previous server's `AnalysisWritePayload` is
+`extra="forbid"`, so a NEWER agent's completion PUT is answered 422, and `FAILURE_IS_TERMINAL[ANALYZE]` makes
+that permanent, discarding a finished multi-hour analysis. Never start an agent or burst image that sends
+grids against a control plane that has not been upgraded. See `docs/deployment.md` ("Upgrading: server
+first, then agents"). Both tables start empty. Only a re-analysis fills them, and the archive-wide
 re-analysis is deliberately held out of this epic.
 
 ## 6. Blast radius

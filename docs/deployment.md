@@ -681,6 +681,23 @@ services:
 
 The same pattern works for the agent's bearer token on a file server — mount the secret and set `PHAZE_AGENT_TOKEN_FILE=/run/secrets/phaze_agent_token`. The file's trailing newline is stripped, so the hashed wire string still matches the `token_hash` row (a stray `\n` would otherwise cause a permanent 401). A `_FILE` path that is missing or unreadable fails fast at startup with a clear error.
 
+## Upgrading: server first, then agents
+
+Upgrade the **application server first**, then the file-server agents and any burst (Kueue / cloud) images.
+Never the other way round.
+
+The analysis completion callback (`PUT /api/internal/agent/analysis/{file_id}`) gained two optional fields,
+`subwindows` and `beat_grid` (phaze-ek9zf, `docs/design/0026-subwindow-mood-and-beat-grid.md` section 5).
+
+- **Older agent, newer server:** works. The fields are optional, the analysis persists as before, and any grids
+  stored for that file are deleted, because they belonged to a previous run.
+- **Newer agent, older server:** fails. The previous server rejects the unknown fields with a 422, and
+  `FAILURE_IS_TERMINAL[ANALYZE]` makes that permanent, so a finished multi-hour analysis is discarded and the
+  file does not come back around.
+
+So before pulling a new `PHAZE_IMAGE_TAG` on any file server, or dispatching a burst image built from the new
+tag, confirm the app server is already running it. A rollback runs the other way: agents first, then the server.
+
 ## Rollback Procedure
 
 There is no automated rollback in CI — rollback is a manual re-deploy of a previously published image tag.
