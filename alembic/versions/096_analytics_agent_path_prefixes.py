@@ -15,8 +15,7 @@ Revision ID: 096
 Revises: 095
 """
 
-# DDL cannot take bind parameters; every interpolated value below is a module constant (ROLE, the VIEW names and bodies).
-# ruff: noqa: S608
+# Every statement below is a literal: no SQL is formatted at run time (Semgrep's formatted-SQL rules, phaze-2al7q.3).
 
 from collections.abc import Sequence
 
@@ -31,7 +30,10 @@ depends_on: str | Sequence[str] | None = None
 ROLE = "analytics_ro"
 NEW_VIEW = "analytics_agent_path_prefixes"
 
-_FILES_COLUMNS = """f.id AS file_id,
+# Frozen here on purpose: a migration must not change meaning when application code later changes.
+FILES_V096 = """
+    CREATE OR REPLACE VIEW analytics_files AS
+        SELECT f.id AS file_id,
                f.sha256_hash,
                f.original_path,
                f.original_filename,
@@ -39,13 +41,27 @@ _FILES_COLUMNS = """f.id AS file_id,
                f.file_type,
                f.file_size,
                f.missing_at,
-               f.created_at"""
+               f.created_at,
+               f.agent_id
+        FROM files f
+"""
 
-# Frozen here on purpose: a migration must not change meaning when application code later changes.
-FILES_V095 = f"SELECT {_FILES_COLUMNS} FROM files f"
-FILES_V096 = f"SELECT {_FILES_COLUMNS},\n               f.agent_id FROM files f"
+FILES_V095 = """
+    CREATE VIEW analytics_files AS
+        SELECT f.id AS file_id,
+               f.sha256_hash,
+               f.original_path,
+               f.original_filename,
+               f.current_path,
+               f.file_type,
+               f.file_size,
+               f.missing_at,
+               f.created_at
+        FROM files f
+"""
 
 PATH_PREFIXES = """
+    CREATE VIEW analytics_agent_path_prefixes AS
     SELECT a.id AS agent_id,
            a.name,
            a.kind,
@@ -56,17 +72,22 @@ PATH_PREFIXES = """
     CROSS JOIN LATERAL jsonb_array_elements_text(a.scan_roots) WITH ORDINALITY AS p(prefix, ordinal)
 """
 
+GRANT_PATH_PREFIXES = "GRANT SELECT ON analytics_agent_path_prefixes TO analytics_ro"
+DROP_PATH_PREFIXES = "DROP VIEW IF EXISTS analytics_agent_path_prefixes"
+DROP_FILES = "DROP VIEW IF EXISTS analytics_files"
+GRANT_FILES = "GRANT SELECT ON analytics_files TO analytics_ro"
+
 
 def upgrade() -> None:
     """Append ``agent_id`` to ``analytics_files`` (grants survive CREATE OR REPLACE) and publish the prefix view."""
-    op.execute(f"CREATE OR REPLACE VIEW analytics_files AS {FILES_V096}")
-    op.execute(f"CREATE VIEW {NEW_VIEW} AS {PATH_PREFIXES}")
-    op.execute(f"GRANT SELECT ON {NEW_VIEW} TO {ROLE}")
+    op.execute(FILES_V096)
+    op.execute(PATH_PREFIXES)
+    op.execute(GRANT_PATH_PREFIXES)
 
 
 def downgrade() -> None:
     """Drop the prefix view and restore ``analytics_files`` to its 095 shape (a column cannot be removed in place)."""
-    op.execute(f"DROP VIEW IF EXISTS {NEW_VIEW}")
-    op.execute("DROP VIEW IF EXISTS analytics_files")
-    op.execute(f"CREATE VIEW analytics_files AS {FILES_V095}")
-    op.execute(f"GRANT SELECT ON analytics_files TO {ROLE}")
+    op.execute(DROP_PATH_PREFIXES)
+    op.execute(DROP_FILES)
+    op.execute(FILES_V095)
+    op.execute(GRANT_FILES)
