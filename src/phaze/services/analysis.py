@@ -66,6 +66,7 @@ from phaze.services.analysis_probe import (
     _probe_duration_sec,
 )
 from phaze.services.analysis_sizing import apply_thread_env
+from phaze.services.analysis_subwindows import PATCH_GEOMETRY, combine_variants, n_slices_for, pool_positive_class, with_patches
 from phaze.services.analysis_windows import (
     CoarseWindow,
     FineWindow,
@@ -75,6 +76,15 @@ from phaze.services.analysis_windows import (
     aggregate_danceability,
     aggregate_dominant,
     aggregate_key,
+    iter_subwindows,
+)
+from phaze.services.beat_grid import (
+    BEAT_PREROLL_SEC,
+    MIN_BEAT_CONFIDENCE,
+    SEAM_TOLERANCE_SEC,
+    stitch_beat_grid,
+    stored_beat_grid,
+    to_stored_precision,
 )
 from phaze.telemetry import instruments as telemetry, tracing as otel
 
@@ -340,7 +350,10 @@ def _predict_single(audio_16k: Any, model: ModelConfig, models_dir: str) -> Any:
     # whose longest file has 241 coarse windows.
     with otel.timed_metric("phaze.analysis.model.inference.duration", **_model_labels(model)):
         activations = classifier(audio_16k)
-    return np.mean(np.atleast_2d(activations), axis=0)
+    matrix = np.atleast_2d(activations)
+    # The mean is computed from the SAME matrix as ever, so it is byte-identical; the matrix rides
+    # along on it (phaze-x3gak) for the sub-window pooling in _run_model_sets_over_windows.
+    return with_patches(np.mean(matrix, axis=0), matrix)
 
 
 def _release_classifier(model_filename: str) -> None:
@@ -872,6 +885,9 @@ def _run_model_sets_over_windows(
     models_dir: str,
     on_failure: Callable[[int], None],
     on_model_done: Callable[[], None] = _noop,
+    *,
+    slices_by_window: dict[int, int] | None = None,
+    pooled_out: dict[int, dict[str, list[tuple[list[float], list[int]]]]] | None = None,
 ) -> tuple[dict[int, dict[str, Any]], set[int]]:
     """Run all 11 characteristic model sets + the genre model over EVERY coarse buffer of a chunk.
 
@@ -892,6 +908,13 @@ def _run_model_sets_over_windows(
     fails on; that window is excluded from every later model. ``on_model_done()`` fires
     after each selected model sweep completes -- the liveness heartbeat for a chunk that can
     otherwise spend many minutes inside C++ without emitting a window completion.
+
+    **Sub-window pooling (phaze-x3gak).** When ``slices_by_window`` (window index -> number of
+    sub-window slices) and ``pooled_out`` are given, each model's patch matrix is pooled into that
+    window's slices by patch centre as the sweep returns it, and the pooled ``(sums, counts)`` are
+    appended to ``pooled_out[window_index][set_name]``, one entry per variant. The matrices are never
+    stored: what is kept is a few floats per slice, so nothing outlives the chunk. The return value
+    and the feature dicts are untouched.
 
     Returns ``({window_index: features}, {failed window_index})``. Feature-dict key
     insertion order is pinned to ``MODEL_SETS`` order (pre-seeded) with ``"genre"`` last,
@@ -914,6 +937,17 @@ def _run_model_sets_over_windows(
                 features[key][model_set.name][model.variant] = [
                     {"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)
                 ]
+                patches = getattr(predictions, "patches", None)
+                if (
+                    pooled_out is not None
+                    and slices_by_window is not None
+                    and patches is not None
+                    and key in slices_by_window
+                    and model.classifier_type in PATCH_GEOMETRY
+                ):
+                    pooled_out.setdefault(key, {}).setdefault(model_set.name, []).append(
+                        pool_positive_class(patches, labels, model.classifier_type, slices_by_window[key])
+                    )
             on_model_done()
 
     for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, audible_buffers, models_dir, failed, on_failure).items():
@@ -974,6 +1008,7 @@ def _measure_fine_window(
     span: tuple[int, float, float],
     decoded_chunk: dict[int, Any],
     on_skip: Callable[[int, float, float, bool], None],
+    preroll_sec: float = 0.0,
 ) -> FineWindow | None:
     """Consume ONE window's PCM out of a decoded chunk and measure its tempo and key.
 
@@ -995,14 +1030,26 @@ def _measure_fine_window(
     ``on_skip``'s ``exc_info=True`` still renders the live exception's traceback.
     """
     idx, start, end = span
-    buf = decoded_chunk.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
-    if buf is None:
+    full = decoded_chunk.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
+    if full is None:
         return None  # no audio for this window; already reported by the decode
+    # With a pre-roll the decoded buffer starts ``lead`` seconds before the window. bpm and key are measured
+    # on the window's OWN samples (a view past the lead, so no copy and byte-identical to the pre-roll-free
+    # decode); only the beat ticks come from the longer buffer. See beat_grid.BEAT_PREROLL_SEC.
+    lead = min(preroll_sec, start)
+    lead_samples = round(lead * _FINE_SAMPLE_RATE)
+    buf = full[lead_samples:] if lead_samples else full
     try:
         if not _has_analyzable_signal(buf):
             return FineWindow(window_index=idx, start_sec=start, end_sec=end, bpm=None, musical_key=None)
-        bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
+        bpm, beat_ticks, confidence, _, _beats_intervals = rhythm_extractor(buf)
         key, scale, _strength = key_extractor(buf)
+        tick_origin = start
+        if lead_samples:
+            _bpm, beat_ticks, beat_confidence, _, _ = rhythm_extractor(full)
+            tick_origin = start - lead
+        else:
+            beat_confidence = confidence
         return FineWindow(
             window_index=idx,
             start_sec=start,
@@ -1010,12 +1057,25 @@ def _measure_fine_window(
             bpm=round(float(bpm), 1) if confidence > 0.0 else None,
             musical_key=f"{key} {scale}" if _strength > 0.0 else None,
             confidence=float(confidence),
+            # Window-relative ticks -> file-relative seconds. Python floats, so no essentia array
+            # outlives the window (phaze-0296l).
+            beats=_owned_ticks(beat_ticks, tick_origin, start) if beat_confidence >= MIN_BEAT_CONFIDENCE else (),
         )
     except Exception:  # per-window failure isolation: skip, never fail the file
         on_skip(idx, start, end, True)
         return None
     finally:
-        del buf
+        del buf, full
+
+
+def _owned_ticks(ticks: Any, origin_sec: float, start_sec: float) -> tuple[float, ...]:
+    """File-relative ticks a window owns: those from ``SEAM_TOLERANCE_SEC`` before its start on.
+
+    ``origin_sec`` is the file time of the buffer the ticks are relative to (the window start, or the
+    start of its pre-roll). Ticks inside the pre-roll belong to the previous window and are dropped.
+    """
+    floor = start_sec - SEAM_TOLERANCE_SEC
+    return tuple(t for t in (origin_sec + float(tick) for tick in ticks) if t >= floor)
 
 
 def _analyze_fine_windows(
@@ -1113,7 +1173,9 @@ def _analyze_fine_windows(
                     decoded = _decode_windows(
                         file_path,
                         _FINE_SAMPLE_RATE,
-                        chunk,
+                        # Each window is decoded from BEAT_PREROLL_SEC early (never before 0): a few seconds of
+                        # overlap per window, so the chunk's PCM bound (D-07) is unchanged for practical purposes.
+                        [(idx, max(0.0, start - BEAT_PREROLL_SEC), end) for idx, start, end in chunk],
                         _skip,
                         stop_at_sec=_chunk_stop_sec(chunks, position),
                         # Keeps the per-window EasyLoader fallback audible to the stall watchdog; see
@@ -1125,7 +1187,7 @@ def _analyze_fine_windows(
                     # "inference proper", so it gets the same per-unit histogram treatment
                     # (acceptance 1 -- the two tiers must be comparable).
                     with otel.timed_metric("phaze.analysis.fine_window.duration"):
-                        measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip)
+                        measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip, BEAT_PREROLL_SEC)
                     if measured is None:
                         continue  # no audio, or a failed measurement already reported in-handler
                     fine_windows.append(measured)
@@ -1165,6 +1227,7 @@ def _derive_coarse_window(
     features_by_window: dict[int, dict[str, Any]],
     failed: set[int],
     on_skip: Callable[[int, float, float, bool], None],
+    pooled: dict[str, list[tuple[list[float], list[int]]]] | None = None,
 ) -> CoarseWindow | None:
     """Derive mood / style / danceability for ONE swept window and assemble its record.
 
@@ -1193,6 +1256,8 @@ def _derive_coarse_window(
             style=derive_style(features["genre"]),
             danceability=derive_danceability(features),
             features=features,
+            # () when the patch matrices were unavailable: absent, not a row of NULLs.
+            subwindow_moods=combine_variants(pooled, n_slices_for(start, end)) if pooled else (),
         )
     except Exception:  # per-window failure isolation: skip, never fail the file
         on_skip(idx, start, end, True)
@@ -1323,7 +1388,15 @@ def _analyze_coarse_windows(
                     signals.beat("coarse_model", len(coarse_windows), total)
                     signals.beat("coarse_work", _chunk_start + models_done, work_total)
 
-                features_by_window, failed = _run_model_sets_over_windows(buffers, models_dir, _make_span_reporter(spans, _skip), _model_done)
+                pooled_by_window: dict[int, dict[str, list[tuple[list[float], list[int]]]]] = {}
+                features_by_window, failed = _run_model_sets_over_windows(
+                    buffers,
+                    models_dir,
+                    _make_span_reporter(spans, _skip),
+                    _model_done,
+                    slices_by_window={idx: n_slices_for(start, end) for idx, start, end in spans},
+                    pooled_out=pooled_by_window,
+                )
                 buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
                 _malloc_trim()
 
@@ -1335,7 +1408,7 @@ def _analyze_coarse_windows(
                     tier="coarse",
                 ):
                     for span in spans:
-                        derived = _derive_coarse_window(span, features_by_window, failed, _skip)
+                        derived = _derive_coarse_window(span, features_by_window, failed, _skip, pooled_by_window.get(span[0]))
                         if derived is None:
                             continue  # killed by the sweep, or a failed derivation -- either way already reported in-handler
                         coarse_windows.append(derived)
@@ -1360,6 +1433,7 @@ def analyze_file(
     fine_min_sec: int = _DEFAULT_FINE_MIN_SEC,
     progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    include_grids: bool = False,
 ) -> dict[str, Any]:
     """Analyze a single audio file via essentia as a two-tier time-series.
 
@@ -1446,6 +1520,13 @@ def analyze_file(
     now decides "stuck" from ABSENCE OF PROGRESS rather than from elapsed wall clock — see
     ``services/analysis_exec.py``. It carries no I/O either; the child turns it into a
     protocol line and the parent turns that into a watchdog reset.
+
+    ``include_grids`` (phaze-x3gak / phaze-0296l, default ``False``) adds two keys to the result:
+    ``subwindows`` (the mood pooled into fixed sub-windows) and ``beat_grid`` (the one stitched
+    file-relative beat grid). Off, the returned dict is byte-for-byte what it was before they
+    existed -- the contract the completion PUT and the recorded equivalence tests pin. The data is
+    computed either way (it is a few floats per slice and per beat); the flag only decides whether it
+    travels, so the wire bead can switch it on once the control plane accepts it.
     """
     _suppress_essentia_logging()
 
@@ -1462,6 +1543,7 @@ def analyze_file(
             fine_window_sec=fine_window_sec,
             coarse_window_sec=coarse_window_sec,
             fine_min_sec=fine_min_sec,
+            include_grids=include_grids,
         )
 
 
@@ -1474,6 +1556,7 @@ def _analyze_file_traced(
     fine_window_sec: int,
     coarse_window_sec: int,
     fine_min_sec: int,
+    include_grids: bool = False,
 ) -> dict[str, Any]:
     """:func:`analyze_file`'s body, inside its root span (phaze-m1drf.1).
 
@@ -1504,7 +1587,7 @@ def _analyze_file_traced(
         coarse_windows, coarse_total = _analyze_coarse_windows(
             file_path, total_sec, coarse_window_sec, models_dir, signals=signals, fine_analyzed=len(fine_windows), fine_total=fine_total
         )
-        result = _assemble_analysis_result(file_path, fine_windows, fine_total, coarse_windows, coarse_total)
+        result = _assemble_analysis_result(file_path, fine_windows, fine_total, coarse_windows, coarse_total, include_grids=include_grids)
         outcome = "ok"
     finally:
         telemetry.record("phaze.analysis.run.duration", time.perf_counter() - started, outcome=outcome)
@@ -1524,12 +1607,53 @@ def _analyze_file_traced(
     return result
 
 
+def _subwindow_payloads(coarse_windows: list[CoarseWindow]) -> list[dict[str, Any]]:
+    """One dict per sub-window slice of every coarse window that carries pooled mood (phaze-x3gak).
+
+    ``mood_scores`` is positional in ``MOOD_ORDER`` and ``None`` for a slice holding no patch centre
+    (docs/design/0026-subwindow-mood-and-beat-grid.md section 2). A window without pooled mood contributes no rows at all.
+    """
+    rows: list[dict[str, Any]] = []
+    for window in coarse_windows:
+        if not window.subwindow_moods:
+            continue
+        for (sub_index, sub_start, sub_end), mood in zip(iter_subwindows(window.start_sec, window.end_sec), window.subwindow_moods, strict=True):
+            rows.append(
+                {
+                    "window_index": window.window_index,
+                    "sub_index": sub_index,
+                    "start_sec": sub_start,
+                    "end_sec": sub_end,
+                    "mood_scores": list(mood) if mood is not None else None,
+                }
+            )
+    return rows
+
+
+def _beat_grid_payload(fine_windows: list[FineWindow]) -> dict[str, Any]:
+    """The file's one stitched beat grid, at stored (float32) precision (phaze-0296l).
+
+    Positions are rounded BEFORE stitching, so "strictly ascending" and "no duplicate at the seam"
+    are judged on the values that will actually be stored. Silent or failed windows add no beats and
+    are left as recorded gaps, never interpolated.
+    """
+    stitched = stitch_beat_grid(
+        tuple(to_stored_precision(beat) for beat in window.beats) for window in sorted(fine_windows, key=lambda w: w.start_sec)
+    )
+    return {
+        "beats": stored_beat_grid(stitched.beats),
+        "gaps": [[to_stored_precision(start), to_stored_precision(end)] for start, end in stitched.gaps],
+    }
+
+
 def _assemble_analysis_result(
     file_path: str,
     fine_windows: list[FineWindow],
     fine_total: int,
     coarse_windows: list[CoarseWindow],
     coarse_total: int,
+    *,
+    include_grids: bool = False,
 ) -> dict[str, Any]:
     """The zibn floor plus the returned aggregate dict, unchanged. See :func:`analyze_file`."""
 
@@ -1551,7 +1675,7 @@ def _assemble_analysis_result(
     # See _log_job_peak_rss's docstring for what this does and does not measure post-15sw.
     _log_job_peak_rss()
 
-    return {
+    result: dict[str, Any] = {
         "bpm": aggregate_bpm(fine_windows),
         "musical_key": aggregate_key(fine_windows),
         "mood": aggregate_dominant(coarse_windows, "mood"),
@@ -1564,3 +1688,7 @@ def _assemble_analysis_result(
         "coarse_windows_analyzed": len(coarse_windows),
         "coarse_windows_total": coarse_total,
     }
+    if include_grids:
+        result["subwindows"] = _subwindow_payloads(coarse_windows)
+        result["beat_grid"] = _beat_grid_payload(fine_windows)
+    return result

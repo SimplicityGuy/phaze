@@ -34,6 +34,10 @@ class FineWindow:
     bpm: float | None
     musical_key: str | None
     confidence: float = 0.0
+    # Beat ticks in FILE-relative seconds (window ticks + start_sec); empty for a silent window.
+    # Deliberately NOT in as_payload_dict: the per-window payload is unchanged, and the stitched
+    # per-file grid travels separately (phaze-0296l).
+    beats: tuple[float, ...] = ()
 
     def as_payload_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""
@@ -58,6 +62,10 @@ class CoarseWindow:
     style: str | None
     danceability: float | None
     features: dict[str, Any] = field(default_factory=dict)
+    # One entry per sub-window slice of this window (see iter_subwindows): the pooled mood vector,
+    # positional in MOOD_ORDER, or None for a slice holding no patch centre. Empty when the patch
+    # matrices were unavailable. Not in as_payload_dict (phaze-x3gak).
+    subwindow_moods: tuple[tuple[float, ...] | None, ...] = ()
 
     def as_payload_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""
