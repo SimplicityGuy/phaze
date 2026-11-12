@@ -35,6 +35,7 @@ silently include untracked files or somebody else's working-tree changes.
 | Dockerfile | Every basename equal to `Dockerfile` or beginning `Dockerfile.` | 3 |
 | GitHub automation | Workflow YAML plus `.github/actions/**/action.{yml,yaml}` | 9 |
 | Just | The root `justfile` | 1 |
+| SQL | Every tracked `*.sql` (added after the baseline, by `phaze-euo4a`, for `deploy/postgres-init/`) | 0 |
 
 The stylesheet is included in addition to the surfaces named by the epic because its comments
 carry build and accessibility rationale. Captured HTML test fixtures, dated HTML design

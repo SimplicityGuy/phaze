@@ -364,6 +364,11 @@ opaque crash-loop. A fresh `git clone` already materializes `./certs/` (it ships
 `mkdir -p certs` above is belt-and-suspenders. If you hit the crash anyway, the entrypoint now prints
 the exact fix: `sudo chown -R 1000:1000 certs`.
 
+**The `analytics_ro` database role must exist before `api` starts.** Migration 095 grants to it, never creates it,
+and fails the upgrade while it is absent. A fresh `pgdata` volume gets it from `deploy/postgres-init/` (mounted at
+`/docker-entrypoint-initdb.d`). An existing volume, or a Postgres you provision yourself, needs that file run as the
+cluster superuser first. See [Provisioning the role](analytics-read-only-access.md#provisioning-the-role).
+
 On first start, the `api` container's entrypoint generates the internal CA + leaf cert into
 `./certs/`. Watch the logs:
 

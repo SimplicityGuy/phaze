@@ -72,6 +72,23 @@ PATH_PREFIXES = """
     CROSS JOIN LATERAL jsonb_array_elements_text(a.scan_roots) WITH ORDINALITY AS p(prefix, ordinal)
 """
 
+# The role is provisioned outside phaze (phaze-euo4a; see migration 095): refuse, before any DDL, rather than fail on a
+# bare GRANT. The same literal as 095's, frozen here on purpose.
+REQUIRE_ROLE = """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analytics_ro') THEN
+            RAISE EXCEPTION USING
+                ERRCODE = 'undefined_object',
+                MESSAGE = 'role "analytics_ro" does not exist, and phaze migrations do not create roles. Provision it before '
+                    'upgrading, as a role that may create roles (the cluster superuser): LOGIN, no superuser, no createdb, no '
+                    'createrole, no replication, default_transaction_read_only = on. The statements are in '
+                    'docs/analytics-read-only-access.md, "Provisioning the role". Then restart phaze to re-run the upgrade.';
+        END IF;
+    END
+    $$
+"""
+
 GRANT_PATH_PREFIXES = "GRANT SELECT ON analytics_agent_path_prefixes TO analytics_ro"
 DROP_PATH_PREFIXES = "DROP VIEW IF EXISTS analytics_agent_path_prefixes"
 DROP_FILES = "DROP VIEW IF EXISTS analytics_files"
@@ -80,6 +97,7 @@ GRANT_FILES = "GRANT SELECT ON analytics_files TO analytics_ro"
 
 def upgrade() -> None:
     """Append ``agent_id`` to ``analytics_files`` (grants survive CREATE OR REPLACE) and publish the prefix view."""
+    op.execute(REQUIRE_ROLE)
     op.execute(FILES_V096)
     op.execute(PATH_PREFIXES)
     op.execute(GRANT_PATH_PREFIXES)
@@ -87,6 +105,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop the prefix view and restore ``analytics_files`` to its 095 shape (a column cannot be removed in place)."""
+    op.execute(REQUIRE_ROLE)
     op.execute(DROP_PATH_PREFIXES)
     op.execute(DROP_FILES)
     op.execute(FILES_V095)

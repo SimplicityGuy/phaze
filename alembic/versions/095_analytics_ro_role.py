@@ -16,12 +16,14 @@ so a migration that touches a column any of them projects MUST update the view i
 and the stability rule are written down in ``docs/analytics-read-only-access.md``.
 
 The views run with their owner's privileges (the default for a view), so ``analytics_ro`` needs no privilege on any base
-table, and has none: PUBLIC holds no table privilege in this schema. The role is created ``LOGIN`` with NO password --
-a migration is the wrong place for a secret; the operator sets it with ``ALTER ROLE analytics_ro PASSWORD ...`` -- and
-``default_transaction_read_only = on`` as a second wall behind the missing ``INSERT``/``UPDATE``/``DELETE`` grants.
+table, and has none: PUBLIC holds no table privilege in this schema.
 
-A role is cluster-wide, not per-database: ``upgrade`` creates it only if absent, and ``downgrade`` drops it only when no
-other database still depends on it.
+The ROLE is not created here (phaze-euo4a). It is cluster-wide, it carries a secret, and creating it needs ``CREATEROLE``,
+which production's app role does not have: the first version of this migration ran ``CREATE ROLE`` and crash-looped the
+2026.11.0 deploy. The deployment provisions it, before phaze starts on this release, as ``LOGIN`` with
+``default_transaction_read_only = on`` as a second wall behind the missing ``INSERT``/``UPDATE``/``DELETE`` grants
+(``docs/analytics-read-only-access.md``, "Provisioning the role"). ``upgrade`` refuses to run without it; ``downgrade``
+drops the views and revokes the schema grant, and never drops the role.
 
 Revision ID: 095
 Revises: 094
@@ -293,51 +295,41 @@ DROPS: tuple[str, ...] = (
     "DROP VIEW IF EXISTS analytics_files",
 )
 
-# A role is cluster-wide, every seat's database is not: two databases migrating at once must not both create, alter or
-# drop it. An advisory lock cannot serialize them -- its key is scoped to the CURRENT DATABASE (measured on the harness,
-# phaze-2al7q.3) -- but a lock on the shared catalog pg_authid is cluster-wide. SHARE UPDATE EXCLUSIVE conflicts with
-# itself, so concurrent 095 upgrades and downgrades queue behind each other, and with nothing a login or another role's
-# DDL takes (ACCESS SHARE / ROW EXCLUSIVE), so nothing else waits. Held to the end of the migration transaction.
-LOCK_ROLE_CATALOG = "LOCK TABLE pg_catalog.pg_authid IN SHARE UPDATE EXCLUSIVE MODE"
-
-ENSURE_ROLE = """
+# The role is provisioned OUTSIDE phaze, before this migration runs (phaze-euo4a): production's app role has no CREATEROLE,
+# and a migration that ran CREATE ROLE crash-looped the 2026.11.0 deploy. No migration creates, alters or drops a role
+# or locks a shared catalog (tests/shared/test_migrations_issue_no_role_ddl.py). A missing role fails the upgrade here,
+# before any DDL, with the step that fixes it: skipping the grants instead would leave views the role, once created,
+# can never read -- nothing re-runs a migration.
+REQUIRE_ROLE = """
     DO $$
     BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analytics_ro') THEN
-            CREATE ROLE analytics_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
+            RAISE EXCEPTION USING
+                ERRCODE = 'undefined_object',
+                MESSAGE = 'role "analytics_ro" does not exist, and phaze migrations do not create roles. Provision it before '
+                    'upgrading, as a role that may create roles (the cluster superuser): LOGIN, no superuser, no createdb, no '
+                    'createrole, no replication, default_transaction_read_only = on. The statements are in '
+                    'docs/analytics-read-only-access.md, "Provisioning the role". Then restart phaze to re-run the upgrade.';
         END IF;
     END
     $$
 """
 
-SET_READ_ONLY = "ALTER ROLE analytics_ro SET default_transaction_read_only = on"
-
-REVOKE_SCHEMA = "REVOKE USAGE ON SCHEMA public FROM analytics_ro"
-
-# Dropped only when no database still holds a grant to it: DROP ROLE checks the shared dependency catalog across every
-# database, so a seat whose database is at 095 or later (and so holds the view grants) keeps the role.
-DROP_ROLE_UNLESS_USED = """
+# Only when the role still exists: an operator may drop it once no database holds a grant to it. Never drops the role.
+REVOKE_SCHEMA = """
     DO $$
     BEGIN
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analytics_ro') THEN
-            BEGIN
-                DROP ROLE analytics_ro;
-            EXCEPTION WHEN dependent_objects_still_exist THEN
-                RAISE NOTICE 'role analytics_ro is still used by another database; left in place';
-            END;
+            REVOKE USAGE ON SCHEMA public FROM analytics_ro;
         END IF;
     END
     $$
 """
 
-ROLE_UPGRADE: tuple[str, ...] = (LOCK_ROLE_CATALOG, ENSURE_ROLE, SET_READ_ONLY)
-ROLE_DOWNGRADE: tuple[str, ...] = (LOCK_ROLE_CATALOG, DROP_ROLE_UNLESS_USED)
-
 
 def upgrade() -> None:
-    """Create the role (if absent), the views, and grant the role SELECT on the views only."""
-    for statement in ROLE_UPGRADE:
-        op.execute(statement)
+    """Require the provisioned role, create the views, and grant the role SELECT on the views only."""
+    op.execute(REQUIRE_ROLE)
     for _name, create in VIEWS:
         op.execute(create)
     for grant in GRANTS:
@@ -345,9 +337,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the views, revoke the role's grants, and drop the role unless another database still uses it."""
+    """Drop the views (their grants go with them) and revoke the schema grant. The role is left in place."""
     for drop in DROPS:
         op.execute(drop)
     op.execute(REVOKE_SCHEMA)
-    for statement in ROLE_DOWNGRADE:
-        op.execute(statement)

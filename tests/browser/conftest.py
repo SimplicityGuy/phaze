@@ -256,8 +256,14 @@ def _free_port() -> int:
 
 
 def _recreate_database(dsn: str) -> None:
-    """DROP + CREATE the browser database so every run starts from a known state."""
+    """DROP + CREATE the browser database so every run starts from a known state.
+
+    Also provisions ``analytics_ro`` on the cluster, as the deployment must before phaze boots (phaze-euo4a): the app's
+    own ``run_migrations()`` refuses migration 095 without it, and no migration creates a role.
+    """
     import asyncpg
+
+    from tests.analytics_role import ensure_analytics_role
 
     base, _, name = dsn.rpartition("/")
 
@@ -268,6 +274,7 @@ def _recreate_database(dsn: str) -> None:
             await conn.execute(f'CREATE DATABASE "{name}"')
         finally:
             await conn.close()
+        await ensure_analytics_role(dsn)
 
     asyncio.run(_run())
 

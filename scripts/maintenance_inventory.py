@@ -25,6 +25,7 @@ CODE_SURFACE_NAMES = (
     "dockerfile",
     "github-automation",
     "justfile",
+    "sql",
 )
 DOCUMENTATION_CLASS_NAMES = (
     "maintained",
@@ -109,6 +110,8 @@ def code_surface(path: str) -> str | None:
         return "github-automation"
     if path == "justfile":
         return "justfile"
+    if suffix == ".sql":
+        return "sql"
     return None
 
 

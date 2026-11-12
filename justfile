@@ -1928,6 +1928,9 @@ seed-benchmark-db COUNT='200000':
     set -euo pipefail
     count="$1"
     [[ "$count" =~ ^[1-9][0-9]*$ ]] || { echo "❌ COUNT must be a positive integer" >&2; exit 2; }
+    # phaze-euo4a: migration 095 needs the analytics_ro role and no migration creates one; provision it as the
+    # container's superuser first, with the same file the compose stack and the test harness use.
+    docker exec -i {{quote(benchmark_db_container)}} psql -U phaze -d {{quote(benchmark_db_name)}} -X -q -v ON_ERROR_STOP=1 < deploy/postgres-init/10-analytics-ro.sql
     PHAZE_DATABASE_URL="{{benchmark_db_sa_dsn}}" uv run alembic upgrade head
     uv run python scripts/seed_perf_corpus.py --n "$count" --dsn "{{benchmark_db_dsn}}" --reseed
 

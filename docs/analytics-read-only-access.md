@@ -2,8 +2,12 @@
 
 A read-only consumer of phaze's data connects as the dedicated Postgres role **`analytics_ro`**, never as the
 application role. The role can `SELECT` from eight `analytics_*` views and from nothing else: no base table, no write, no DDL.
-Migration `095_analytics_ro_role.py` creates the role and the first seven views, and `096_analytics_agent_path_prefixes.py` adds the eighth; `tests/integration/test_migrations/test_095_analytics_ro_role.py`
+Migration `095_analytics_ro_role.py` creates the first seven views and grants them to the role, and
+`096_analytics_agent_path_prefixes.py` adds the eighth; `tests/integration/test_migrations/test_095_analytics_ro_role.py`
 connects as the role and proves each of those claims.
+
+**phaze does not create the role.** It is provisioned outside phaze, by the deployment, **before phaze starts on a release
+at or past migration 095** (see [Provisioning the role](#provisioning-the-role)). phaze's migrations only grant to it.
 
 ## What the role is
 
@@ -13,25 +17,71 @@ connects as the role and proves each of those claims.
 | Attributes | `LOGIN`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`, `NOREPLICATION`, `NOINHERIT` |
 | Grants | `USAGE` on schema `public`; `SELECT` on the eight views below. Nothing on any base table |
 | Role setting | `default_transaction_read_only = on`, a second wall behind the missing write grants |
-| Password | **None until the operator sets one.** A migration is the wrong place for a secret |
+| Password | Set by the deployment from its secret store. Never in a migration, and never in this repository |
+| Created by | The deployment, as a role that may create roles. **Never by a phaze migration** |
 
 The views run with their owner's privileges (the Postgres default for a view), which is why the role needs no base-table
 privilege: it can see exactly the columns a view projects and no others. Columns that are large or internal (`features`
 JSONB on `analysis` and `analysis_window`, `error_message`, source URLs, review and queue state) are deliberately not projected.
 
-The role is cluster-wide while the views are per-database. `upgrade` creates the role only if it does not exist;
-`downgrade` drops the views and the grants and drops the role only when no other database still depends on it.
+The views are owned by the application role (it creates them), so it may grant on them without `CREATEROLE`.
 
-### Setting the password
+## Provisioning the role
 
-Run once per environment, as a database superuser, with the secret taken from the operator's secret store (the value
-below is a placeholder):
+Creating, altering or dropping a role needs `CREATEROLE` or superuser, and production's application role has neither: it is
+a `LOGIN` role that reaches the database owner's objects through membership in the owner role, and superuser is never
+inherited through membership. The first version of migration 095 ran `CREATE ROLE` itself, and the 2026.11.0 deploy
+crash-looped on it with `permission denied to create role` (bead `phaze-euo4a`). So:
 
-```sql
-ALTER ROLE analytics_ro PASSWORD '<password-from-secret-store>';
+1. **The deployment creates the role, as a role that may create roles (the cluster superuser), before phaze starts.** The
+   statements, idempotent and safe to run on every deploy, are in
+   [`deploy/postgres-init/10-analytics-ro.sql`](../deploy/postgres-init/10-analytics-ro.sql):
+
+   ```sql
+   DO $$
+   BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analytics_ro') THEN
+           CREATE ROLE analytics_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
+       END IF;
+       -- ... and ALTER ROLE analytics_ro SET default_transaction_read_only = on, unless it is already set
+   END
+   $$;
+   ```
+
+2. **Then it sets the password**, from its secret store (the value below is a placeholder):
+
+   ```sql
+   ALTER ROLE analytics_ro PASSWORD '<password-from-secret-store>';
+   ```
+
+3. **Only then does phaze start on the new release.** Its startup runs `alembic upgrade head`, and migration 095 grants to
+   the role.
+
+**Ordering is a hard requirement.** If the role does not exist, migrations 095 and 096 **fail**, before any DDL, with:
+
+```
+role "analytics_ro" does not exist, and phaze migrations do not create roles. Provision it before upgrading, ...
 ```
 
-Until then the role cannot authenticate with a password.
+The upgrade's transaction rolls back, so the database stays at its previous revision. Provision the role and restart phaze
+to retry. A missing role fails the upgrade on purpose. Skipping the grants instead would leave views that the role, once
+it existed, could never read, because nothing re-runs a migration.
+
+Where it runs:
+
+- **Production.** The deployment's provisioning, before the phaze containers start.
+- **This repository's compose stack.** `docker-compose.yml` mounts `deploy/postgres-init/` at `/docker-entrypoint-initdb.d`,
+  so a **fresh** data volume gets the role at first start. An **existing** volume does not (initdb scripts run once). Run
+  the file by hand, for example
+  `docker compose exec -T postgres psql -U phaze -d phaze -v ON_ERROR_STOP=1 < deploy/postgres-init/10-analytics-ro.sql`.
+- **Tests and benchmarks.** The test harness runs the same file as its superuser (`tests/analytics_role.py`), and
+  `just seed-benchmark-db` runs it before migrating. `tests/integration/test_migrations/test_restricted_app_role.py`
+  migrates as a role shaped like production's application role, and `tests/shared/test_migrations_issue_no_role_ddl.py`
+  fails the build on role DDL in any migration.
+
+The role is cluster-wide while the views are per-database. **`downgrade` never drops the role.** It drops the views (their
+grants go with them) and revokes the schema grant. To retire the role, first downgrade or drop every database that still
+grants to it, then `DROP ROLE analytics_ro` as a role that may create roles.
 
 ## The views
 
@@ -245,7 +295,7 @@ column order a contract**:
 ## Network exposure
 
 The role is only as private as the path to it. Postgres here listens on `listen_addresses = '*'`, which exposes every role,
-including the superuser-level application role, to every interface. This page makes recommendations only; nothing about a
+including the application role, to every interface. This page makes recommendations only; nothing about a
 deployed host is changed by migration `095`.
 
 1. **Bind address.** Set `listen_addresses` to the loopback address plus the one private interface the consumer reaches, for

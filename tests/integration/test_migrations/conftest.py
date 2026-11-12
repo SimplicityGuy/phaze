@@ -30,12 +30,14 @@ import os
 from pathlib import Path
 
 from alembic.config import Config
+import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
 from phaze.config import get_settings
+from tests.analytics_role import ensure_analytics_role
 from tests.db_guard import require_test_database
 
 
@@ -57,6 +59,16 @@ MIGRATIONS_TEST_DATABASE_URL = os.environ.get(
 # see `tests/db_guard.py` for why this is an error and not a skip.
 require_test_database(MIGRATIONS_TEST_DATABASE_URL, context="Alembic migration tests")
 ALEMBIC_INI_PATH = Path(__file__).resolve().parents[3] / "alembic.ini"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _analytics_role_provisioned() -> None:
+    """Provision ``analytics_ro`` the way the deployment must, before any test here migrates past 094 (phaze-euo4a).
+
+    Migration 095 refuses to run without the role and no migration creates one, so a fresh cluster (CI's service
+    container, a new harness) needs it first. The harness connects as its superuser, so it plays the provisioning step.
+    """
+    asyncio.run(ensure_analytics_role(MIGRATIONS_TEST_DATABASE_URL))
 
 
 @contextmanager
