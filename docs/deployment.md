@@ -687,7 +687,7 @@ Upgrade the **application server first**, then the file-server agents and any bu
 Never the other way round.
 
 The analysis completion callback (`PUT /api/internal/agent/analysis/{file_id}`) gained two optional fields,
-`subwindows` and `beat_grid` (phaze-ek9zf, `docs/design/0026-subwindow-mood-and-beat-grid.md` section 5).
+`subwindows` and `beat_grid` (`docs/design/0026-subwindow-mood-and-beat-grid.md` section 5).
 
 - **Older agent, newer server:** works. The fields are optional, the analysis persists as before, and any grids
   stored for that file are deleted, because they belonged to a previous run.
