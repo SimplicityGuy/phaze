@@ -49,7 +49,7 @@ def _write_sync(audio_path: Path, content: str, scan_roots: list[str]) -> tuple[
     uses for its move destinations (T-26-11-S1).
 
     phaze-pqib3 (seam C5): that resolve is also what makes the RETARGET below necessary, which is
-    why the two sit together. ``routers/cue.py::generate_cue`` renders ``FILE "<basename>"`` from
+    why the two sit together. ``services/selected_cue.py`` (for ``routers/cue.py::generate_selected_cue``) renders ``FILE "<basename>"`` from
     the UNRESOLVED ``current_path`` -- the only name the api can know -- while the line above then
     writes the sheet beside the RESOLVED file. For a symlink into a differently-named target the
     sheet therefore landed in the target's directory naming the symlink, and ``FILE`` is a bare

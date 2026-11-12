@@ -112,8 +112,9 @@ LINE_GRANDFATHER = frozenset(
         ("scripts/select_impacted_tests.py", 75),
         # Line 622 until phaze-eaf3y inserted two comment lines above it, re-measuring
         # MAX_DOCS_FLOOR_MODULES (2026-09-23); then 624 until phaze-1t3e1 inserted the failure-mode-H
-        # selector tests above it (2026-09-25).
-        ("tests/shared/test_fast_gate.py", 760),
+        # selector tests above it (2026-09-25); then 763 until phaze-2al7q.3 inserted the re-measured
+        # MAX_DOCS_FLOOR_MODULES comment above it (2026-11-12).
+        ("tests/shared/test_fast_gate.py", 767),
         # This module's own worked examples, in its module docstring above -- same shapes (a) and
         # (b) it names: line 46 retells the historical 0014/0015 renumber collision (today's number
         # to file mapping would misstate what was cited at the time), line 53 quotes
@@ -126,8 +127,8 @@ LINE_GRANDFATHER = frozenset(
         ("tests/shared/test_adr_numbering.py", 25),
         # Line 266 until phaze-ofrxb inserted §3.8 above it (2026-09-21); line 292 until
         # phaze-4ggby inserted §3.9 above it (2026-09-23); line 314 until phaze-i252o inserted §3.10
-        # above it (2026-09-24).
-        ("docs/design/0016-transferred-model-verification.md", 337),
+        # above it (2026-09-24); line 337 until phaze-2al7q.3 inserted §3.11 above it (2026-11-12).
+        ("docs/design/0016-transferred-model-verification.md", 356),
     }
 )
 

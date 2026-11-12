@@ -9,20 +9,23 @@ edited ``routers/cue.py`` / ``routers/tags.py`` at exec time -- which still re-e
 those names (see those modules' docstrings) -- so this is a genuine apples-to-apples comparison,
 not a frozen snapshot compared against itself.
 
-Two claims are kept deliberately separate, per this bead's acceptance criteria:
+Parity tests below assert the RENDERED ROW DATA is byte-for-byte identical old vs new.
 
-* Parity tests below assert the RENDERED ROW DATA is byte-for-byte identical old vs new.
-* ``test_cue_review_cards_query_count_*`` asserts the QUERY COUNT dropped -- a different claim,
-  proven with a counting session, not by diffing output.
+phaze-zimli: the CUE parity and query-count tests are retired. ADR-0027 (retire legacy timestamp
+qualification) deliberately changed legacy cue behaviour, so history is no longer a valid oracle
+for it, and the batched cue-track path they measured is gone. The retired names the historical blob
+still imports are stood in for its exec only (``_retired_cue_names``).
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import importlib
 import importlib.util
 from pathlib import Path
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 import uuid
 
 import pytest
@@ -30,8 +33,7 @@ import pytest
 from phaze.models.proposal import ProposalStatus
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.services import review as new_review
-from tests.review.capabilities.cue.test_degrade import _seed_eligible_cue_tracklist
-from tests.review.capabilities.tag_write.test_degrade import _CountingSession, _seed_applied_tagwrite_file
+from tests.review.capabilities.tag_write.test_degrade import _seed_applied_tagwrite_file
 
 
 if TYPE_CHECKING:
@@ -91,8 +93,44 @@ def _load_old_review_module(sha: str = _PRE_REFACTOR_SHA) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     module.__file__ = f"<git show {sha}:src/phaze/services/review.py>"
     sys.modules[module_name] = module
-    exec(compile(source, module.__file__, "exec"), module.__dict__)  # noqa: S102 -- trusted, our own git history
+    with _retired_cue_names():
+        exec(compile(source, module.__file__, "exec"), module.__dict__)  # noqa: S102 -- trusted, our own git history
     return module
+
+
+# phaze-zimli (ADR-0027 (retire legacy timestamp qualification)) removed the legacy CUE "eligible"
+# set and per-tracklist track building. The historical blobs still import those names at exec time,
+# so they are injected for the exec alone and removed straight after: the old module keeps its own
+# bindings, the shipped modules gain nothing. Each stand-in raises if CALLED -- the old cue
+# composition treats raw legacy timestamps as eligible, which ADR-0027 (retire legacy timestamp qualification) deliberately changed, so no
+# parity test compares cue behaviour against history any more.
+_RETIRED_CUE_NAMES = {
+    "phaze.routers.cue": ("_build_cue_tracks", "_eligible_tracklist_stmt", "_get_eligible_tracklist_query"),
+    "phaze.services.cue_review": ("build_cue_tracks_for_versions", "eligible_tracklist_stmt", "get_eligible_tracklist_query"),
+}
+
+
+def _retired(name: str) -> Callable[..., NoReturn]:
+    def _call(*_args: object, **_kwargs: object) -> NoReturn:
+        raise AssertionError(f"{name} was retired by ADR-0027 (retire legacy timestamp qualification); a parity test reached the historical cue path")
+
+    return _call
+
+
+@contextmanager
+def _retired_cue_names() -> Iterator[None]:
+    injected: list[tuple[ModuleType, str]] = []
+    try:
+        for module_name, names in _RETIRED_CUE_NAMES.items():
+            target = importlib.import_module(module_name)
+            for name in names:
+                if not hasattr(target, name):
+                    setattr(target, name, _retired(name))
+                    injected.append((target, name))
+        yield
+    finally:
+        for target, name in injected:
+            delattr(target, name)
 
 
 @pytest.fixture(scope="module")
@@ -295,95 +333,3 @@ async def test_dedupe_groups_parity(
     new_groups = [{k: v for k, v in group.items() if k != "strictly_better"} for group in new_groups]
 
     assert old_groups == new_groups
-
-
-# Cue review parity -- the N+1 fix's own correctness proof, separate from its query-count proof
-
-
-@pytest.mark.asyncio
-async def test_cue_review_cards_parity_across_multiple_eligible_and_gated_sets(
-    session: AsyncSession,
-    old_review: ModuleType,
-    seed_cue_set: Callable[..., Awaitable[tuple[FileRecord, object, object]]],
-) -> None:
-    """Card-level parity for the eligible/gated split -- NOT for the _build_cue_tracks rewrite.
-
-    phaze-b4u3p review finding, recorded so this test is not read as covering more than it does:
-    the "old" module's own ``from phaze.routers.cue import _build_cue_tracks`` resolves at exec
-    time against the CURRENT router, whose ``_build_cue_tracks`` this change rewrote (the
-    ``TracklistVersion`` + ``selectinload`` existence lookup became a direct ``TracklistTrack``
-    query). So both sides of the assertion below run the NEW track-building code, and that hunk is
-    compared against itself.
-
-    The two forms are in fact equivalent -- ``tracklist_tracks.version_id`` is NOT NULL with an FK
-    to ``tracklist_versions``, so a version that cannot be found can have no tracks and both forms
-    return ``[]`` -- but that equivalence is argued from the schema, not demonstrated here. What
-    this test does cover is the eligible/gated partition and the card payloads built around it.
-    """
-    for i in range(4):
-        await seed_cue_set(eligible=True, original_filename=f"parity-cue-elig-{i}.mp3")
-    for i in range(3):
-        await seed_cue_set(eligible=False, original_filename=f"parity-cue-gated-{i}.mp3")
-
-    old_cards = await old_review.get_cue_review_cards(session)
-    new_cards = await new_review.get_cue_review_cards(session)
-
-    old_by_id = {card["tracklist_id"]: card for card in old_cards}
-    new_by_id = {card["tracklist_id"]: card for card in new_cards}
-    assert len(old_by_id) == len(new_by_id) == 7
-    assert old_by_id == new_by_id
-    assert sum(1 for c in new_by_id.values() if c["eligible"]) == 4
-    assert sum(1 for c in new_by_id.values() if not c["eligible"]) == 3
-
-
-@pytest.mark.asyncio
-async def test_count_cue_review_candidates_parity(
-    session: AsyncSession,
-    old_review: ModuleType,
-    seed_cue_set: Callable[..., Awaitable[tuple[FileRecord, object, object]]],
-) -> None:
-    for i in range(2):
-        await seed_cue_set(eligible=True, original_filename=f"parity-count-elig-{i}.mp3")
-    await seed_cue_set(eligible=False, original_filename="parity-count-gated.mp3")
-
-    old_count = await old_review.count_cue_review_candidates(session)
-    new_count = await new_review.count_cue_review_candidates(session)
-
-    assert old_count == new_count == 3
-
-
-# The N+1 fix's QUERY COUNT proof -- a different claim from parity above, kept in its own test.
-
-
-@pytest.mark.asyncio
-async def test_cue_review_cards_query_count_is_not_linear_in_eligible_tracklists(
-    session: AsyncSession,
-    old_review: ModuleType,
-) -> None:
-    """The cross-function N+1 acceptance criterion, measured directly: OLD scales with N, NEW does not.
-
-    Five eligible tracklists: OLD calls ``_build_cue_tracks`` once per card inside the render loop
-    (a query pair per tracklist, on top of the eligible-set query itself) -- NEW fetches the whole
-    eligible half's cue tracks in ONE batched round-trip pair before building any card.
-    """
-    n = 5
-    for i in range(n):
-        await _seed_eligible_cue_tracklist(session, artist=f"Query Count Artist {i}")
-
-    counting_old = _CountingSession(session)
-    old_cards = await old_review.get_cue_review_cards(counting_old)  # type: ignore[arg-type]
-
-    counting_new = _CountingSession(session)
-    new_cards = await new_review.get_cue_review_cards(counting_new)  # type: ignore[arg-type]
-
-    assert len([c for c in old_cards if c["eligible"]]) == n
-    assert len([c for c in new_cards if c["eligible"]]) == n
-
-    # OLD: linear in n (a query pair per card, plus the eligible + gated set queries).
-    # Measured: n=5 -> old=12, new=4; n=20 -> old=42, new=4 -- constant vs linear, exactly the
-    # shape the cross-function N+1 acceptance criterion asks to prove.
-    assert counting_old.executes >= 1 + 2 * n
-    # NEW: constant in n (eligible query + ONE batched track/discogs pair + gated query).
-    assert counting_new.executes <= 4
-    # The headline assertion: fixing the N+1 measurably drops the query count, not just moves it.
-    assert counting_new.executes < counting_old.executes

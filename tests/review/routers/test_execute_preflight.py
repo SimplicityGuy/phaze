@@ -223,29 +223,19 @@ async def test_duplicate_group_count_is_a_corpus_count_not_the_pager_page_length
 
 
 @pytest.mark.asyncio
-async def test_cue_candidate_count_covers_both_halves_without_building_any_cue_text(
+async def test_cue_candidate_count_counts_every_gated_legacy_card(
     session: AsyncSession,
     seed_cue_set: Callable[..., Awaitable[tuple[object, object, object]]],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``count_cue_review_candidates`` counts eligible + gated, and calls no cue generator.
+    """``count_cue_review_candidates`` is one COUNT over the gated legacy set, timed or not (ADR-0027 (retire legacy timestamp qualification)).
 
-    The generator assertion is the CR-12-2 half and is not incidental: producing this number used
-    to run ``generate_cue_content`` for up to ``_MAX_REVIEW_ROWS`` sets and throw every string away.
-    Patching it to explode proves the count path never reaches it, which a count-only assertion
-    would not.
+    The count is a real query, not ``len()`` of the capped card reader (phaze-tzy6s.17).
     """
-    import phaze.services.review as review_module
     from phaze.services.review import count_cue_review_candidates
 
-    def _explode(*_args: object, **_kwargs: object) -> str:
-        raise AssertionError("counting cue candidates must not generate cue text")
-
-    await seed_cue_set(eligible=True, original_filename="set-a.mp3")
-    await seed_cue_set(eligible=True, original_filename="set-b.mp3")
-    await seed_cue_set(eligible=False, original_filename="set-c.mp3")
-
-    monkeypatch.setattr(review_module, "generate_cue_content", _explode)
+    await seed_cue_set(timestamped=True, original_filename="set-a.mp3")
+    await seed_cue_set(timestamped=True, original_filename="set-b.mp3")
+    await seed_cue_set(timestamped=False, original_filename="set-c.mp3")
 
     assert await count_cue_review_candidates(session) == 3
 

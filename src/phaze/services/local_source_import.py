@@ -455,6 +455,10 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
         .execution_options(populate_existing=True)
     )
     payload = {**command.model_dump(mode="json"), "actor": actor}
+    if command.replaced_by_observation_id is None:
+        # Absent unless used, so the payload of every decision made before the field existed still
+        # compares equal on replay.
+        payload.pop("replaced_by_observation_id")
     previous = await session.scalar(select(ProviderSelectionEvent).where(ProviderSelectionEvent.decision_id == command.decision_id))
     if previous is not None:
         if previous.decision_payload != payload:
@@ -536,6 +540,8 @@ async def decide_local_source(session: AsyncSession, command: SourceDecision, *,
     else:
         if current is not None and current.observation_id == observation.id:
             raise ValueError("Rejecting an active selected source requires choosing a replacement")
+        if command.replaced_by_observation_id is not None and (current is None or current.observation_id != command.replaced_by_observation_id):
+            raise ValueError("A replacement must be the recording's selected source")
         candidate.status = "rejected"
     session.add(
         ProviderSelectionEvent(

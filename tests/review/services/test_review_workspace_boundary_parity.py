@@ -103,22 +103,6 @@ async def test_dedupe_workspace_preserves_pagination_and_order(
     assert len(actual) == 1
 
 
-@pytest.mark.asyncio
-async def test_cue_workspace_preserves_eligible_then_gated_order(
-    session: AsyncSession,
-    baseline_review: Any,
-    seed_cue_set: Callable[..., Awaitable[tuple[FileRecord, object, object]]],
-) -> None:
-    await seed_cue_set(eligible=False, original_filename="boundary-gated.mp3")
-    await seed_cue_set(eligible=True, original_filename="boundary-eligible.mp3")
-
-    expected = await baseline_review.get_cue_review_cards(session)
-    actual = await review.get_cue_review_cards(session)
-
-    assert actual == expected
-    assert [card["eligible"] for card in actual] == [True, False]
-
-
 class _FailingNested:
     async def __aenter__(self) -> None:
         raise RuntimeError("synthetic read failure")

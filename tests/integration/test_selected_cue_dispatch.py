@@ -75,6 +75,9 @@ async def test_real_selected_cue_dispatch_authenticated_worker_and_stale_refusal
         assert beat.status_code == 204 and await agent_supports_selected_cue(session, agent.id)
         preview = await client.get(f"/cue/files/{media.id}/preview")
         assert "INDEX 01 00:01:01" in preview.text and "Generate reviewed CUE artifact" in preview.text
+        # phaze-efu0, carried over from the removed per-tracklist surface: the generate form disables its
+        # button while the POST is in flight, so a second click cannot queue a phantom second write.
+        assert 'hx-disabled-elt="find button"' in preview.text
         queued = await client.post(f"/cue/files/{media.id}/generate", data=form)
         assert queued.status_code == 200 and "artifact queued" in queued.text and len(router.captures) == 1
         _, task_name, kwargs = router.captures[0]
@@ -297,7 +300,8 @@ async def test_missing_and_revoked_agent_refuse_selected_capability(session, see
     assert not await agent_supports_selected_cue(session, agent.id)
 
 
-async def test_explicit_selected_authority_refuses_legacy_generate_with_recoverable_row(client, session):
+async def test_explicit_selected_authority_hides_the_legacy_card_and_has_no_legacy_generate(client, session):
+    """A recording with a selected source shows no legacy cue card, and no per-tracklist write exists (ADR-0027 (retire legacy timestamp qualification))."""
     from tests.review.routers.test_cue import _create_approved_tracklist_with_file
 
     media, companion, raw = await inventory(session, CUE, "cue")
@@ -305,9 +309,11 @@ async def test_explicit_selected_authority_refuses_legacy_generate_with_recovera
     await decide_local_source(session, decision(media, companion, imported.tracklist_observation_id, ordinal=1), actor="reviewer")
     session.add(RenameProposal(file_id=media.id, proposed_filename=media.original_filename, status=ProposalStatus.EXECUTED))
     legacy, _ = await _create_approved_tracklist_with_file(session)
+    unselected, _ = await _create_approved_tracklist_with_file(session, artist="Other Artist")
     legacy.file_id = media.id
     await session.commit()
     _, router = install_fake_queues(client)
+    workspace = await client.get("/s/cue", headers={"HX-Request": "true"})
+    assert f'id="cue-card-{legacy.id}"' not in workspace.text and f'id="cue-card-{unselected.id}"' in workspace.text
     response = await client.post(f"/cue/{legacy.id}/generate")
-    assert response.status_code == 200 and "explicitly selected source" in response.text
-    assert f'id="cue-row-{legacy.id}"' in response.text and not router.captures
+    assert response.status_code == 404 and not router.captures

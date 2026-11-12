@@ -1,0 +1,99 @@
+{% import "ui/primitives.html" as ui %}
+{# phaze-2dxhd: bulk review of unambiguous CUE link candidates. Nothing here selects anything until
+   the operator checks rows and presses Approve or Reject; each checked row then goes through the
+   same audited single-review decision. Only rows checked on THIS page are sent, each with a review
+   token naming exactly what it was shown with -- a row that changed since refuses the whole batch.
+   Ambiguous candidates are listed below with their reason and are never offered for bulk approval;
+   the CUE conflicts queue (phaze-drote) decides them. #}
+<div id="cue-link-review" x-data="{ selected: 0, count() { this.selected = $root.querySelectorAll('[data-cue-link-select]:checked').length } }" x-on:change="count()">
+    {% if outcome is defined and outcome %}
+    <div data-cue-link-outcome role="status" aria-live="polite" class="mb-3 rounded-md border px-3 py-2 text-sm {{ 'border-red-300 text-warn' if failed else 'border-green-300 text-gray-800 dark:text-gray-200' }}">
+        {% if outcome.applied %}
+            {{ 'Approved' if outcome.action == 'select' else 'Rejected' }} {{ outcome.applied | length }} CUE link{{ '' if outcome.applied | length == 1 else 's' }}. Each decision is recorded in the selection history.
+        {% elif outcome.stale %}
+            {{ outcome.stale | length }} checked candidate{{ '' if outcome.stale | length == 1 else 's' }} changed after this page was shown, so nothing was applied. The review below is current; check the rows again.
+        {% else %}
+            Nothing was applied: {{ outcome.error }}
+        {% endif %}
+    </div>
+    {% endif %}
+    <p class="text-sm text-gray-600 dark:text-gray-300">
+        <strong data-cue-link-proposed-total>{{ proposed_total | thousands }}</strong> unambiguous CUE link{{ '' if proposed_total == 1 else 's' }} awaiting review ·
+        <strong data-cue-link-excluded-total>{{ excluded_total | thousands }}</strong> excluded from bulk review.
+        Approving selects the CUE as the recording's tracklist source with the FILE entry shown; rejecting skips it. Open a recording to review one candidate in full.
+    </p>
+    {% if groups %}
+    <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+        <p class="text-xs text-muted"><span x-text="selected">0</span> checked on this page</p>
+        <div class="flex flex-col gap-2 sm:ml-auto sm:flex-row">
+            <button type="button" hx-post="/pipeline/cue-link-review/decide" hx-include="#cue-link-review [data-cue-link-select]" hx-vals='{"action": "select"}'
+                    hx-target="#cue-link-review" hx-swap="outerHTML" hx-disabled-elt="this" x-bind:disabled="selected === 0" disabled
+                    class="{{ ui.btn('primary', 'md') }}">Approve checked</button>
+            <button type="button" hx-post="/pipeline/cue-link-review/decide" hx-include="#cue-link-review [data-cue-link-select]" hx-vals='{"action": "reject"}'
+                    hx-target="#cue-link-review" hx-swap="outerHTML" hx-disabled-elt="this" x-bind:disabled="selected === 0" disabled
+                    class="{{ ui.btn('secondary', 'md') }}">Reject checked</button>
+        </div>
+    </div>
+    {% for method, rows in groups %}
+    <section class="mt-4" data-cue-link-group="{{ method }}" aria-labelledby="cue-link-group-{{ method }}">
+        <h4 id="cue-link-group-{{ method }}" class="font-semibold">{{ method_labels[method] }} <span class="text-sm font-normal text-muted">· {{ proposed_counts[method] | thousands }} in total, {{ rows | length }} on this page</span></h4>
+        <div class="relative mt-2 overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
+            <table class="w-full text-left text-sm">
+                <thead class="table-head"><tr class="bg-gray-50 dark:bg-phaze-panel">
+                    <th class="table-th p-3"><label class="inline-flex items-center gap-1"><input type="checkbox" data-cue-link-group-toggle aria-label="Check every {{ method_labels[method] | lower }} row on this page"
+                        x-on:change="$el.closest('[data-cue-link-group]').querySelectorAll('[data-cue-link-select]').forEach(box => box.checked = $el.checked)"> All</label></th>
+                    <th class="table-th p-3">Recording</th><th class="table-th p-3">CUE file</th><th class="table-th p-3">FILE entry used</th><th class="table-th p-3">Tracks</th></tr></thead>
+                <tbody>
+                {% for row in rows %}
+                    <tr class="border-t border-gray-200 align-top dark:border-phaze-border" data-cue-link-row="{{ row.candidate_id }}">
+                        <td class="p-3"><input type="checkbox" name="review_tokens" value="{{ row.token }}" data-cue-link-select aria-label="Check {{ row.media_filename }}"></td>
+                        <td class="p-3"><a class="text-link hover:underline break-all" href="/files/{{ row.media_id }}#companion-sources">{{ row.media_filename }}</a>
+                            {% if row.set_artist or row.set_event %}<p class="text-xs text-muted">{{ row.set_artist or '' }}{% if row.set_artist and row.set_event %} · {% endif %}{{ row.set_event or '' }}</p>{% endif %}</td>
+                        <td class="p-3">{% if row.source_file_id %}<a class="text-link hover:underline break-all" href="/files/{{ row.source_file_id }}#companion-sources">{{ row.source_filename }}</a>{% else %}{{ row.source_filename or 'Unknown' }}{% endif %}</td>
+                        <td class="p-3" data-cue-link-ordinal="{{ row.cue_file_ordinal }}">FILE {{ row.cue_file_ordinal }} <span class="break-all">“{{ row.file_name }}”</span>
+                            <p class="text-xs text-muted">{{ {'single_file': 'The only FILE in this CUE', 'file_name': 'Names this recording', 'file_stem': 'Same name as this recording, other extension'}[row.ordinal_basis] }}</p></td>
+                        <td class="p-3">{{ row.track_count }} <span class="text-xs text-muted">· {{ row.timed_count }} with exact offsets</span></td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {% endfor %}
+    <nav class="mt-3 flex items-center gap-3 text-sm" aria-label="CUE link review pages">
+        {% if page > 1 %}<a href="/pipeline/cue-link-review?page={{ page - 1 }}&amp;excluded_page={{ excluded_page }}" hx-get="/pipeline/cue-link-review?page={{ page - 1 }}&amp;excluded_page={{ excluded_page }}" hx-target="#cue-link-review" hx-swap="outerHTML" class="text-link">Previous</a>{% endif %}
+        <span>Page {{ page }}</span>
+        {% if has_next %}<a href="/pipeline/cue-link-review?page={{ page + 1 }}&amp;excluded_page={{ excluded_page }}" hx-get="/pipeline/cue-link-review?page={{ page + 1 }}&amp;excluded_page={{ excluded_page }}" hx-target="#cue-link-review" hx-swap="outerHTML" class="text-link">Next</a>{% endif %}
+    </nav>
+    {% else %}
+    <p class="mt-3 text-sm text-muted" data-cue-link-empty>No unambiguous CUE link candidates are awaiting review.</p>
+    {% endif %}
+    {% if excluded %}
+    <section class="mt-6" aria-labelledby="cue-link-excluded-heading">
+        <h4 id="cue-link-excluded-heading" class="font-semibold">Not offered for bulk review</h4>
+        {% if excluded_counts.get('multiple_cues') or excluded_counts.get('file_ordinal') %}<p class="mt-1 text-xs text-muted" data-cue-link-conflicts-hint>Ambiguous CUEs are decided one recording at a time under <a class="text-link hover:underline" href="#cue-conflicts-heading">Resolve CUE conflicts</a>.</p>{% endif %}
+        <ul class="mt-1 text-xs text-muted">
+            {% for reason, total in excluded_counts.items() %}<li data-cue-link-excluded-count="{{ reason }}">{{ 'Ambiguous: ' if reason in ambiguity_reasons else '' }}{{ reason_labels[reason] }} · {{ total | thousands }}</li>{% endfor %}
+        </ul>
+        <div class="relative mt-2 overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
+            <table class="w-full text-left text-sm">
+                <thead class="table-head"><tr class="bg-gray-50 dark:bg-phaze-panel"><th class="table-th p-3">Recording</th><th class="table-th p-3">CUE file</th><th class="table-th p-3">Reason</th></tr></thead>
+                <tbody>
+                {% for row in excluded %}
+                    <tr class="border-t border-gray-200 align-top dark:border-phaze-border" data-cue-link-excluded="{{ row.candidate_id }}" data-reason="{{ row.reason }}">
+                        <td class="p-3"><a class="text-link hover:underline break-all" href="/files/{{ row.media_id }}#companion-sources">{{ row.media_filename }}</a></td>
+                        <td class="p-3 break-all">{{ row.source_filename or 'Unknown' }}</td>
+                        <td class="p-3">{% if row.reason in ambiguity_reasons %}<span class="font-medium text-warn">Ambiguous:</span> {% endif %}{{ reason_labels[row.reason] }}{% if row.detail %} <span class="text-xs text-muted">({{ row.detail }})</span>{% endif %}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <nav class="mt-3 flex items-center gap-3 text-sm" aria-label="Excluded CUE link pages">
+            {% if excluded_page > 1 %}<a href="/pipeline/cue-link-review?page={{ page }}&amp;excluded_page={{ excluded_page - 1 }}" hx-get="/pipeline/cue-link-review?page={{ page }}&amp;excluded_page={{ excluded_page - 1 }}" hx-target="#cue-link-review" hx-swap="outerHTML" class="text-link">Previous</a>{% endif %}
+            <span>Page {{ excluded_page }}</span>
+            {% if excluded_has_next %}<a href="/pipeline/cue-link-review?page={{ page }}&amp;excluded_page={{ excluded_page + 1 }}" hx-get="/pipeline/cue-link-review?page={{ page }}&amp;excluded_page={{ excluded_page + 1 }}" hx-target="#cue-link-review" hx-swap="outerHTML" class="text-link">Next</a>{% endif %}
+        </nav>
+    </section>
+    {% endif %}
+</div>

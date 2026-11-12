@@ -231,10 +231,10 @@ just show-db-history         # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-094)
+### Post-baseline chain (040-097)
 
-`alembic/versions/` holds **56** files: the `039` baseline plus a linear chain to the current
-head, **`094`**.
+`alembic/versions/` holds **59** files: the `039` baseline plus a linear chain to the current
+head, **`097`**.
 
 | Rev | Change |
 |-----|--------|
@@ -292,9 +292,12 @@ head, **`094`**.
 | `091` | Order reads of one provider source object by a monotonic `read_seq` (counter on `provider_source_objects`, append-only `provider_source_reads`) instead of wall-clock `retrieved_at`; observations stay immutable; backfill by (`retrieved_at`, `id`)  |
 | `092` | Persist remote lookup batch cursors, deduplicated recording/provider work, batch memberships and bounded successful-read continuation evidence |
 | `093` | Add nullable `metadata.duration_source` (`NULL` = legacy, `tags` = the tag reader's length, `audio_frames` = recomputed from the real MPEG frames behind a junk prefix), constrained to those values; existing rows untouched |
-| `094` | Add nullable `analysis.coarse_work_done` / `analysis.coarse_work_total`, the coarse work-step counters `coarse_work_percent` is computed from, so the analyze queue can show `step a/T`; `NULL` for existing rows and for agents that predate them — **head** |
+| `094` | Add nullable `analysis.coarse_work_done` / `analysis.coarse_work_total`, the coarse work-step counters `coarse_work_percent` is computed from, so the analyze queue can show `step a/T`; `NULL` for existing rows and for agents that predate them |
+| `095` | Create the cluster-wide read-only role `analytics_ro` and the seven stable `analytics_*` views it may `SELECT` (no base-table privilege); see [Read-only analytics access](analytics-read-only-access.md) |
+| `096` | Publish each agent's container path prefixes to `analytics_ro`: new view `analytics_agent_path_prefixes` (one row per agent and prefix) and `agent_id` appended to `analytics_files` so a file joins to its agent; no credential column is projected |
+| `097` | Add `ix_files_created_at_id` on `files (created_at, id)`, built `CONCURRENTLY`: the cloud staging walk's FIFO keyset order, so a page is an index scan that stops after its `LIMIT` instead of a sort of every awaiting row — **head** |
 
-**Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
+**Five migrations in this chain (`048`, `050`, `058`, `081`, `097`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
 the same three load-bearing properties:**
 

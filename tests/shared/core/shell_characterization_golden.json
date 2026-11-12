@@ -36,6 +36,8 @@
     "GET /pipeline/",
     "GET /pipeline/analyze-files",
     "GET /pipeline/analyze-queue/waiting",
+    "GET /pipeline/cue-conflicts",
+    "GET /pipeline/cue-link-review",
     "GET /pipeline/files",
     "GET /pipeline/files/{file_id}/trace/{stage}",
     "GET /pipeline/lanes/{backend_id}",
@@ -107,7 +109,6 @@
     "POST /api/v1/extract-metadata",
     "POST /api/v1/proposals/generate",
     "POST /cue/files/{media_id}/generate",
-    "POST /cue/{tracklist_id}/generate",
     "POST /duplicates/resolve-all",
     "POST /duplicates/review-all",
     "POST /duplicates/undo-all",
@@ -124,6 +125,8 @@
     "POST /pipeline/analysis-failed/retry",
     "POST /pipeline/analyze",
     "POST /pipeline/backfill-cloud",
+    "POST /pipeline/cue-conflicts/resolve",
+    "POST /pipeline/cue-link-review/decide",
     "POST /pipeline/extract-metadata",
     "POST /pipeline/files/{file_id}/analysis-failed/retry",
     "POST /pipeline/files/{file_id}/metadata-failed/retry",
@@ -1329,6 +1332,16 @@
         "button",
         "attention-pill",
         "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
+        "div",
+        "cue-conflicts",
+        "{\"hx-get\": \"/pipeline/cue-conflicts\", \"hx-swap\": \"outerHTML\", \"hx-trigger\": \"load\"}"
+      ],
+      [
+        "div",
+        "cue-link-review",
+        "{\"hx-get\": \"/pipeline/cue-link-review\", \"hx-swap\": \"outerHTML\", \"hx-trigger\": \"load\"}"
       ],
       [
         "div",

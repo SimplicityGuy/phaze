@@ -25,8 +25,10 @@ ADR-0012 (verification fidelity and operator attribution) RULE 3 DECIDES THE SEC
 with the tool that produced it." Re-reading ``current_path`` through the execute path that wrote it
 round-trips perfectly and CANNOT exhibit this defect at any fidelity.
 
-The consumer chosen is the CUE writer (``routers.cue._eligible_cue_text`` ->
-``services.cue_generator.generate_cue_content``), and the choice is deliberate over the tag writer:
+The consumer chosen is the CUE writer (``services.selected_cue.build_selected_cue_artifact`` ->
+``services.cue_generator.generate_cue_content``; the per-tracklist ``routers.cue._eligible_cue_text``
+this first used was retired by ADR-0027 (retire legacy timestamp qualification)), and the choice is
+deliberate over the tag writer:
 
   * The CUE ``FILE "<name>" MP3`` line is a PURE TEXT artifact. The mismatch it exhibits is
     visible in bytes, on every platform, with no filesystem involved.
@@ -38,7 +40,7 @@ The consumer chosen is the CUE writer (``routers.cue._eligible_cue_text`` ->
 
 The two tests also chain in the product's own order rather than in a contrived one: the execute run
 in the first test is what flips the proposal to EXECUTED, which is what makes ``is_applied`` true,
-which is what makes the tracklist CUE-eligible in the second.
+which is what makes the selected CUE generatable in the second.
 
 POPULATION (ADR-0012 (verification fidelity and operator attribution) rule 4 -- measured, not adjectival). Measured against the live catalog on
 2026-08-24 and recorded on the bead: 0 of 11,428 ``files.current_path`` rows are non-NFC, 60 of
@@ -63,14 +65,13 @@ from phaze.database import get_session
 from phaze.enums.execution import ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers import agent_proposals
-from phaze.routers.cue import _eligible_cue_text
 from phaze.schemas.agent_execution import ExecutionLogCreate
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.agent_client import PhazeAgentClient
+from phaze.services.selected_cue import build_selected_cue_artifact
 from phaze.tasks.execution import _report_success, _ReportContext
-from tests._timing import qualified_timing
+from tests._selected_cue import cue_sheet, select_cue
 
 
 if TYPE_CHECKING:
@@ -256,7 +257,7 @@ async def test_the_persisted_current_path_reaches_the_cue_writer_in_the_ingest_f
 ) -> None:
     """ADR-0012 (verification fidelity and operator attribution) rule 3: hand the persisted row to the CUE writer, a consumer that did not write it.
 
-    ``routers.cue._eligible_cue_text`` copies ``Path(file_record.current_path).name`` straight into
+    ``services.selected_cue.build_selected_cue_artifact`` copies ``Path(file.current_path).name`` straight into
     the CUE ``FILE "<name>"`` line. The archive's own filenames are NFC (measured: 0 of 11,428 rows
     non-NFC), so a CUE emitting the NFD spelling names a file that does not exist under that byte
     sequence on any normalization-sensitive filesystem -- which is what the app container and the
@@ -267,50 +268,20 @@ async def test_the_persisted_current_path_reaches_the_cue_writer_in_the_ingest_f
     file_id, proposal_id = await _seed_file_and_approved_proposal(session, agent.id)
 
     # The same execute run under test above: it is also what flips the proposal to EXECUTED, which
-    # is what `is_applied` requires for the tracklist to be CUE-eligible at all.
+    # is what `is_applied` requires before a CUE artifact may be generated at all.
     await _run_execute_path_report(session, agent, token, file_id, proposal_id)
 
-    # Both ids are bound BEFORE the commit below. `session.commit()` expires every instance, so
-    # reading `tracklist.id` afterwards would trigger a synchronous refresh outside the greenlet
-    # and raise MissingGreenlet -- a fixture failure that looks nothing like the defect under test.
-    tracklist_id = uuid.uuid4()
-    version_id = uuid.uuid4()
-    tracklist = Tracklist(
-        id=tracklist_id,
-        external_id=f"ext-{uuid.uuid4().hex[:8]}",
-        source_url=f"https://example.invalid/tracklist/{uuid.uuid4().hex[:6]}",
-        file_id=file_id,
-        match_confidence=95,
-        artist="Artist Ångström",
-        event="Live Set 01",
-        latest_version_id=version_id,
-        source="manual",
-        status="approved",
+    session.expire_all()
+    file_record = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    await select_cue(
+        session, file_record, cue_sheet(("Track Artist 1", "Track Title 1", "10:00:00"), ("Track Artist 2", "Track Title 2", "20:00:00"))
     )
-    session.add(tracklist)
-    session.add(TracklistVersion(id=version_id, tracklist_id=tracklist_id, version_number=1))
-    await session.flush()
-    for position in (1, 2):
-        session.add(
-            TracklistTrack(
-                id=uuid.uuid4(),
-                version_id=version_id,
-                position=position,
-                artist=f"Track Artist {position}",
-                title=f"Track Title {position}",
-                timestamp=f"0:{position * 10}:00",
-                timestamp_evidence=qualified_timing(f"0:{position * 10}:00", file_id),
-            )
-        )
     await session.commit()
     session.expire_all()
 
-    file_record = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    tracklist_row = (await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))).scalar_one()
+    cue_text = (await build_selected_cue_artifact(session, file_id)).content
 
-    cue_text = await _eligible_cue_text(session, tracklist_row, file_record)
-
-    assert cue_text is not None, "the tracklist was not CUE-eligible -- the seam was never reached"
+    assert "INDEX 01" in cue_text, "the selected CUE produced no tracks -- the seam was never reached"
     assert f'FILE "{_FILENAME_NFC}" MP3' in cue_text, (
         "the CUE writer named the audio file in a normalization form the archive does not use; "
         f"emitted FILE line: {next((line for line in cue_text.splitlines() if line.startswith('FILE ')), '<none>')!r}"

@@ -33,7 +33,6 @@ import statistics
 from typing import TYPE_CHECKING, Any
 
 from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, MOOD_NAMES
-from phaze.services.cue_generator import qualified_legacy_offset
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import camelot_number, key_name_for_camelot, modal_camelot
 from phaze.tracklist_providers.domain import ProviderTrack
@@ -41,7 +40,6 @@ from phaze.tracklist_providers.domain import ProviderTrack
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    import uuid
 
     from phaze.models.analysis import AnalysisWindow
     from phaze.models.tracklist import TracklistTrack
@@ -120,26 +118,28 @@ class TrackSegment:
         return MOOD_HUES.get(self.mood) if self.mood else None
 
 
-def _timestamped(tracks: Sequence[TracklistTrack | ProviderTrack], media_id: uuid.UUID | None) -> list[tuple[int, float]]:
-    """Qualified rational boundaries, converted to finite floats only at the analysis boundary."""
+def _timestamped(tracks: Sequence[TracklistTrack | ProviderTrack]) -> list[tuple[int, float]]:
+    """Qualified rational boundaries, converted to finite floats only at the analysis boundary.
+
+    Only a reviewed selected source's projected ``ProviderTrack`` can carry a qualified,
+    recording-bound offset. A legacy ``TracklistTrack`` is display-only and never yields a
+    boundary: its raw ``timestamp`` text carries no meaning or precision, and no revalidation
+    path exists to qualify it (docs/design/0027-retire-legacy-timestamp-qualification.md).
+    """
     result: list[tuple[int, float]] = []
     for track in tracks:
-        if isinstance(track, ProviderTrack):
-            timestamp = track.timestamp
-            offset = (
-                timestamp.offset.as_fraction()
-                if timestamp is not None and timestamp.kind == "offset" and timestamp.offset_usability == "qualified" and timestamp.offset is not None
-                else None
-            )
-        else:
-            offset = qualified_legacy_offset(track.timestamp, track.timestamp_evidence, media_id)
-        try:
-            start = float(offset) if offset is not None else None
-        except OverflowError:
-            start = None
-        if start is None or not math.isfinite(start) or start < 0:
+        if not isinstance(track, ProviderTrack):
             continue
-        result.append((track.position, float(start)))
+        timestamp = track.timestamp
+        if timestamp is None or timestamp.kind != "offset" or timestamp.offset_usability != "qualified" or timestamp.offset is None:
+            continue
+        try:
+            start = float(timestamp.offset.as_fraction())
+        except OverflowError:
+            continue
+        if not math.isfinite(start) or start < 0:
+            continue
+        result.append((track.position, start))
     return result
 
 
@@ -245,8 +245,6 @@ def build_track_segments(
     tracks: Sequence[TracklistTrack | ProviderTrack],
     windows: Sequence[AnalysisWindow],
     duration_sec: float | None,
-    *,
-    media_id: uuid.UUID | None = None,
 ) -> list[TrackSegment]:
     """Join the scraped tracklist to the window projection, one segment per timestamped track.
 
@@ -259,7 +257,7 @@ def build_track_segments(
     ``duration_sec`` is the file's own duration. ``None``, non-finite, or a value at or before
     the last track's start leaves the final segment open-ended; see ``TrackSegment.end_sec``.
     """
-    bounds = _timestamped(tracks, media_id)
+    bounds = _timestamped(tracks)
     if not bounds:
         return []
     # Keyed by position rather than zipped with ``bounds``: ``_timestamped`` drops untimed
