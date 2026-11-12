@@ -32,7 +32,17 @@ import uuid
 import structlog
 
 from phaze.schemas.local_source_import import SourceDecision
-from phaze.services.cue_link_review import METHOD_ORDER, CueLinkRow, _key, _ordinal_for, _replace, build_rows, cue_files, load_population
+from phaze.services.cue_link_review import (
+    METHOD_ORDER,
+    CueLinkRow,
+    _key,
+    _ordinal_for,
+    _replace,
+    build_rows,
+    cue_files,
+    load_population,
+    load_track_prints,
+)
 from phaze.services.local_source_import import decide_local_source
 
 
@@ -118,17 +128,20 @@ async def load_cue_conflicts(session: AsyncSession, *, media_ids: Iterable[uuid.
             by_media.setdefault(item.cue.media_id, []).append(_replace(item.cue, cue_file_ordinal=ordinal, ordinal_basis=basis))
             if item.pending:
                 pending.add(item.cue.media_id)
-    conflicts: list[CueConflict] = []
+    ambiguous: dict[uuid.UUID, tuple[ConflictReason, tuple[CueLinkRow, ...]]] = {}
     for media_id, rows in by_media.items():
         if media_id in selected or media_id not in pending:
             continue
-        candidates = tuple(sorted(rows, key=lambda row: (METHOD_ORDER.index(row.method), _key(row.source_filename or ""), str(row.candidate_id))))
+        ordered = tuple(sorted(rows, key=lambda row: (METHOD_ORDER.index(row.method), _key(row.source_filename or ""), str(row.candidate_id))))
         if len(files[media_id]) > 1:
-            reason: ConflictReason = "multiple_cues"
-        elif candidates[0].cue_file_ordinal is None:
-            reason = "file_ordinal"
-        else:
-            continue
+            ambiguous[media_id] = ("multiple_cues", ordered)
+        elif ordered[0].cue_file_ordinal is None:
+            ambiguous[media_id] = ("file_ordinal", ordered)
+    # The track prints are read for the conflict set's candidates only, never for the whole population (phaze-2al7q.3).
+    prints = await load_track_prints(session, (row.candidate_id for _reason, rows in ambiguous.values() for row in rows))
+    conflicts: list[CueConflict] = []
+    for media_id, (reason, ordered) in ambiguous.items():
+        candidates = tuple(_replace(row, tracks=prints.get(row.candidate_id, ())) for row in ordered)
         identical, differing = _compare(candidates)
         conflicts.append(
             CueConflict(

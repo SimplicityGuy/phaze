@@ -514,3 +514,45 @@ async def test_the_cue_workspace_shows_the_conflicts_queue_and_the_bulk_page_poi
     assert {row["data-reason"] for row in bulk.select("[data-cue-link-excluded]")} == {"multiple_cues"}
     assert queue.select_one("[data-cue-conflicts-total]").get_text() == "1"
     assert queue.select_one('[data-cue-conflicts-count="multiple_cues"]') is not None
+
+
+async def test_track_prints_are_read_for_the_conflict_set_only_never_for_the_whole_population(session):
+    """phaze-2al7q.3 finding 4, PARTIAL mitigation: the per-track prints leave the population query.
+
+    Both CUE pages still read and classify every candidate on every request (bounded work is phaze-m16w5),
+    but the per-track fingerprint -- most of the query's cost at production scale -- is computed only for
+    the candidates of recordings shown in the conflicts queue, and never by the bulk link review.
+    """
+    from sqlalchemy import event
+
+    conflicted = await media_row(session, filename="set.mp3")
+    _, one = await import_cue(session, conflicted, ONE_FILE, method="reference", name="one.cue")
+    _, two = await import_cue(session, conflicted, OTHER_CLOSER, method="stem", name="two.cue")
+    plain = await media_row(session, filename="plain.mp3")
+    _, unambiguous = await import_cue(session, plain, ONE_FILE, method="reference", name="plain.cue")
+    await session.commit()
+    conflict_candidates = {(await _candidate(session, one.tracklist_observation_id)).id, (await _candidate(session, two.tracklist_observation_id)).id}
+    unambiguous_candidate = (await _candidate(session, unambiguous.tracklist_observation_id)).id
+
+    executed: list[tuple[str, object]] = []
+
+    def _record(_conn, _cursor, statement, parameters, _context, _executemany) -> None:
+        executed.append((statement, parameters))
+
+    engine = session.sync_session.get_bind()
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        review = await load_cue_link_review(session)
+        review_statements = list(executed)
+        executed.clear()
+        (conflict,) = await load_cue_conflicts(session)
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+
+    assert [row.candidate_id for row in review.proposed] == [unambiguous_candidate]
+    assert not any("md5(" in statement for statement, _ in review_statements), "the bulk review computes no per-track print"
+    print_queries = [(statement, parameters) for statement, parameters in executed if "md5(" in statement]
+    assert len(print_queries) == 1
+    bound = {value for value in (print_queries[0][1] or ()) if isinstance(value, uuid.UUID)}
+    assert bound == conflict_candidates, "prints are read for the conflict set's candidates and nothing else"
+    assert conflict.differing == (3,), "the comparison still sees the prints"

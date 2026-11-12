@@ -222,7 +222,9 @@ def _ordinal_for(file_names: Sequence[tuple[int, str]], media_filename: str) -> 
 
 
 def _file_shape(tracks: Any) -> tuple[tuple[tuple[int, str], ...], dict[int, tuple[int, int]], tuple[TrackPrint, ...]]:
-    """FILE names, per-FILE (tracks, qualified offsets) and per-track prints from the stored track evidence."""
+    """FILE names, per-FILE (tracks, qualified offsets) and per-track prints from the stored track evidence.
+
+    Prints come back empty unless ``tracks`` carries them (:func:`_track_prints`, conflicts only)."""
     names: dict[int, str] = {}
     counts: dict[int, list[int]] = defaultdict(lambda: [0, 0])
     prints: list[TrackPrint] = []
@@ -235,26 +237,39 @@ def _file_shape(tracks: Any) -> tuple[tuple[tuple[int, str], ...], dict[int, tup
         names.setdefault(ordinal, match.group(2))
         counts[ordinal][0] += 1
         counts[ordinal][1] += track.get("q") == "qualified"
+        if "h" not in track:
+            continue
         position = track.get("p")
         title = track.get("n")
         prints.append((ordinal, position if isinstance(position, int) else 0, str(track.get("h")), title if isinstance(title, str) else None))
     return tuple(sorted(names.items())), {ordinal: (value[0], value[1]) for ordinal, value in counts.items()}, tuple(prints)
 
 
-def _population_stmt(media_ids: Iterable[uuid.UUID] | None) -> Any:
-    source_file = aliased(FileRecord)
-    # Aliased: the shared observation query's own FileCompanion subqueries would otherwise auto-correlate
-    # to a plain outer FileCompanion join and lose their FROM clause.
-    link = aliased(FileCompanion)
-    # Per track: the FILE evidence it was parsed under, its offset usability, position, a short title
-    # and a fingerprint of what a consumer reads (artist, title, exact offset, usability) -- a few
-    # bytes per track instead of the whole stored payload. Fixed SQL over this row's own payload;
-    # nothing here is interpolated from input.
-    track_shape = literal_column(
+def _track_shape() -> Any:
+    """Per track: the FILE evidence it was parsed under and its offset usability -- all classification needs.
+
+    Fixed SQL over this row's own payload; nothing here is interpolated from input. The per-track PRINTS
+    (position, a short title and a content fingerprint) cost about three times as much and only the conflicts
+    queue reads them, so :func:`load_track_prints` fetches them for its candidates alone (phaze-2al7q.3).
+    """
+    return literal_column(
         "(SELECT jsonb_agg(jsonb_build_object("
         "'file', (SELECT e FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(t->'evidence') = 'array' THEN t->'evidence' ELSE '[]'::jsonb END) e"
         " WHERE left(e, 5) = 'FILE:' LIMIT 1),"
-        " 'q', t->'timestamp'->>'offset_usability',"
+        " 'q', t->'timestamp'->>'offset_usability'))"
+        " FROM jsonb_array_elements(CASE WHEN jsonb_typeof(provider_source_observations.payload->'tracks') = 'array'"
+        " THEN provider_source_observations.payload->'tracks' ELSE '[]'::jsonb END) t)",
+        JSONB,
+    )
+
+
+def _track_prints() -> Any:
+    """Per track: FILE evidence, position, a short title and a fingerprint of what a consumer reads (artist, title,
+    exact offset, usability) -- a few bytes per track instead of the whole stored payload."""
+    return literal_column(
+        "(SELECT jsonb_agg(jsonb_build_object("
+        "'file', (SELECT e FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(t->'evidence') = 'array' THEN t->'evidence' ELSE '[]'::jsonb END) e"
+        " WHERE left(e, 5) = 'FILE:' LIMIT 1),"
         " 'p', t->'position',"
         " 'n', left(t->>'title', 200),"
         " 'h', md5(jsonb_build_object('a', t->'artist', 't', t->'title', 'o', t->'timestamp'->'offset',"
@@ -263,6 +278,17 @@ def _population_stmt(media_ids: Iterable[uuid.UUID] | None) -> Any:
         " THEN provider_source_observations.payload->'tracks' ELSE '[]'::jsonb END) t)",
         JSONB,
     )
+
+
+def _population_stmt(media_ids: Iterable[uuid.UUID] | None) -> Any:
+    # PARTIAL MITIGATION, still O(population) (phaze-2al7q.3, finding 4): every request still reads and
+    # classifies every non-rejected local CUE candidate. Only the per-track prints left this query. The
+    # bounded version -- the shape stored at import, and SQL keyset paging -- is phaze-m16w5.
+    source_file = aliased(FileRecord)
+    # Aliased: the shared observation query's own FileCompanion subqueries would otherwise auto-correlate
+    # to a plain outer FileCompanion join and lose their FROM clause.
+    link = aliased(FileCompanion)
+    track_shape = _track_shape()
     selected = (
         select(ProviderRecordingSelection.observation_id)
         .where(ProviderRecordingSelection.media_id == FileRecord.id, ProviderRecordingSelection.kind == "tracklist")
@@ -443,6 +469,19 @@ async def load_population(session: AsyncSession, *, media_ids: Iterable[uuid.UUI
     return (await session.execute(_population_stmt(media_ids))).mappings().all()
 
 
+async def load_track_prints(session: AsyncSession, candidate_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, tuple[TrackPrint, ...]]:
+    """``candidate id -> its tracks' prints``, for exactly the candidates asked for. Reads only."""
+    wanted = list(candidate_ids)
+    if not wanted:
+        return {}
+    rows = await session.execute(
+        select(ProviderRecordingCandidate.id, _track_prints())
+        .join(Observation, Observation.id == ProviderRecordingCandidate.observation_id)
+        .where(ProviderRecordingCandidate.id.in_(wanted))
+    )
+    return {candidate_id: _file_shape(prints)[2] for candidate_id, prints in rows.all()}
+
+
 async def load_cue_link_review(session: AsyncSession, *, media_ids: Iterable[uuid.UUID] | None = None) -> CueLinkReview:
     """Classify every pending CUE link candidate (or only those of ``media_ids``). Reads only."""
     return _classify(await load_population(session, media_ids=media_ids))
@@ -518,5 +557,6 @@ __all__ = [
     "decide_cue_links",
     "load_cue_link_review",
     "load_population",
+    "load_track_prints",
     "parse_tokens",
 ]
