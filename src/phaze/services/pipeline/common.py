@@ -131,7 +131,7 @@ _BUSY_FUNCTION_TO_STAGE: dict[str, str] = {fn: stage for stage, fn in STAGE_TO_F
 # CUE-first scheduling (phaze-tdton): shared by the pending set and the cloud staging walk so they cannot drift.
 
 
-def cue_linked_media_clause(file_id: Any = FileRecord.id) -> ColumnElement[bool]:
+def cue_linked_media_clause() -> ColumnElement[bool]:
     """``EXISTS`` a recording candidate for this file whose observation was parsed from a CUE sheet.
 
     This is "CUE-linked media" (phaze-tdton): the media a CUE observation targets, at ANY review status.
@@ -142,13 +142,14 @@ def cue_linked_media_clause(file_id: Any = FileRecord.id) -> ColumnElement[bool]
     The documented count query (before/after a run) is
     ``cue_linked_analysis_coverage_stmt`` below.
 
-    ``file_id`` is the files-id column the EXISTS correlates to (default ``FileRecord.id``); the staging cursor passes an alias.
+    The cloud staging walk uses it to split the awaiting set into its ``cue`` and ``rest`` bands
+    (``services/pipeline/cloud.py::get_cloud_staging_candidates``).
     """
     return exists(
         select(ProviderRecordingCandidate.id)
         .join(ProviderSourceObservation, ProviderSourceObservation.id == ProviderRecordingCandidate.observation_id)
         .where(
-            ProviderRecordingCandidate.media_id == file_id,
+            ProviderRecordingCandidate.media_id == FileRecord.id,
             ProviderSourceObservation.payload["source_format"].as_string() == "cue",
         )
     )

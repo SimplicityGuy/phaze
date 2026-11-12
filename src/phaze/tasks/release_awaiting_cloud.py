@@ -59,7 +59,7 @@ from phaze.services import backend_breaker, cloud_staging
 from phaze.services.analysis_attempt import try_lock_analysis_attempt
 from phaze.services.cloud_budget import CloudBudgetState
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
-from phaze.services.pipeline import get_cloud_staging_candidates
+from phaze.services.pipeline import CLOUD_BANDS, CloudBand, get_cloud_staging_candidates
 from phaze.services.route_control import get_route_control
 from phaze.tasks.awaiting_ownership import cloud_candidate_available, has_stale_awaiting_ownership, reconcile_awaiting_ownership
 
@@ -114,7 +114,7 @@ _MIN_CANDIDATE_PAGE = 20
 # rows locked, the per-candidate ``_cloud_budget_for`` lookups, and time spent holding
 # pg_advisory_xact_lock. On its own this bound re-opened the phaze-9sqa starvation at its own size
 # (phaze-1l03t: 500 attempt-exhausted heads, the first routable row at rank 501, ``staged=0`` every tick).
-# ``_resume_cursor`` below is what lets a prefix of ANY length be walked past across ticks while every
+# ``_resume_cursors`` below is what lets a prefix of ANY length be walked past across ticks while every
 # single tick stays within this bound.
 _MAX_CANDIDATE_SCAN = 500
 
@@ -131,7 +131,18 @@ _MAX_CANDIDATE_SCAN = 500
 # Process-local by design, like ``_consecutive_all_held_ticks``: a controller restart resets it to the head,
 # which costs at most ``ceil(prefix / _MAX_CANDIDATE_SCAN)`` ticks of re-walking and nothing in correctness.
 # Only a COMMITTED tick advances it; the CR-02 rollback path leaves it where it was.
-_resume_cursor: tuple[datetime, uuid.UUID] | None = None
+#
+# phaze-2al7q.3: ONE cursor per band (``CLOUD_BANDS``: ``cue`` then ``rest``). The awaiting set used to be one
+# walk ordered CUE-rank-first, so a single cursor that had left the CUE rank could not see a file linked to a CUE
+# (or released from a hold) behind it until the walk wrapped -- up to ceil(70k / 500) ticks at production scale.
+# Each band now walks from its own position, the CUE band first every tick. A band's cursor changes only on a
+# tick that walked that band, under exactly the rules above.
+_resume_cursors: dict[CloudBand, tuple[datetime, uuid.UUID] | None] = dict.fromkeys(CLOUD_BANDS)
+
+# phaze-2al7q.3: the CUE band walks first, so it may spend at most this share of a tick's scan budget; the rest
+# band always gets the remainder. Neither band can starve the other: the CUE band is never preceded, and a CUE
+# band whose held prefix outruns its share carries a cursor while the rest band still gets at least half.
+_CUE_BAND_SCAN_SHARE = 2
 
 # How many CONSECUTIVE ticks that hold 100% of what they scanned it takes to escalate from the routine
 # per-tick INFO line to a WARNING. 3 ticks at the */5 cadence is ~15 min of a fully-stalled lane -- long
@@ -257,15 +268,18 @@ class _WalkState:
     * ``hold_reasons`` -- each held candidate binned by the ``select_backend`` filter that rejected it;
       feeds both the completion log line and the repeated-all-held WARNING.
     * ``scanned`` -- every row examined this tick across ALL pages (the ``_MAX_CANDIDATE_SCAN`` budget).
-    * ``resume_after`` -- the last row's ``(created_at, id)`` when the walk stopped on the scan budget with
-      free slots still open (phaze-1l03t); ``None`` for every other ending. Becomes ``_resume_cursor``
-      once the tick commits.
+    * ``resume_after`` -- per band WALKED this tick, the last row's ``(created_at, id)`` when that band's walk
+      stopped on its scan budget with free slots still open (phaze-1l03t), else ``None``. A band this tick
+      never reached has no entry, so its cursor stays where it was. Becomes ``_resume_cursors`` once the
+      tick commits.
+    * ``resumed`` -- the bands whose first page really came from past a carried cursor.
     """
 
     tally: dict[str, int] = field(default_factory=lambda: {"staged": 0, "skipped": 0})
     hold_reasons: Counter[str] = field(default_factory=Counter)
     scanned: int = 0
-    resume_after: tuple[datetime, uuid.UUID] | None = None
+    resume_after: dict[CloudBand, tuple[datetime, uuid.UUID] | None] = field(default_factory=dict)
+    resumed: set[CloudBand] = field(default_factory=set)
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +318,8 @@ class _TickContext:
 
 async def _next_candidate_page(
     walk: _TickContext,
+    band: CloudBand,
+    budget_left: int,
     page: list[tuple[FileRecord, datetime]],
     page_limit: int,
 ) -> tuple[list[tuple[FileRecord, datetime]], int] | None:
@@ -318,27 +334,27 @@ async def _next_candidate_page(
       non-starving lane ever takes (the first page filled the slots, so there is no second query).
     * **short page** -- the fetch returned fewer rows than its LIMIT, so the candidate set is exhausted.
       Nothing further exists to page to.
-    * **scan budget spent** -- ``_MAX_CANDIDATE_SCAN`` rows examined. Bounds lock footprint, per-candidate
-      attempt lookups, and advisory-lock hold time on a lane whose unroutable prefix is pathological.
-      This is the one stop that records ``walk.state.resume_after`` (phaze-1l03t), so the NEXT tick
-      continues from here instead of re-walking the same held prefix and never getting past it.
+    * **scan budget spent** -- the band's share of ``_MAX_CANDIDATE_SCAN`` examined (``budget_left`` is what
+      remains of it). Bounds lock footprint, per-candidate attempt lookups, and advisory-lock hold time on a
+      lane whose unroutable prefix is pathological. This is the one stop that records the band's
+      ``walk.state.resume_after`` (phaze-1l03t), so the NEXT tick continues that band from here instead of
+      re-walking the same held prefix and never getting past it.
     * **empty next page** -- the cursor ran off the end between pages.
 
     The cursor is the last row's ``(created_at, id)``, matching the query's composite ORDER BY exactly;
     ``created_at`` is immutable and ``id`` breaks its ties, so the walk can neither skip nor re-serve a row.
     """
     free_slots = _free_slots(walk.snapshot)
-    scanned = walk.state.scanned
     if free_slots <= 0 or len(page) < page_limit:
         return None
     last_file = page[-1][0]
-    if scanned >= _MAX_CANDIDATE_SCAN:
-        walk.state.resume_after = (last_file.created_at, last_file.id)
+    if budget_left <= 0:
+        walk.state.resume_after[band] = (last_file.created_at, last_file.id)
         return None
     # Ask for at least _MIN_CANDIDATE_PAGE (amortize the walk over a long unroutable prefix), never more
-    # than the scan budget still unspent.
-    next_limit = min(max(free_slots, _MIN_CANDIDATE_PAGE), _MAX_CANDIDATE_SCAN - scanned)
-    next_page = await get_cloud_staging_candidates(walk.session, next_limit, after=(last_file.created_at, last_file.id))
+    # than the band's scan budget still unspent.
+    next_limit = min(max(free_slots, _MIN_CANDIDATE_PAGE), budget_left)
+    next_page = await get_cloud_staging_candidates(walk.session, next_limit, band=band, after=(last_file.created_at, last_file.id))
     if not next_page:
         return None
     return next_page, next_limit
@@ -531,8 +547,11 @@ async def _stage_candidate_page(walk: _TickContext, page: list[tuple[FileRecord,
     return False
 
 
-async def _walk_candidate_pages(walk: _TickContext, first_page: tuple[list[tuple[FileRecord, datetime]], int]) -> None:
-    """Drive the phaze-9sqa paged FIFO walk: route a page, then decide whether to fetch the next.
+async def _walk_candidate_pages(walk: _TickContext, band: CloudBand, budget: int, first_page: tuple[list[tuple[FileRecord, datetime]], int]) -> bool:
+    """Drive the phaze-9sqa paged FIFO walk over ONE band: route a page, then decide whether to fetch the next.
+
+    ``budget`` is the rows this band may examine this tick. Returns True when the fileserver vanished
+    mid-walk, which ends the whole tick (no further band is walked).
 
     A page is the pair ``(rows, the LIMIT they were fetched with)`` -- the LIMIT is not decoration, it
     is what a short page is compared against to detect the end of the candidate set. ``first_page`` is
@@ -546,38 +565,78 @@ async def _walk_candidate_pages(walk: _TickContext, first_page: tuple[list[tuple
     the counters rather than a return value.
     """
     page, page_limit = first_page
+    walk.state.resume_after[band] = None
+    band_scanned = 0
     while True:
         walk.state.scanned += len(page)
+        band_scanned += len(page)
         fileserver_vanished = await _stage_candidate_page(walk, page)
-        next_page = None if fileserver_vanished else await _next_candidate_page(walk, page, page_limit)
+        if fileserver_vanished:
+            return True
+        next_page = await _next_candidate_page(walk, band, budget - band_scanned, page, page_limit)
         if next_page is None:
-            break
+            return False
         page, page_limit = next_page
 
 
-async def _first_candidate_page(session: AsyncSession, limit: int) -> tuple[list[tuple[FileRecord, datetime]], bool]:
-    """Fetch the tick's first page from the carried ``_resume_cursor``, wrapping to the FIFO head (phaze-1l03t).
+def _band_budget(band: CloudBand, scanned: int) -> int:
+    """Rows ``band`` may examine this tick: the CUE band's share, or what the tick has left for the rest band."""
+    if band == "cue":
+        return _MAX_CANDIDATE_SCAN // _CUE_BAND_SCAN_SHARE
+    return _MAX_CANDIDATE_SCAN - scanned
+
+
+async def _walk_bands(walk: _TickContext, first: tuple[CloudBand, list[tuple[FileRecord, datetime]], int]) -> None:
+    """Walk the CUE band, then the rest band, each from its own cursor and within its own scan budget (phaze-2al7q.3).
+
+    ``first`` is the band, rows and LIMIT of the first page the caller already fetched (it needs one to decide
+    whether there is any work at all before the fileserver gate). A band after it is fetched here, only while
+    free slots remain.
+    """
+    band, rows, page_limit = first
+    if await _walk_candidate_pages(walk, band, _band_budget(band, 0), (rows, page_limit)):
+        return
+    for later in CLOUD_BANDS[CLOUD_BANDS.index(band) + 1 :]:
+        budget = _band_budget(later, walk.state.scanned)
+        free_slots = _free_slots(walk.snapshot)
+        if free_slots <= 0 or budget <= 0:
+            return
+        limit = min(free_slots, budget)
+        rows, resumed = await _first_candidate_page(walk.session, later, limit)
+        if resumed:
+            walk.state.resumed.add(later)
+        if not rows:
+            walk.state.resume_after[later] = None
+            continue
+        if await _walk_candidate_pages(walk, later, budget, (rows, limit)):
+            return
+
+
+async def _first_candidate_page(session: AsyncSession, band: CloudBand, limit: int) -> tuple[list[tuple[FileRecord, datetime]], bool]:
+    """Fetch ``band``'s first page from its carried cursor, wrapping to that band's FIFO head (phaze-1l03t).
 
     Returns ``(rows, resumed)``. With no carried cursor this is the unchanged head query. With one, the
     page starts just past it; if nothing lies past it the walk has reached the end of the queue, so the
     tick WRAPS to the head in the same tick rather than spending a whole tick on an empty fetch. ``resumed``
     is True only when the returned rows really came from past the cursor.
     """
-    start_after = _resume_cursor
+    start_after = _resume_cursors[band]
     if start_after is not None:
-        rows = await get_cloud_staging_candidates(session, limit, after=start_after)
+        rows = await get_cloud_staging_candidates(session, limit, band=band, after=start_after)
         if rows:
             return rows, True
-    return await get_cloud_staging_candidates(session, limit), False
+    return await get_cloud_staging_candidates(session, limit, band=band), False
 
 
-def _carry_resume_cursor(resume_after: tuple[datetime, uuid.UUID] | None) -> None:
-    """Record where the NEXT tick's walk starts: past ``resume_after``, or the FIFO head when ``None``."""
-    global _resume_cursor
-    _resume_cursor = resume_after
+def _carry_resume_cursors(resume_after: dict[CloudBand, tuple[datetime, uuid.UUID] | None]) -> None:
+    """Record where the NEXT tick walks each band it reached: past its position, or the band's head when ``None``.
+
+    A band absent from ``resume_after`` was not reached this tick, so its cursor is left exactly as it was.
+    """
+    _resume_cursors.update(resume_after)
 
 
-def _report_tick_outcome(state: _WalkState, free_slots: int, agent_id: str, *, resumed: bool) -> None:
+def _report_tick_outcome(state: _WalkState, free_slots: int, agent_id: str) -> None:
     """Aggregate the tick's hold reasons into the starvation alarm + the routine completion line.
 
     phaze-9sqa starvation alarm. An "all-held" tick examined candidates and routed NONE of them --
@@ -607,8 +666,8 @@ def _report_tick_outcome(state: _WalkState, free_slots: int, agent_id: str, *, r
         skipped=state.tally["skipped"],
         candidates_scanned=state.scanned,
         hold_reasons=dict(state.hold_reasons),
-        resumed_from_cursor=resumed,
-        carries_cursor=state.resume_after is not None,
+        resumed_from_cursor=sorted(state.resumed),
+        carries_cursor=sorted(band for band, cursor in state.resume_after.items() if cursor is not None),
     )
 
 
@@ -632,7 +691,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
 
     phaze-1l03t: one tick's walk is bounded by ``_MAX_CANDIDATE_SCAN``, so a held prefix at least that long
     used to starve the lane exactly as phaze-9sqa's did. A tick that spends the whole budget with slots
-    still free now carries its keyset position to the next tick (``_resume_cursor``), which starts past it;
+    still free now carries its keyset position to the next tick (``_resume_cursors``, one per band), which starts past it;
     the walk wraps to the FIFO head once it reaches the end of the queue. A routable file behind a held
     prefix of P rows is therefore reached within ``ceil(P / _MAX_CANDIDATE_SCAN) + 1`` ticks, and no single
     tick examines more than ``_MAX_CANDIDATE_SCAN`` rows.
@@ -706,9 +765,21 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # phaze-1l03t: the first page starts past the carried cursor when the previous tick spent its scan
         # budget with slots still free, so a held prefix longer than _MAX_CANDIDATE_SCAN is walked past
         # over successive ticks instead of being the only thing any tick ever reads.
-        candidates, resumed = await _first_candidate_page(session, limit)
-        if not candidates:
-            _carry_resume_cursor(None)
+        # phaze-2al7q.3: the first band with any candidate supplies the first page (the CUE band when it has
+        # one); the remaining band is walked after it, inside _walk_bands, while slots remain.
+        first_band: CloudBand | None = None
+        candidates: list[tuple[FileRecord, datetime]] = []
+        first_limit = limit
+        for band in CLOUD_BANDS:
+            first_limit = min(limit, _band_budget(band, 0))
+            candidates, resumed = await _first_candidate_page(session, band, first_limit)
+            if resumed:
+                state.resumed.add(band)
+            if candidates:
+                first_band = band
+                break
+        if first_band is None:
+            _carry_resume_cursors(dict.fromkeys(CLOUD_BANDS))
             return {"staged": 0, "skipped": 0}
 
         # GATE 2: a fileserver agent (the push initiator -- owns the media mount + rsync/upload) must be
@@ -730,10 +801,10 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # roll back mid-walk (that would end the txn and release the pg_advisory_xact_lock, re-opening the
         # over-stage class, Landmine L1). The advisory-lock scope + single post-loop commit are unchanged.
         try:
-            await _walk_candidate_pages(_TickContext(session, snapshot, cfg, ctx["task_router"], state), (candidates, limit))
+            await _walk_bands(_TickContext(session, snapshot, cfg, ctx["task_router"], state), (first_band, candidates, first_limit))
             await session.commit()
-            # phaze-1l03t: advance (or clear) the cross-tick cursor only once the tick is durable.
-            _carry_resume_cursor(state.resume_after)
+            # phaze-1l03t: advance (or clear) the cross-tick cursors only once the tick is durable.
+            _carry_resume_cursors(state.resume_after)
             # phaze-grzo: fire the s3_upload enqueues KueueBackend.dispatch parked, ONLY now that the
             # cloud_job UPLOADING rows are durably committed -- so the worker-visible job (and its
             # report_uploaded callback) can never precede the row it reads. A parked-but-unfired enqueue
@@ -764,5 +835,5 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             # least ``len(candidates)``, so the single-page abort still reports exactly what it always did.
             return {"staged": 0, "skipped": max(state.scanned, len(candidates))}
 
-    _report_tick_outcome(state, limit, fileserver_agent.id, resumed=resumed)
+    _report_tick_outcome(state, limit, fileserver_agent.id)
     return state.tally

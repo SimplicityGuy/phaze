@@ -97,6 +97,8 @@ from phaze.services.pipeline.buckets import (
     _stage_bucket_stmt,
 )
 from phaze.services.pipeline.cloud import (
+    CLOUD_BANDS,
+    CloudBand,
     _backfill_candidates_stmt,
     _cloud_window_clauses,
     _kueue_backend_ids,
@@ -208,6 +210,7 @@ __all__ = [
     "ANALYZE_FILTER_COMPLETED",
     "ANALYZE_FILTER_FAILED",
     "ANALYZE_FILTER_IN_FLIGHT",
+    "CLOUD_BANDS",
     "MUSIC_VIDEO_TYPES",
     "ORPHANED_BUCKET",
     "_ACTIVE_CLOUD_STATUSES",
@@ -228,6 +231,7 @@ __all__ = [
     "_STALL_ERROR_PREFIX",
     "_STATS_FANOUT_CAP",
     "AnalyzeFilesPage",
+    "CloudBand",
     "FilesPage",
     "FilesPageRow",
     "MetadataActivitySummary",

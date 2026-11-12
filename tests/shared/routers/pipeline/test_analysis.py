@@ -546,7 +546,7 @@ async def test_get_awaiting_cloud_count_derives_from_the_drain_clause(session: A
     analyze-in-flight, so it is excluded from BOTH the count and the drain candidate set.
     """
     from phaze.models.stage_skip import StageSkip
-    from phaze.services.pipeline import get_awaiting_cloud_count, get_cloud_staging_candidates
+    from phaze.services.pipeline import CLOUD_BANDS, get_awaiting_cloud_count, get_cloud_staging_candidates
 
     # (1) A genuinely-parked awaiting file: awaiting row, no ledger, no analysis -> counted.
     parked = _make_file()
@@ -583,7 +583,7 @@ async def test_get_awaiting_cloud_count_derives_from_the_drain_clause(session: A
     # and failed files are excluded.
     assert await get_awaiting_cloud_count(session) == 2
     # And the count agrees with the drain candidate set exactly (card and drain cannot disagree).
-    candidates = await get_cloud_staging_candidates(session, limit=10)
+    candidates = [row for band in CLOUD_BANDS for row in await get_cloud_staging_candidates(session, limit=10, band=band)]
     assert {f.id for f, _ in candidates} == {parked.id, partial.id}
 
 
