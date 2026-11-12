@@ -315,7 +315,11 @@
                                         }
                                         if (framesLeft-- > 0) requestAnimationFrame(focusHeadingWhenShown);
                                     };
-                                    focusHeadingWhenShown();"></div>
+                                    // Focus the heading only for THIS body's own swap. htmx:afterSwap bubbles, so a
+                                    // swap of a section inside the body (the tracklist lookup loads on `load`) also
+                                    // runs this handler; without the guard it pulled focus off whatever the operator
+                                    // was using. That is a keyboard a11y defect that predates phaze-jvo7i.
+                                    if (event.target === this) focusHeadingWhenShown();"></div>
         </div>
     </div>
 </div>
