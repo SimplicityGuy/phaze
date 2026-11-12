@@ -260,3 +260,26 @@ mood. A NULL row (section 2) means "a slice with no patch centre inside a window
 carrying the matrix, and `_run_model_sets_over_windows` pools it into plain floats in the same process, inside the
 sweep, before anything is returned. Only plain lists and floats reach the JSON line the child writes. The new output
 is opt-in (`analyze_file(include_grids=True)`); the child must request it.
+
+## 9. Rendering: the sub-window river and the beat ruler (phaze-jvo7i)
+
+Written by the implementing seat of phaze-jvo7i; open to review.
+
+**The river uses sub-window steps when they exist, and the coarse river otherwise.** When at least one
+`analysis_subwindow` row yields usable geometry, the mood river draws one flat band step per slice, from
+the slice's own start to its own end, so it changes where the mood was measured to change. Otherwise the
+coarse 180 s river is drawn exactly as before, and its aria-label is unchanged. A NULL slice or a time
+hole ends a run, as a coverage gap does: the band is never bridged across it. The stacking follows
+`MOOD_NAMES` and the hues come from `MOOD_HUES`, so the 7 bands sum to the lane height at every slice.
+A coarse window with no sub-window rows (a silent window, §8) is a gap in the sub-window river, which is
+the honest reading.
+
+**The beat ruler is one tick per beat, thinned to the canvas.** Ticks are kept at least
+`BEAT_TICK_SPACING_PX` = 4 canvas px apart, earliest first, so a canvas `W` px wide carries at most
+`floor(W / 4) + 1` ticks whatever the beat count (`beat_tick_budget`). Recorded `gaps` are drawn as hatched
+spans, and no tick is drawn inside one. A file with no beat grid row gets no ruler at all, not an empty one.
+The ruler adds no JavaScript: its readout is its own `aria-label`.
+
+**Tests (one per acceptance point):** `tests/shared/services/test_analysis_subwindow_river_and_beat_ruler.py`.
+The river geometry is asserted on the polygon corners, and the rendered-markup tests render the shipped
+partial. The existing timeline lane, JS-static and browser suites still pass unchanged.

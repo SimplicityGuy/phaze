@@ -57,6 +57,7 @@
                 </div>
                 <div class="analysis-timeline-lane-label is-tall">Mood river</div>
                 <div class="analysis-timeline-axis-label" title="Elapsed time">Elapsed</div>
+                {% if beat_ruler %}<div class="analysis-timeline-lane-label">Beats</div>{% endif %}
                 <div class="analysis-timeline-lane-label">Key</div>
                 <div class="analysis-timeline-lane-label">Mood</div>
                 <div class="analysis-timeline-lane-label">Style</div>
@@ -151,7 +152,7 @@
                             {% if mood_river and mood_river[0].polygons %}
                             <svg viewBox="0 0 {{ timeline_w }} {{ lane_h }}" preserveAspectRatio="none"
                                  width="{{ timeline_w | round | int }}" height="{{ lane_h | round | int }}" class="block w-full"
-                                 role="img" aria-label="Mood river: {{ mood_legend | map(attribute='label') | join(', ') }}, stacked as each window's share of the seven mood scores over elapsed time.">
+                                 role="img" {% if mood_river_resolution == 'subwindow' %}aria-label="Mood river: {{ mood_legend | map(attribute='label') | join(', ') }}, stacked as each sub-window's share of the seven mood scores over elapsed time."{% else %}aria-label="Mood river: {{ mood_legend | map(attribute='label') | join(', ') }}, stacked as each window's share of the seven mood scores over elapsed time."{% endif %}>
                                 {% for series in mood_river %}
                                 {% for polygon in series.polygons %}
                                 <polygon points="{{ polygon }}" fill="hsl({{ series.hue }}, 62%, 48%)" fill-opacity="0.85">
@@ -171,6 +172,24 @@
                                   style="left: {{ tick.left_pct }}%;" data-time-sec="{{ tick.sec }}">{{ tick.label }}</span>
                             {% endfor %}
                         </div>
+
+                        {# --- phaze-jvo7i BEAT RULER ----------------------------------------
+                           One tick per beat of the file's beat grid, thinned by
+                           services.analysis_timeline.beat_ruler to BEAT_TICK_SPACING_PX on the canvas, so
+                           the ruler never draws more ticks than its per-pixel budget. Each RECORDED gap
+                           (silent or undetectable section) is a hatched span instead, and no tick is drawn
+                           inside one. A file with no beat grid row renders no ruler at all, never an empty
+                           one. The ticks are decorative: the accessible reading is the ruler's label. #}
+                        {% if beat_ruler %}
+                        <div class="analysis-timeline-beat-ruler" data-timeline-lane="beat" role="img" aria-label="{{ beat_ruler.label }}">
+                            {% for gap in beat_ruler.gaps %}
+                            <span class="analysis-timeline-beat-gap" style="left: {{ gap.left_pct }}%; width: {{ gap.width_pct }}%;" title="{{ gap.label }}" data-beat-gap-start="{{ gap.start_sec }}" data-beat-gap-end="{{ gap.end_sec }}"></span>
+                            {% endfor %}
+                            {% for tick in beat_ruler.ticks %}
+                            <span class="analysis-timeline-beat-tick" style="left: {{ tick.left_pct }}%;" data-beat-sec="{{ tick.sec }}"></span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
 
                         {% for lane in [("key", key_ribbons), ("mood", mood_ribbons), ("style", style_ribbons)] %}
                         <div class="analysis-timeline-lane" data-timeline-lane="{{ lane[0] }}">
