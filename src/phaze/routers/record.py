@@ -29,7 +29,7 @@ from sqlalchemy.orm import defer, selectinload
 
 from phaze.config import get_settings
 from phaze.database import async_session, get_session
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_job import CloudJob
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -240,6 +240,9 @@ async def build_file_record_context(
         .order_by(AnalysisWindow.tier, AnalysisWindow.window_index)
     )
     windows = list((await session.execute(windows_stmt)).scalars().all())
+    # phaze-bxp3m: the file's 15 s mood slices (ADR-0026). Empty for a file analysed before sub-window
+    # mood existed, which makes the track-segment join take its coarse path unchanged.
+    subwindows = list((await session.execute(select(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id))).scalars().all())
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
     pending_rows, identity = await _load_pending_rows(session, file_id)
@@ -279,6 +282,7 @@ async def build_file_record_context(
         windows,
         metadata_row.duration if metadata_row is not None else None,
         media_id=file_id,
+        subwindows=subwindows,
     )
 
     lane, lane_kind = await _load_lane(session, file_id)
