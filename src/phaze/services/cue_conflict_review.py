@@ -68,10 +68,6 @@ class CueConflict:
         shown = "\0".join((str(self.media_id), *sorted(candidate.token for candidate in self.candidates)))
         return hashlib.sha256(shown.encode()).hexdigest()[:32]
 
-    @property
-    def undetermined(self) -> tuple[CueLinkRow, ...]:
-        return tuple(candidate for candidate in self.candidates if candidate.cue_file_ordinal is None)
-
 
 @dataclass(frozen=True)
 class ConflictOutcome:

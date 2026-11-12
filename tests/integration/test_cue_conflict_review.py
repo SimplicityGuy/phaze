@@ -18,7 +18,8 @@ from sqlalchemy import select, text
 
 from phaze.models.provider_source import ProviderRecordingCandidate, ProviderSelectionEvent
 from phaze.schemas.local_source_import import ImportLocalSource, SourceDecision
-from phaze.services.cue_conflict_review import load_cue_conflicts
+from phaze.services import cue_conflict_review
+from phaze.services.cue_conflict_review import load_cue_conflicts, resolve_cue_conflict
 from phaze.services.cue_link_review import load_cue_link_review
 from phaze.services.local_source_import import decide_local_source, get_selected_recording_source, import_local_source
 from phaze.tracklist_providers import local_parser
@@ -268,6 +269,58 @@ async def test_a_forged_winner_or_an_empty_choice_applies_nothing(client, sessio
     assert (forged.status_code, empty.status_code) == (409, 422)
     assert "Check the CUE to use first" in empty.text
     assert await _events(session, media) == []
+
+
+async def test_a_posted_file_entry_is_checked_against_the_cue(client, session):
+    named = await media_row(session, filename="set.mp3")
+    _, by_reference = await import_cue(session, named, ONE_FILE, method="reference", name="one.cue")
+    await import_cue(session, named, ONE_FILE, method="stem", name="two.cue")
+    whole = await media_row(session, filename="Whole set.mp3")
+    _, undetermined = await import_cue(session, whole, _two_files("Part A.wav", "Part B.wav"), method="reference")
+    await session.commit()
+    reference_candidate = await _candidate(session, by_reference.tracklist_observation_id)
+    undetermined_candidate = await _candidate(session, undetermined.tracklist_observation_id)
+    soup = await _queue(client)
+    named_card, whole_card = _card(soup, named), _card(soup, whole)
+
+    overridden = await _confirm(client, named_card, _winner(named_card, reference_candidate.id), **{str(reference_candidate.id): "2"})
+    not_a_number = await _confirm(client, whole_card, _winner(whole_card, undetermined_candidate.id), **{str(undetermined_candidate.id): "two"})
+
+    assert (overridden.status_code, not_a_number.status_code) == (422, 422)
+    assert "already names its FILE entry" in overridden.text, "a FILE entry the CUE determines cannot be overridden"
+    assert "Choose which FILE entry" in not_a_number.text, "a non-numeric choice is no choice"
+    assert await _events(session, named) == [] and await _events(session, whole) == []
+
+
+async def test_a_refused_rejection_rolls_back_the_selection_so_nothing_is_applied(session, monkeypatch):
+    media = await media_row(session, filename="set.mp3")
+    _, by_reference = await import_cue(session, media, ONE_FILE, method="reference", name="one.cue")
+    _, by_stem = await import_cue(session, media, ONE_FILE, method="stem", name="two.cue")
+    await session.commit()
+    (conflict,) = await load_cue_conflicts(session)
+    proposed = next(candidate for candidate in conflict.candidates if candidate.candidate_id == conflict.proposed_id)
+    real_decide = cue_conflict_review.decide_local_source
+
+    async def refuse_rejections(session, command, *, actor):
+        if command.action == "reject":
+            raise ValueError("simulated refusal")
+        return await real_decide(session, command, actor=actor)
+
+    monkeypatch.setattr(cue_conflict_review, "decide_local_source", refuse_rejections)
+    outcome = await resolve_cue_conflict(
+        session, media_id=media.id, card_token=conflict.token, winner_token=proposed.token, cue_file_ordinal=None, actor="test"
+    )
+
+    assert (outcome.applied, outcome.error) == (False, "simulated refusal")
+    assert await get_selected_recording_source(session, media.id) is None, "the winner's selection is rolled back with the refused rejection"
+    assert await _events(session, media) == []
+    assert {(await _candidate(session, imported.tracklist_observation_id)).status for imported in (by_reference, by_stem)} == {"pending"}
+
+    monkeypatch.setattr(cue_conflict_review, "decide_local_source", real_decide)
+    retried = await resolve_cue_conflict(
+        session, media_id=media.id, card_token=conflict.token, winner_token=proposed.token, cue_file_ordinal=None, actor="test"
+    )
+    assert retried.applied, "the session is still usable and the same card applies once nothing refuses"
 
 
 async def test_a_recording_that_already_has_a_selection_is_not_a_conflict(session):
