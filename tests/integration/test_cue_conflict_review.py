@@ -292,6 +292,46 @@ async def test_a_posted_file_entry_is_checked_against_the_cue(client, session):
     assert await _events(session, named) == [] and await _events(session, whole) == []
 
 
+async def test_a_conflicting_cue_can_be_confirmed_once_the_operator_acknowledges_the_conflict(client, session):
+    """phaze-2al7q.3 finding 1: a CUE whose observation conflicts with retained source data is not a dead card.
+
+    ``decide_local_source`` refuses to select a conflicting observation without ``accept_conflict``; the
+    card used to never send it, so a recording whose chosen CUE conflicted could never be resolved. The
+    card now marks the conflicting CUE and asks for the same explicit acknowledgement single review does.
+    """
+    media = await media_row(session, filename="set.mp3")
+    _, by_reference = await import_cue(session, media, ONE_FILE, method="reference", name="one.cue")
+    _, by_stem = await import_cue(session, media, ONE_FILE, method="stem", name="two.cue")
+    await session.execute(
+        text("UPDATE provider_source_observations SET conflict_with_id = :other WHERE id = :id"),
+        {"id": by_reference.tracklist_observation_id, "other": by_stem.tracklist_observation_id},
+    )
+    await session.commit()
+    reference_candidate = await _candidate(session, by_reference.tracklist_observation_id)
+    card = _card(await _queue(client), media)
+    winner = _winner(card, reference_candidate.id)
+    acknowledgement = card.select_one(f'[data-cue-conflict-candidate="{reference_candidate.id}"] [data-cue-conflict-accept]')
+    assert acknowledgement is not None and acknowledgement["name"] == f"accept_conflict.{reference_candidate.id}"
+
+    unacknowledged = await _confirm(client, card, winner)
+
+    assert unacknowledged.status_code == 422
+    assert "conflicts with other retained source data" in unacknowledged.text
+    assert await _events(session, media) == [], "nothing is applied without the acknowledgement"
+
+    card = _card(BeautifulSoup(unacknowledged.text, "html.parser"), media)
+    data = {"media_id": str(media.id), "card_token": card.select_one('input[name="card_token"]')["value"], "winner": winner}
+    acknowledged = await client.post("/pipeline/cue-conflicts/resolve", data={**data, acknowledgement["name"]: "true"}, headers=ORIGIN)
+
+    assert acknowledged.status_code == 200
+    selected = await get_selected_recording_source(session, media.id)
+    assert selected is not None and selected.observation_id == by_reference.tracklist_observation_id
+    events = {event.action: event for event in await _events(session, media)}
+    assert events["select"].decision_payload["accept_conflict"] is True, "the acknowledgement is in the audit"
+    assert events["reject"].observation_id == by_stem.tracklist_observation_id
+    assert await load_cue_conflicts(session) == []
+
+
 async def test_a_refused_rejection_rolls_back_the_selection_so_nothing_is_applied(session, monkeypatch):
     media = await media_row(session, filename="set.mp3")
     _, by_reference = await import_cue(session, media, ONE_FILE, method="reference", name="one.cue")

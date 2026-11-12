@@ -262,7 +262,9 @@ async def resolve_cue_conflict_card(
     A card whose CUE files changed after it was shown applies nothing (409) and is redrawn as it is now.
     """
     form = await request.form()
-    raw_ordinal = form.get(f"ordinal.{winner.partition('.')[0]}")
+    candidate = winner.partition(".")[0]
+    raw_ordinal = form.get(f"ordinal.{candidate}")
+    accept_conflict = form.get(f"accept_conflict.{candidate}") == "true"
     try:
         ordinal = int(raw_ordinal) if isinstance(raw_ordinal, str) and raw_ordinal else None
     except ValueError:
@@ -273,7 +275,13 @@ async def resolve_cue_conflict_card(
         status_code = 422
     else:
         result = await resolve_cue_conflict(
-            session, media_id=media_id, card_token=card_token, winner_token=winner, cue_file_ordinal=ordinal, actor="admin"
+            session,
+            media_id=media_id,
+            card_token=card_token,
+            winner_token=winner,
+            cue_file_ordinal=ordinal,
+            actor="admin",
+            accept_conflict=accept_conflict,
         )
         outcome, conflict, error = result, result.conflict, result.error
         status_code = 200 if result.applied else 409 if result.stale else 422

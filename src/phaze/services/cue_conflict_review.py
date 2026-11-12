@@ -46,6 +46,7 @@ logger = structlog.get_logger(__name__)
 
 ConflictReason = Literal["multiple_cues", "file_ordinal"]
 CONFLICT_ORDER: Final = ("multiple_cues", "file_ordinal")
+CONFLICT_ACKNOWLEDGEMENT: Final = "The chosen CUE conflicts with other retained source data. Review it, then tick that you did before using it."
 
 
 @dataclass(frozen=True)
@@ -160,13 +161,22 @@ def _decision(row: CueLinkRow, **changes: object) -> SourceDecision:
 
 
 async def resolve_cue_conflict(
-    session: AsyncSession, *, media_id: uuid.UUID, card_token: str, winner_token: str, cue_file_ordinal: int | None, actor: str
+    session: AsyncSession,
+    *,
+    media_id: uuid.UUID,
+    card_token: str,
+    winner_token: str,
+    cue_file_ordinal: int | None,
+    actor: str,
+    accept_conflict: bool = False,
 ) -> ConflictOutcome:
     """Select the operator's CUE for one recording and reject its other CUE files, or apply nothing.
 
     ``cue_file_ordinal`` is required only when the chosen CUE does not determine its FILE entry, and must
-    then be one of that CUE's FILE entries; a determined entry cannot be overridden here. The caller owns
-    the commit.
+    then be one of that CUE's FILE entries; a determined entry cannot be overridden here. A chosen CUE
+    that conflicts with other retained source data (``conflict_with_id``) needs ``accept_conflict``, the
+    same explicit acknowledgement single review asks for; it is recorded in the selection's audit row.
+    The caller owns the commit.
     """
     conflict = next(iter(await load_cue_conflicts(session, media_ids={media_id})), None)
     if conflict is None or conflict.token != card_token:
@@ -182,11 +192,17 @@ async def resolve_cue_conflict(
         ordinal = cue_file_ordinal
     else:
         return ConflictOutcome(conflict=conflict, error="Choose which FILE entry of the chosen CUE is this recording.")
+    if winner.conflict and not accept_conflict:
+        return ConflictOutcome(conflict=conflict, error=CONFLICT_ACKNOWLEDGEMENT)
     siblings = tuple(candidate for candidate in conflict.candidates if candidate.candidate_id != winner.candidate_id)
     selection = uuid.uuid4()
     try:
         async with session.begin_nested():
-            await decide_local_source(session, _decision(winner, decision_id=selection, action="select", cue_file_ordinal=ordinal), actor=actor)
+            await decide_local_source(
+                session,
+                _decision(winner, decision_id=selection, action="select", cue_file_ordinal=ordinal, accept_conflict=winner.conflict),
+                actor=actor,
+            )
             for sibling in siblings:
                 await decide_local_source(
                     session,

@@ -139,6 +139,9 @@ class CueLinkRow:
     detail: str | None = None
     source_object_id: uuid.UUID | None = None
     tracks: tuple[TrackPrint, ...] = ()
+    conflict: bool = False
+    """The observation conflicts with other retained source data (``conflict_with_id``): selecting it
+    needs the operator's explicit acknowledgement, exactly as single review asks for it."""
 
     def fingerprint(self, ordinal: int) -> tuple[str, ...]:
         """The tracks under FILE ``ordinal``, in order, as content fingerprints -- equal iff same tracks and offsets."""
@@ -367,6 +370,7 @@ def build_rows(rows: Sequence[Mapping[Any, Any]]) -> list[Built]:
             tracks_by_file=tracks_by_file,
             source_object_id=row["source_object_id"],
             tracks=tracks,
+            conflict=row["conflict_with_id"] is not None,
         )
         built.append(
             Built(
@@ -375,7 +379,7 @@ def build_rows(rows: Sequence[Mapping[Any, Any]]) -> list[Built]:
                 selectable=selectable,
                 pending=row["candidate_row_status"] == "pending",
                 older_parse=bool(row["newer_parse"]),
-                conflict=row["conflict_with_id"] is not None,
+                conflict=cue.conflict,
                 parser_version=row["parser_version"],
                 selected_observation_id=row["selected_observation_id"],
             )
