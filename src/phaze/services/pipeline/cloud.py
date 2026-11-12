@@ -5,9 +5,9 @@ analyzing window split, the drain's candidate SELECT, and the long-failure backf
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast as type_cast
+from typing import TYPE_CHECKING, Literal, cast as type_cast
 
-from sqlalchemy import String, and_, case, cast, exists, false, func, literal, or_, select, tuple_
+from sqlalchemy import String, and_, cast, exists, false, func, literal, or_, select, tuple_
 import structlog
 
 from phaze.config import get_settings
@@ -268,10 +268,20 @@ async def get_pushed_count(session: AsyncSession) -> int:
 # transaction so a concurrent tick cannot double-stage the same row (T-50-scratch-dos).
 
 
+CloudBand = Literal["cue", "rest"]
+"""The two bands of the awaiting set the drain walks, in this order (phaze-tdton, phaze-2al7q.3).
+
+``cue`` -- CUE-linked media (:func:`~phaze.services.pipeline.common.cue_linked_media_clause`); ``rest`` -- every
+other awaiting file. Together they are exactly the awaiting set, and no file is in both."""
+
+CLOUD_BANDS: tuple[CloudBand, ...] = ("cue", "rest")
+
+
 async def get_cloud_staging_candidates(
     session: AsyncSession,
     limit: int,
     *,
+    band: CloudBand,
     after: tuple[datetime, uuid.UUID] | None = None,
 ) -> list[tuple[FileRecord, datetime]]:
     """Return up to ``limit`` oldest genuinely parked cloud candidates and their staleness clocks (D-05/D-06/D-07).
@@ -326,14 +336,18 @@ async def get_cloud_staging_candidates(
     re-serve the tied rows. FIFO semantics are unchanged: ``created_at`` still dominates, ``id`` only orders
     within a tie that previously had no defined order at all.
     """
-    # phaze-tdton: CUE-linked candidates sort first (rank 0), then FIFO as before. Membership and the bounded
-    # ``limit`` are untouched -- only WHICH parked rows fill the window changes.
-    cue_rank = case((cue_linked_media_clause(), 0), else_=1)
+    # phaze-tdton / phaze-2al7q.3: CUE-first is a BAND, not a sort key. A CUE rank first in ORDER BY made every
+    # page evaluate the CUE EXISTS for every awaiting row and sort the whole set under the drain's advisory lock
+    # (measured at production scale: 440 ms -> 696 ms per head page). Each band keeps the plain (created_at, id)
+    # order, which ``ix_files_created_at_id`` (migration 097) serves as an index scan that stops after ``limit``
+    # rows, and each band has its own keyset cursor in the drain, so a file linked to a CUE after the walk left
+    # the CUE band is seen on the next tick rather than after a lap of the whole queue.
+    linked = cue_linked_media_clause()
     stmt = (
         select(FileRecord, CloudJob.updated_at)
         .join(CloudJob, CloudJob.file_id == FileRecord.id)
-        .where(awaiting_candidate_clause())
-        .order_by(cue_rank.asc(), FileRecord.created_at.asc(), FileRecord.id.asc())
+        .where(awaiting_candidate_clause(), linked if band == "cue" else ~linked)
+        .order_by(FileRecord.created_at.asc(), FileRecord.id.asc())
         .limit(limit)
         .with_for_update(of=CloudJob, skip_locked=True)
     )
@@ -341,12 +355,8 @@ async def get_cloud_staging_candidates(
         # Row-value comparison -- the exact keyset form Postgres can drive from the composite ordering,
         # and the only spelling that is correct across a ``created_at`` tie.
         # BOUND params typed off the columns themselves (never interpolated SQL, T-42-03/T-49-02).
-        # The cursor is still the last row's ``(created_at, id)``; its CUE rank is re-derived from that id so the
-        # keyset matches the three-part ORDER BY. (A link added since the cursor was taken can only move where the
-        # walk resumes, never what may be routed -- the walk wraps to the head.)
-        cursor_rank = select(case((cue_linked_media_clause(literal(after[1], FileRecord.id.type)), 0), else_=1)).scalar_subquery()
-        cursor = tuple_(cursor_rank, literal(after[0], FileRecord.created_at.type), literal(after[1], FileRecord.id.type))
-        stmt = stmt.where(tuple_(cue_rank, FileRecord.created_at, FileRecord.id) > cursor)
+        cursor = tuple_(literal(after[0], FileRecord.created_at.type), literal(after[1], FileRecord.id.type))
+        stmt = stmt.where(tuple_(FileRecord.created_at, FileRecord.id) > cursor)
     return [(file, updated_at) for file, updated_at in (await session.execute(stmt)).all()]
 
 

@@ -49,7 +49,9 @@
                         <td class="p-3"><input type="radio" name="winner" value="{{ row.token }}" required data-cue-conflict-winner{% if conflict.proposed_id == row.candidate_id %} checked data-proposed{% endif %}
                             aria-label="Use {{ row.source_filename or 'this CUE' }}"></td>
                         <td class="p-3">{% if row.source_file_id %}<a class="text-link hover:underline break-all" href="/files/{{ row.source_file_id }}#companion-sources">{{ row.source_filename }}</a>{% else %}{{ row.source_filename or 'Unknown' }}{% endif %}
-                            {% if conflict.proposed_id == row.candidate_id %}<p class="text-xs text-muted">Proposed: strongest link</p>{% endif %}</td>
+                            {% if conflict.proposed_id == row.candidate_id %}<p class="text-xs text-muted">Proposed: strongest link</p>{% endif %}
+                            {% if row.conflict %}<p class="mt-1 text-xs text-warn" data-cue-conflict-conflicting>This CUE conflicts with other retained source data. Review it on <a class="text-link hover:underline" href="/files/{{ row.media_id }}#companion-sources">the recording's sources</a> before using it.</p>
+                            <label class="mt-1 flex items-center gap-2 text-xs"><input type="checkbox" name="accept_conflict.{{ row.candidate_id }}" value="true" data-cue-conflict-accept>I reviewed the conflicting source evidence.</label>{% endif %}</td>
                         <td class="p-3">{{ method_labels[row.method] }}</td>
                         <td class="p-3">
                             {% if row.cue_file_ordinal %}

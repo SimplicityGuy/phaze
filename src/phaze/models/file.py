@@ -120,4 +120,8 @@ class FileRecord(TimestampMixin, Base):
         # the junk-review detector (services.companion_content.media_in_folders). The expression is
         # FOLDER_OF_PATH there, byte for byte, or the planner cannot use it.
         Index("ix_files_agent_id_folder", "agent_id", text("regexp_replace(original_path, '/[^/]*$', '')")),
+        # phaze-2al7q.3 (migration 097): the cloud staging walk's FIFO keyset order
+        # (services.pipeline.cloud.get_cloud_staging_candidates, ORDER BY created_at, id + a row-value cursor).
+        # Without it every page sorted the whole awaiting set under the drain's advisory lock.
+        Index("ix_files_created_at_id", "created_at", "id"),
     )

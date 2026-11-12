@@ -292,6 +292,46 @@ async def test_a_posted_file_entry_is_checked_against_the_cue(client, session):
     assert await _events(session, named) == [] and await _events(session, whole) == []
 
 
+async def test_a_conflicting_cue_can_be_confirmed_once_the_operator_acknowledges_the_conflict(client, session):
+    """phaze-2al7q.3 finding 1: a CUE whose observation conflicts with retained source data is not a dead card.
+
+    ``decide_local_source`` refuses to select a conflicting observation without ``accept_conflict``; the
+    card used to never send it, so a recording whose chosen CUE conflicted could never be resolved. The
+    card now marks the conflicting CUE and asks for the same explicit acknowledgement single review does.
+    """
+    media = await media_row(session, filename="set.mp3")
+    _, by_reference = await import_cue(session, media, ONE_FILE, method="reference", name="one.cue")
+    _, by_stem = await import_cue(session, media, ONE_FILE, method="stem", name="two.cue")
+    await session.execute(
+        text("UPDATE provider_source_observations SET conflict_with_id = :other WHERE id = :id"),
+        {"id": by_reference.tracklist_observation_id, "other": by_stem.tracklist_observation_id},
+    )
+    await session.commit()
+    reference_candidate = await _candidate(session, by_reference.tracklist_observation_id)
+    card = _card(await _queue(client), media)
+    winner = _winner(card, reference_candidate.id)
+    acknowledgement = card.select_one(f'[data-cue-conflict-candidate="{reference_candidate.id}"] [data-cue-conflict-accept]')
+    assert acknowledgement is not None and acknowledgement["name"] == f"accept_conflict.{reference_candidate.id}"
+
+    unacknowledged = await _confirm(client, card, winner)
+
+    assert unacknowledged.status_code == 422
+    assert "conflicts with other retained source data" in unacknowledged.text
+    assert await _events(session, media) == [], "nothing is applied without the acknowledgement"
+
+    card = _card(BeautifulSoup(unacknowledged.text, "html.parser"), media)
+    data = {"media_id": str(media.id), "card_token": card.select_one('input[name="card_token"]')["value"], "winner": winner}
+    acknowledged = await client.post("/pipeline/cue-conflicts/resolve", data={**data, acknowledgement["name"]: "true"}, headers=ORIGIN)
+
+    assert acknowledged.status_code == 200
+    selected = await get_selected_recording_source(session, media.id)
+    assert selected is not None and selected.observation_id == by_reference.tracklist_observation_id
+    events = {event.action: event for event in await _events(session, media)}
+    assert events["select"].decision_payload["accept_conflict"] is True, "the acknowledgement is in the audit"
+    assert events["reject"].observation_id == by_stem.tracklist_observation_id
+    assert await load_cue_conflicts(session) == []
+
+
 async def test_a_refused_rejection_rolls_back_the_selection_so_nothing_is_applied(session, monkeypatch):
     media = await media_row(session, filename="set.mp3")
     _, by_reference = await import_cue(session, media, ONE_FILE, method="reference", name="one.cue")
@@ -474,3 +514,45 @@ async def test_the_cue_workspace_shows_the_conflicts_queue_and_the_bulk_page_poi
     assert {row["data-reason"] for row in bulk.select("[data-cue-link-excluded]")} == {"multiple_cues"}
     assert queue.select_one("[data-cue-conflicts-total]").get_text() == "1"
     assert queue.select_one('[data-cue-conflicts-count="multiple_cues"]') is not None
+
+
+async def test_track_prints_are_read_for_the_conflict_set_only_never_for_the_whole_population(session):
+    """phaze-2al7q.3 finding 4, PARTIAL mitigation: the per-track prints leave the population query.
+
+    Both CUE pages still read and classify every candidate on every request (bounded work is phaze-m16w5),
+    but the per-track fingerprint -- most of the query's cost at production scale -- is computed only for
+    the candidates of recordings shown in the conflicts queue, and never by the bulk link review.
+    """
+    from sqlalchemy import event
+
+    conflicted = await media_row(session, filename="set.mp3")
+    _, one = await import_cue(session, conflicted, ONE_FILE, method="reference", name="one.cue")
+    _, two = await import_cue(session, conflicted, OTHER_CLOSER, method="stem", name="two.cue")
+    plain = await media_row(session, filename="plain.mp3")
+    _, unambiguous = await import_cue(session, plain, ONE_FILE, method="reference", name="plain.cue")
+    await session.commit()
+    conflict_candidates = {(await _candidate(session, one.tracklist_observation_id)).id, (await _candidate(session, two.tracklist_observation_id)).id}
+    unambiguous_candidate = (await _candidate(session, unambiguous.tracklist_observation_id)).id
+
+    executed: list[tuple[str, object]] = []
+
+    def _record(_conn, _cursor, statement, parameters, _context, _executemany) -> None:
+        executed.append((statement, parameters))
+
+    engine = session.sync_session.get_bind()
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        review = await load_cue_link_review(session)
+        review_statements = list(executed)
+        executed.clear()
+        (conflict,) = await load_cue_conflicts(session)
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+
+    assert [row.candidate_id for row in review.proposed] == [unambiguous_candidate]
+    assert not any("md5(" in statement for statement, _ in review_statements), "the bulk review computes no per-track print"
+    print_queries = [(statement, parameters) for statement, parameters in executed if "md5(" in statement]
+    assert len(print_queries) == 1
+    bound = {value for value in (print_queries[0][1] or ()) if isinstance(value, uuid.UUID)}
+    assert bound == conflict_candidates, "prints are read for the conflict set's candidates and nothing else"
+    assert conflict.differing == (3,), "the comparison still sees the prints"

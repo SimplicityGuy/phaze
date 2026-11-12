@@ -298,6 +298,25 @@ absent from every test**: what the client sends at connect time is interpreted b
 terminates the connection. Any connection-level setting (startup parameters, TLS options, auth
 method) is only as verified as the connection path it was tested through.
 
+### 3.11 "`pg_advisory_xact_lock` serializes two migrations that create the same role"
+
+Held for bead `phaze-2al7q.3`, in the bead's own design notes (*"make role creation and ALTER ROLE
+race-safe across concurrent seats (for example pg_advisory_xact_lock around it ...)"*), for migration
+095's cluster-wide `analytics_ro` role. Two seats migrate their own databases on the one 5433 harness, so
+the belief is that an advisory lock taken by each serializes their role DDL.
+
+| | |
+| --- | --- |
+| **True where** | two sessions in the **same** database. Every advisory-lock use in this repo so far is that case (the drain's per-tick lock, the test suite's session lock, the per-decision lock in `decide_local_source`), and in it the lock works exactly as believed. |
+| **False here** | the two sessions are in **different databases of the same cluster**. An advisory lock's key is scoped to the current database, so the two never meet; the role they both write lives in the cluster. |
+| **Measured** | 2026-11-12, PostgreSQL 18.6 on the 5433 harness, asyncpg 0.31.0. Session A in one seat database: `BEGIN; SELECT pg_advisory_xact_lock(424242)`. Session B in another seat database, with `lock_timeout = '1s'`, same call: **granted at once** (not blocked). The same pair with `LOCK TABLE pg_catalog.pg_authid IN SHARE UPDATE EXCLUSIVE MODE` instead: B **times out** (blocked across databases), while a new login and an `ALTER ROLE` on another role both still succeed under A's lock. The race itself, replayed with 095's own statements from two databases: `duplicate key value violates unique constraint "pg_authid_rolname_index"` for two upgrades, `role <oid> was concurrently dropped` for a downgrade racing an upgrade (`tests/integration/test_migrations/test_095_role_concurrency.py`). |
+| **How it surfaced** | the implementing seat measured the lock's scope before using it, because the race it had to close was between databases and every advisory lock it knew of was within one. |
+| **What it cost** | about five minutes. Avoided: a migration that reads as race-safe, would pass any single-seat test, and would still fail exactly as before when two seats migrate at once. |
+
+The neighbouring system is **the same lock, one scope wider**: what is shared (a role, a tablespace, a
+database name) decides which lock can protect it. Per-database primitives cannot serialize cluster-wide
+objects; a lock on the shared catalog the object lives in can.
+
 ______________________________________________________________________
 
 ## 4. The trigger

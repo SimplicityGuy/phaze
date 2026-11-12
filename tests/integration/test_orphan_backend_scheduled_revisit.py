@@ -14,7 +14,7 @@ from sqlalchemy import select, text
 
 from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.services.pipeline.cloud import get_cloud_staging_candidates
+from phaze.services.pipeline.cloud import CLOUD_BANDS, get_cloud_staging_candidates
 from phaze.tasks import controller
 from phaze.tasks.reap_orphaned_backend_cloud_jobs import reap_orphaned_backend_cloud_jobs
 from phaze.tasks.submit_cloud_job import submit_cloud_job
@@ -169,7 +169,7 @@ async def test_scheduled_cleanup_recovers_only_eligible_orphans(
         assert await _scheduled_tick(worker, queue) == {"requeued": 0, "surfaced": 2}
         assert await _snapshot(factory) == expected  # no second attempt consumed
         async with asyncio.timeout(_TRANSITION_SEC), factory() as session:
-            candidates = await get_cloud_staging_candidates(session, limit=10)
+            candidates = [row for band in CLOUD_BANDS for row in await get_cloud_staging_candidates(session, limit=10, band=band)]
             assert {file.id for file, _ in candidates} == {target}
         assert expected[young] == (CloudJobStatus.UPLOADED.value, 0)
         assert expected[owned] == (CloudJobStatus.UPLOADED.value, 0)

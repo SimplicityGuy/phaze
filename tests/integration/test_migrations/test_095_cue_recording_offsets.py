@@ -16,6 +16,7 @@ An availability condition SQL deliberately does not express: a selection whose s
 import asyncio
 from collections.abc import AsyncGenerator
 from fractions import Fraction
+import json
 import uuid
 
 import pytest
@@ -151,3 +152,43 @@ async def test_a_rejected_candidate_exposes_nothing(world: tuple[AsyncSession, A
     assert await _view(ro) == []
     async with ro.connect() as conn:
         assert (await conn.execute(text("SELECT count(*) FROM analytics_cue_track_offsets"))).scalar_one() == 0
+
+
+_MARKER = "capture:inventory_sha256:"
+
+
+@pytest.mark.parametrize("markers", ["none", "one_matching", "one_stale", "two"])
+async def test_inventory_markers_agree_with_the_application_including_more_than_one(world: tuple[AsyncSession, AsyncEngine], markers: str) -> None:
+    """phaze-2al7q.3 finding 5: the companion inventory-marker check reads exactly like ``source_availability``.
+
+    The application treats a companion CUE as stale only when it carries EXACTLY ONE
+    ``capture:inventory_sha256:`` marker and that marker is not the CUE file's sha. With two markers the
+    rule does not apply. The view used to compare against a scalar subquery over the markers, guarded
+    only by the evaluation order of an ``OR``, which Postgres does not promise: with two markers that
+    subquery returns two rows. The check is now one aggregate, which always returns one row.
+    """
+    session, ro = world
+    media, companion, _ = await _selected_cue(session)
+    values = {
+        "none": [],
+        "one_matching": [_MARKER + companion.sha256_hash],
+        "one_stale": [_MARKER + "d" * 64],
+        "two": [_MARKER + "d" * 64, _MARKER + "e" * 64],
+    }[markers]
+    observation_id = (await session.execute(text("SELECT observation_id FROM provider_recording_selections"))).scalar_one()
+    # Observations are immutable under a trigger; this test alone rewrites one marker set, then restores the guard.
+    await session.execute(text("ALTER TABLE provider_source_observations DISABLE TRIGGER USER"))
+    await session.execute(
+        text(
+            "UPDATE provider_source_observations SET payload = jsonb_set(payload, '{provenance}', "
+            "COALESCE((SELECT jsonb_agg(item) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(payload -> 'provenance') = 'array' "
+            "THEN payload -> 'provenance' ELSE '[]'::jsonb END) AS p(item) WHERE left(item #>> '{}', 25) <> :prefix), '[]'::jsonb) "
+            "|| CAST(:markers AS jsonb)) WHERE id = :id"
+        ),
+        {"prefix": _MARKER, "markers": json.dumps(values), "id": observation_id},
+    )
+    await session.execute(text("ALTER TABLE provider_source_observations ENABLE TRIGGER USER"))
+    await session.commit()
+    availability, offsets = await _application_offsets(session, media.id)
+    assert availability == ("stale" if markers == "one_stale" else "current"), "precondition: the application's own verdict"
+    assert {position: offset for position, offset, _, _ in await _view(ro)} == (offsets if availability == "current" else {})

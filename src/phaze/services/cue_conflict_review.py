@@ -32,7 +32,17 @@ import uuid
 import structlog
 
 from phaze.schemas.local_source_import import SourceDecision
-from phaze.services.cue_link_review import METHOD_ORDER, CueLinkRow, _key, _ordinal_for, _replace, build_rows, cue_files, load_population
+from phaze.services.cue_link_review import (
+    METHOD_ORDER,
+    CueLinkRow,
+    _key,
+    _ordinal_for,
+    _replace,
+    build_rows,
+    cue_files,
+    load_population,
+    load_track_prints,
+)
 from phaze.services.local_source_import import decide_local_source
 
 
@@ -46,6 +56,7 @@ logger = structlog.get_logger(__name__)
 
 ConflictReason = Literal["multiple_cues", "file_ordinal"]
 CONFLICT_ORDER: Final = ("multiple_cues", "file_ordinal")
+CONFLICT_ACKNOWLEDGEMENT: Final = "The chosen CUE conflicts with other retained source data. Review it, then tick that you did before using it."
 
 
 @dataclass(frozen=True)
@@ -117,17 +128,20 @@ async def load_cue_conflicts(session: AsyncSession, *, media_ids: Iterable[uuid.
             by_media.setdefault(item.cue.media_id, []).append(_replace(item.cue, cue_file_ordinal=ordinal, ordinal_basis=basis))
             if item.pending:
                 pending.add(item.cue.media_id)
-    conflicts: list[CueConflict] = []
+    ambiguous: dict[uuid.UUID, tuple[ConflictReason, tuple[CueLinkRow, ...]]] = {}
     for media_id, rows in by_media.items():
         if media_id in selected or media_id not in pending:
             continue
-        candidates = tuple(sorted(rows, key=lambda row: (METHOD_ORDER.index(row.method), _key(row.source_filename or ""), str(row.candidate_id))))
+        ordered = tuple(sorted(rows, key=lambda row: (METHOD_ORDER.index(row.method), _key(row.source_filename or ""), str(row.candidate_id))))
         if len(files[media_id]) > 1:
-            reason: ConflictReason = "multiple_cues"
-        elif candidates[0].cue_file_ordinal is None:
-            reason = "file_ordinal"
-        else:
-            continue
+            ambiguous[media_id] = ("multiple_cues", ordered)
+        elif ordered[0].cue_file_ordinal is None:
+            ambiguous[media_id] = ("file_ordinal", ordered)
+    # The track prints are read for the conflict set's candidates only, never for the whole population (phaze-2al7q.3).
+    prints = await load_track_prints(session, (row.candidate_id for _reason, rows in ambiguous.values() for row in rows))
+    conflicts: list[CueConflict] = []
+    for media_id, (reason, ordered) in ambiguous.items():
+        candidates = tuple(_replace(row, tracks=prints.get(row.candidate_id, ())) for row in ordered)
         identical, differing = _compare(candidates)
         conflicts.append(
             CueConflict(
@@ -160,13 +174,22 @@ def _decision(row: CueLinkRow, **changes: object) -> SourceDecision:
 
 
 async def resolve_cue_conflict(
-    session: AsyncSession, *, media_id: uuid.UUID, card_token: str, winner_token: str, cue_file_ordinal: int | None, actor: str
+    session: AsyncSession,
+    *,
+    media_id: uuid.UUID,
+    card_token: str,
+    winner_token: str,
+    cue_file_ordinal: int | None,
+    actor: str,
+    accept_conflict: bool = False,
 ) -> ConflictOutcome:
     """Select the operator's CUE for one recording and reject its other CUE files, or apply nothing.
 
     ``cue_file_ordinal`` is required only when the chosen CUE does not determine its FILE entry, and must
-    then be one of that CUE's FILE entries; a determined entry cannot be overridden here. The caller owns
-    the commit.
+    then be one of that CUE's FILE entries; a determined entry cannot be overridden here. A chosen CUE
+    that conflicts with other retained source data (``conflict_with_id``) needs ``accept_conflict``, the
+    same explicit acknowledgement single review asks for; it is recorded in the selection's audit row.
+    The caller owns the commit.
     """
     conflict = next(iter(await load_cue_conflicts(session, media_ids={media_id})), None)
     if conflict is None or conflict.token != card_token:
@@ -182,11 +205,17 @@ async def resolve_cue_conflict(
         ordinal = cue_file_ordinal
     else:
         return ConflictOutcome(conflict=conflict, error="Choose which FILE entry of the chosen CUE is this recording.")
+    if winner.conflict and not accept_conflict:
+        return ConflictOutcome(conflict=conflict, error=CONFLICT_ACKNOWLEDGEMENT)
     siblings = tuple(candidate for candidate in conflict.candidates if candidate.candidate_id != winner.candidate_id)
     selection = uuid.uuid4()
     try:
         async with session.begin_nested():
-            await decide_local_source(session, _decision(winner, decision_id=selection, action="select", cue_file_ordinal=ordinal), actor=actor)
+            await decide_local_source(
+                session,
+                _decision(winner, decision_id=selection, action="select", cue_file_ordinal=ordinal, accept_conflict=winner.conflict),
+                actor=actor,
+            )
             for sibling in siblings:
                 await decide_local_source(
                     session,

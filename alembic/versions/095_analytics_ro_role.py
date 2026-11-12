@@ -27,8 +27,8 @@ Revision ID: 095
 Revises: 094
 """
 
-# DDL cannot take bind parameters; every interpolated value below is a module constant (ROLE, the VIEWS keys and bodies).
-# ruff: noqa: S608
+# Every statement below is a literal: no SQL is formatted at run time (Semgrep's formatted-SQL rules, phaze-2al7q.3).
+# The role name and the view names are therefore spelled out in each statement; the tuples keep them in one place each.
 
 from collections.abc import Sequence
 
@@ -42,15 +42,15 @@ depends_on: str | Sequence[str] | None = None
 
 ROLE = "analytics_ro"
 
-_CUE_FILE_ORDINAL = r"substring(ev.item FROM '^FILE:(\d+):')"
+# files.file_type values that are media (companion_content.MEDIA_FILE_TYPES at the time of writing) are frozen in the
+# recording-offsets view body on purpose: a migration must not change meaning when application code later changes.
 
-# files.file_type values that are media (companion_content.MEDIA_FILE_TYPES at the time of writing). Frozen here on purpose:
-# a migration must not change meaning when application code later changes.
-_MEDIA_TYPES = "'aac', 'aiff', 'avi', 'flac', 'flv', 'm4a', 'mkv', 'mov', 'mp2', 'mp3', 'mp4', 'ogg', 'opus', 'wav', 'webm', 'wma', 'wmv'"
-
-# Ordered so that drop order (reverse) never leaves a dependency; none of the views reads another view.
-VIEWS: dict[str, str] = {
-    "analytics_files": """
+# (view name, CREATE VIEW statement), ordered so that drop order (reverse) never leaves a dependency; no view reads another.
+VIEWS: tuple[tuple[str, str], ...] = (
+    (
+        "analytics_files",
+        r"""
+        CREATE VIEW analytics_files AS
         SELECT f.id AS file_id,
                f.sha256_hash,
                f.original_path,
@@ -61,8 +61,12 @@ VIEWS: dict[str, str] = {
                f.missing_at,
                f.created_at
         FROM files f
-    """,
-    "analytics_file_analysis": """
+        """,
+    ),
+    (
+        "analytics_file_analysis",
+        r"""
+        CREATE VIEW analytics_file_analysis AS
         SELECT a.file_id,
                a.bpm,
                a.musical_key,
@@ -76,8 +80,12 @@ VIEWS: dict[str, str] = {
                a.analysis_completed_at,
                a.failed_at
         FROM analysis a
-    """,
-    "analytics_analysis_windows": """
+        """,
+    ),
+    (
+        "analytics_analysis_windows",
+        r"""
+        CREATE VIEW analytics_analysis_windows AS
         SELECT w.id AS window_id,
                w.file_id,
                w.tier,
@@ -92,8 +100,12 @@ VIEWS: dict[str, str] = {
                w.energy,
                w.mood_scores
         FROM analysis_window w
-    """,
-    "analytics_tracklists": """
+        """,
+    ),
+    (
+        "analytics_tracklists",
+        r"""
+        CREATE VIEW analytics_tracklists AS
         SELECT t.id AS tracklist_id,
                t.file_id,
                t.source,
@@ -106,8 +118,12 @@ VIEWS: dict[str, str] = {
                t.created_at
         FROM tracklists t
         WHERE t.propagated_from_set_key IS NULL
-    """,
-    "analytics_tracklist_tracks": """
+        """,
+    ),
+    (
+        "analytics_tracklist_tracks",
+        r"""
+        CREATE VIEW analytics_tracklist_tracks AS
         SELECT t.id AS tracklist_id,
                v.id AS version_id,
                v.version_number,
@@ -125,8 +141,12 @@ VIEWS: dict[str, str] = {
         JOIN tracklist_tracks k ON k.version_id = v.id
         WHERE t.propagated_from_set_key IS NULL
           AND v.version_number = (SELECT max(v2.version_number) FROM tracklist_versions v2 WHERE v2.tracklist_id = t.id)
-    """,
-    "analytics_cue_track_offsets": f"""
+        """,
+    ),
+    (
+        "analytics_cue_track_offsets",
+        r"""
+        CREATE VIEW analytics_cue_track_offsets AS
         SELECT s.media_id AS file_id,
                s.observation_id,
                s.selected_at,
@@ -152,10 +172,14 @@ VIEWS: dict[str, str] = {
           AND EXISTS (
               SELECT 1
               FROM jsonb_array_elements_text(COALESCE(tr.item -> 'evidence', '[]'::jsonb)) AS ev(item)
-              WHERE {_CUE_FILE_ORDINAL}::integer = (s.target_mapping ->> 'cue_file_ordinal')::integer
+              WHERE substring(ev.item FROM '^FILE:(\d+):')::integer = (s.target_mapping ->> 'cue_file_ordinal')::integer
           )
-    """,
-    "analytics_cue_recording_offsets": f"""
+        """,
+    ),
+    (
+        "analytics_cue_recording_offsets",
+        r"""
+        CREATE VIEW analytics_cue_recording_offsets AS
         SELECT s.media_id AS file_id,
                s.observation_id,
                s.selected_at,
@@ -190,7 +214,7 @@ VIEWS: dict[str, str] = {
           AND s.target_mapping ? 'cue_file_ordinal'
           -- the media is present, is media, and is the file the operator reviewed (sha binding)
           AND m.missing_at IS NULL
-          AND m.file_type IN ({_MEDIA_TYPES})
+          AND m.file_type IN ('aac', 'aiff', 'avi', 'flac', 'flv', 'm4a', 'mkv', 'mov', 'mp2', 'mp3', 'mp4', 'ogg', 'opus', 'wav', 'webm', 'wma', 'wmv')
           AND m.sha256_hash = s.target_mapping ->> 'media_sha256'
           -- the source is available (provider_persistence.source_availability == 'current')
           AND o.status IN ('found', 'incomplete', 'ambiguous')
@@ -213,18 +237,17 @@ VIEWS: dict[str, str] = {
                   AND sf.missing_at IS NULL
                   AND sf.companion_ambiguous_at IS NULL
                   AND EXISTS (SELECT 1 FROM file_companions fc WHERE fc.companion_id = sf.id AND fc.media_id = m.id)
+                  -- stale only with EXACTLY ONE inventory marker that is not the CUE file's sha; one aggregate
+                  -- row always, so no scalar subquery can return two rows (phaze-2al7q.3)
                   AND (
-                      (SELECT count(*) FROM jsonb_array_elements_text(prov.items) AS pe(item) WHERE left(pe.item, 25) = 'capture:inventory_sha256:') <> 1
-                      OR sf.sha256_hash = (
-                          SELECT substring(pe.item FROM 26)
-                          FROM jsonb_array_elements_text(prov.items) AS pe(item)
-                          WHERE left(pe.item, 25) = 'capture:inventory_sha256:'
-                      )
+                      SELECT count(*) <> 1 OR bool_and(substring(pe.item FROM 26) = sf.sha256_hash)
+                      FROM jsonb_array_elements_text(prov.items) AS pe(item)
+                      WHERE left(pe.item, 25) = 'capture:inventory_sha256:'
                   )
                   AND NOT (
                       prov.items ? 'revision:sha256:full'
                       AND o.revision_scope = 'full'
-                      AND o.revision ~ '^[0-9a-f]{{64}}$'
+                      AND o.revision ~ '^[0-9a-f]{64}$'
                       AND sf.sha256_hash <> o.revision
                   )
               )
@@ -239,54 +262,92 @@ VIEWS: dict[str, str] = {
           AND EXISTS (
               SELECT 1
               FROM jsonb_array_elements_text(COALESCE(tr.item -> 'evidence', '[]'::jsonb)) AS ev(item)
-              WHERE {_CUE_FILE_ORDINAL}::integer = (s.target_mapping ->> 'cue_file_ordinal')::integer
+              WHERE substring(ev.item FROM '^FILE:(\d+):')::integer = (s.target_mapping ->> 'cue_file_ordinal')::integer
           )
           -- only an intrinsically qualified offset is ever re-bound to the recording
           AND tr.item -> 'timestamp' ->> 'offset_usability' = 'qualified'
           AND tr.item -> 'timestamp' ->> 'kind' = 'offset'
           AND tr.item -> 'timestamp' -> 'offset' IS NOT NULL
-    """,
-}
+        """,
+    ),
+)
+
+GRANTS: tuple[str, ...] = (
+    "GRANT USAGE ON SCHEMA public TO analytics_ro",
+    "GRANT SELECT ON analytics_files TO analytics_ro",
+    "GRANT SELECT ON analytics_file_analysis TO analytics_ro",
+    "GRANT SELECT ON analytics_analysis_windows TO analytics_ro",
+    "GRANT SELECT ON analytics_tracklists TO analytics_ro",
+    "GRANT SELECT ON analytics_tracklist_tracks TO analytics_ro",
+    "GRANT SELECT ON analytics_cue_track_offsets TO analytics_ro",
+    "GRANT SELECT ON analytics_cue_recording_offsets TO analytics_ro",
+)
+
+DROPS: tuple[str, ...] = (
+    "DROP VIEW IF EXISTS analytics_cue_recording_offsets",
+    "DROP VIEW IF EXISTS analytics_cue_track_offsets",
+    "DROP VIEW IF EXISTS analytics_tracklist_tracks",
+    "DROP VIEW IF EXISTS analytics_tracklists",
+    "DROP VIEW IF EXISTS analytics_analysis_windows",
+    "DROP VIEW IF EXISTS analytics_file_analysis",
+    "DROP VIEW IF EXISTS analytics_files",
+)
+
+# A role is cluster-wide, every seat's database is not: two databases migrating at once must not both create, alter or
+# drop it. An advisory lock cannot serialize them -- its key is scoped to the CURRENT DATABASE (measured on the harness,
+# phaze-2al7q.3) -- but a lock on the shared catalog pg_authid is cluster-wide. SHARE UPDATE EXCLUSIVE conflicts with
+# itself, so concurrent 095 upgrades and downgrades queue behind each other, and with nothing a login or another role's
+# DDL takes (ACCESS SHARE / ROW EXCLUSIVE), so nothing else waits. Held to the end of the migration transaction.
+LOCK_ROLE_CATALOG = "LOCK TABLE pg_catalog.pg_authid IN SHARE UPDATE EXCLUSIVE MODE"
+
+ENSURE_ROLE = """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analytics_ro') THEN
+            CREATE ROLE analytics_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
+        END IF;
+    END
+    $$
+"""
+
+SET_READ_ONLY = "ALTER ROLE analytics_ro SET default_transaction_read_only = on"
+
+REVOKE_SCHEMA = "REVOKE USAGE ON SCHEMA public FROM analytics_ro"
+
+# Dropped only when no database still holds a grant to it: DROP ROLE checks the shared dependency catalog across every
+# database, so a seat whose database is at 095 or later (and so holds the view grants) keeps the role.
+DROP_ROLE_UNLESS_USED = """
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analytics_ro') THEN
+            BEGIN
+                DROP ROLE analytics_ro;
+            EXCEPTION WHEN dependent_objects_still_exist THEN
+                RAISE NOTICE 'role analytics_ro is still used by another database; left in place';
+            END;
+        END IF;
+    END
+    $$
+"""
+
+ROLE_UPGRADE: tuple[str, ...] = (LOCK_ROLE_CATALOG, ENSURE_ROLE, SET_READ_ONLY)
+ROLE_DOWNGRADE: tuple[str, ...] = (LOCK_ROLE_CATALOG, DROP_ROLE_UNLESS_USED)
 
 
 def upgrade() -> None:
     """Create the role (if absent), the views, and grant the role SELECT on the views only."""
-    op.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{ROLE}') THEN
-                CREATE ROLE {ROLE} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
-            END IF;
-        END
-        $$
-        """
-    )
-    op.execute(f"ALTER ROLE {ROLE} SET default_transaction_read_only = on")
-    for name, body in VIEWS.items():
-        op.execute(f"CREATE VIEW {name} AS {body}")
-    op.execute(f"GRANT USAGE ON SCHEMA public TO {ROLE}")
-    for name in VIEWS:
-        op.execute(f"GRANT SELECT ON {name} TO {ROLE}")
+    for statement in ROLE_UPGRADE:
+        op.execute(statement)
+    for _name, create in VIEWS:
+        op.execute(create)
+    for grant in GRANTS:
+        op.execute(grant)
 
 
 def downgrade() -> None:
     """Drop the views, revoke the role's grants, and drop the role unless another database still uses it."""
-    for name in reversed(list(VIEWS)):
-        op.execute(f"DROP VIEW IF EXISTS {name}")
-    op.execute(f"REVOKE USAGE ON SCHEMA public FROM {ROLE}")
-    op.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{ROLE}') THEN
-                BEGIN
-                    DROP ROLE {ROLE};
-                EXCEPTION WHEN dependent_objects_still_exist THEN
-                    RAISE NOTICE 'role {ROLE} is still used by another database; left in place';
-                END;
-            END IF;
-        END
-        $$
-        """
-    )
+    for drop in DROPS:
+        op.execute(drop)
+    op.execute(REVOKE_SCHEMA)
+    for statement in ROLE_DOWNGRADE:
+        op.execute(statement)

@@ -20,7 +20,9 @@
 # Sorted, one path per line. `#` comments and blank lines are ignored.
 tests/agents/deployment/test_agent_compose.py
 tests/agents/deployment/test_k8s_runbook.py
+tests/agents/deployment/test_readonly_archive.py
 tests/analyze/services/backends/test_kube_env_contract.py
+tests/integration/test_migrations/test_096_analytics_agent_path_prefixes.py
 tests/shared/core/test_docs_beui03.py
 tests/shared/core/test_docs_ia_current.py
 tests/shared/core/test_operator_copy.py
@@ -37,6 +39,7 @@ tests/shared/test_analytics_read_only_docs.py
 tests/shared/test_change_gate.py
 tests/shared/test_ci_workflow_wiring.py
 tests/shared/test_developer_documentation.py
+tests/shared/test_doc_symbol_links.py
 tests/shared/test_documentation_integrity.py
 tests/shared/test_fast_gate.py
 tests/shared/test_historical_evidence_audit.py

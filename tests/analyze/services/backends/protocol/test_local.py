@@ -267,7 +267,7 @@ async def test_local_dispatch_excluded_from_staging_candidates(session: AsyncSes
     from sqlalchemy import select
 
     from phaze.models.scheduling_ledger import SchedulingLedger
-    from phaze.services.pipeline import get_cloud_staging_candidates
+    from phaze.services.pipeline import CLOUD_BANDS, get_cloud_staging_candidates
 
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backend = _local()
@@ -283,7 +283,7 @@ async def test_local_dispatch_excluded_from_staging_candidates(session: AsyncSes
     session.add(SchedulingLedger(key=f"process_file:{fid}", function="process_file", routing="agent", payload={"file_id": str(fid)}))
     await session.commit()
 
-    candidates = await get_cloud_staging_candidates(session, limit=10)
+    candidates = [row for band in CLOUD_BANDS for row in await get_cloud_staging_candidates(session, limit=10, band=band)]
     assert fid not in {f.id for f, _ in candidates}  # excluded by ~inflight_clause(ANALYZE)
     # D-05: the awaiting row is retained (the conjunct excludes; it does not delete the row).
     retained = (await session.execute(select(CloudJob.status).where(CloudJob.file_id == fid))).scalar_one()
