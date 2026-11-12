@@ -36,6 +36,7 @@
     "GET /pipeline/",
     "GET /pipeline/analyze-files",
     "GET /pipeline/analyze-queue/waiting",
+    "GET /pipeline/cue-conflicts",
     "GET /pipeline/cue-link-review",
     "GET /pipeline/files",
     "GET /pipeline/files/{file_id}/trace/{stage}",
@@ -124,6 +125,7 @@
     "POST /pipeline/analysis-failed/retry",
     "POST /pipeline/analyze",
     "POST /pipeline/backfill-cloud",
+    "POST /pipeline/cue-conflicts/resolve",
     "POST /pipeline/cue-link-review/decide",
     "POST /pipeline/extract-metadata",
     "POST /pipeline/files/{file_id}/analysis-failed/retry",
@@ -1330,6 +1332,11 @@
         "button",
         "attention-pill",
         "{\"hx-get\": \"/shell/attention\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#attention-tray-content\", \"hx-trigger\": \"attention:load\"}"
+      ],
+      [
+        "div",
+        "cue-conflicts",
+        "{\"hx-get\": \"/pipeline/cue-conflicts\", \"hx-swap\": \"outerHTML\", \"hx-trigger\": \"load\"}"
       ],
       [
         "div",

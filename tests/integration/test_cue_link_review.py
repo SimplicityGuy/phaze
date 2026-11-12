@@ -186,7 +186,7 @@ async def test_more_than_one_current_cue_for_a_recording_is_excluded_as_ambiguou
     excluded = soup.select("[data-cue-link-excluded]")
     assert {row["data-reason"] for row in excluded} == {"multiple_cues"}
     assert len(excluded) == 2, "both CUEs are listed; choosing between them is not a bulk decision"
-    assert all("Ambiguous:" in row.get_text() and "2 current CUEs" in row.get_text() for row in excluded)
+    assert all("Ambiguous:" in row.get_text() and "2 current CUE files" in row.get_text() for row in excluded)
     assert soup.select("[data-cue-link-row]") == []
     assert soup.select_one('[data-cue-link-excluded-count="multiple_cues"]') is not None
 

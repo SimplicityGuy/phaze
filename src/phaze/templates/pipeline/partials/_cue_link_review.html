@@ -3,7 +3,8 @@
    the operator checks rows and presses Approve or Reject; each checked row then goes through the
    same audited single-review decision. Only rows checked on THIS page are sent, each with a review
    token naming exactly what it was shown with -- a row that changed since refuses the whole batch.
-   Ambiguous candidates are listed below with their reason and are never offered for bulk approval. #}
+   Ambiguous candidates are listed below with their reason and are never offered for bulk approval;
+   the CUE conflicts queue (phaze-drote) decides them. #}
 <div id="cue-link-review" x-data="{ selected: 0, count() { this.selected = $root.querySelectorAll('[data-cue-link-select]:checked').length } }" x-on:change="count()">
     {% if outcome is defined and outcome %}
     <div data-cue-link-outcome role="status" aria-live="polite" class="mb-3 rounded-md border px-3 py-2 text-sm {{ 'border-red-300 text-warn' if failed else 'border-green-300 text-gray-800 dark:text-gray-200' }}">
@@ -70,6 +71,7 @@
     {% if excluded %}
     <section class="mt-6" aria-labelledby="cue-link-excluded-heading">
         <h4 id="cue-link-excluded-heading" class="font-semibold">Not offered for bulk review</h4>
+        {% if excluded_counts.get('multiple_cues') or excluded_counts.get('file_ordinal') %}<p class="mt-1 text-xs text-muted" data-cue-link-conflicts-hint>Ambiguous CUEs are decided one recording at a time under <a class="text-link hover:underline" href="#cue-conflicts-heading">Resolve CUE conflicts</a>.</p>{% endif %}
         <ul class="mt-1 text-xs text-muted">
             {% for reason, total in excluded_counts.items() %}<li data-cue-link-excluded-count="{{ reason }}">{{ 'Ambiguous: ' if reason in ambiguity_reasons else '' }}{{ reason_labels[reason] }} · {{ total | thousands }}</li>{% endfor %}
         </ul>

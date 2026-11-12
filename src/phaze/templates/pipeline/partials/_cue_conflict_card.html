@@ -1,0 +1,80 @@
+{% import "ui/primitives.html" as ui %}
+{# phaze-drote: one recording whose CUE is ambiguous. A CUE is preselected only when every CUE file of
+   the recording has identical tracks and exact offsets; nothing is applied until the operator presses
+   the button. Confirming selects the checked CUE and rejects the recording's other CUE files in one
+   audited step. The card token names exactly the CUE files shown: if they changed, nothing applies. #}
+{% if outcome is defined and outcome and outcome.applied %}
+<article id="cue-conflict-{{ outcome.winner.media_id }}" data-cue-conflict-resolved="{{ outcome.winner.media_id }}" role="status" aria-live="polite"
+         class="rounded-lg border border-green-300 p-4 text-sm text-gray-800 dark:text-gray-200">
+    <p><a class="text-link hover:underline break-all" href="/files/{{ outcome.winner.media_id }}#companion-sources">{{ outcome.winner.media_filename }}</a>
+        now uses <span class="break-all">{{ outcome.winner.source_filename or 'the chosen CUE' }}</span>, FILE {{ outcome.winner.cue_file_ordinal }}.
+        {% if outcome.rejected %}Rejected {{ outcome.rejected | length }} other CUE file{{ '' if outcome.rejected | length == 1 else 's' }}.{% endif %}
+        Each decision is recorded in the selection history.</p>
+</article>
+{% elif not conflict %}
+<article id="cue-conflict-{{ media_id }}" data-cue-conflict-gone="{{ media_id }}" role="status" class="rounded-lg border border-gray-200 p-4 text-sm text-muted dark:border-phaze-border">
+    <p>This recording no longer needs a CUE decision: its CUE files changed or were decided elsewhere. Nothing was applied.</p>
+</article>
+{% else %}
+{% set many = conflict.candidates | length > 1 %}
+<article id="cue-conflict-{{ conflict.media_id }}" data-cue-conflict="{{ conflict.media_id }}" data-reason="{{ conflict.reason }}" data-identical="{{ 'true' if conflict.identical else 'false' }}"
+         class="rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
+    {% if outcome is defined and outcome and outcome.stale %}
+    <p data-cue-conflict-message role="alert" class="mb-3 rounded-md border border-red-300 px-3 py-2 text-sm text-warn">This recording's CUE files changed after the card was shown, so nothing was applied. The card below is current; choose again.</p>
+    {% elif error %}
+    <p data-cue-conflict-message role="alert" class="mb-3 rounded-md border border-red-300 px-3 py-2 text-sm text-warn">Nothing was applied: {{ error }}</p>
+    {% endif %}
+    <h4 class="font-semibold"><a class="text-link hover:underline break-all" href="/files/{{ conflict.media_id }}#companion-sources">{{ conflict.media_filename }}</a></h4>
+    <p class="mt-1 text-sm text-gray-600 dark:text-gray-300" data-cue-conflict-summary>
+        <span class="font-medium text-warn">Ambiguous:</span>
+        {% if conflict.reason == 'multiple_cues' %}
+            {{ conflict.candidates | length }} CUE files link to this recording.
+            {% if conflict.identical %}Their tracks and exact offsets are identical, so the strongest link is preselected; the choice cannot change the offsets.
+            {% elif conflict.differing %}They differ at track{{ '' if conflict.differing | length == 1 else 's' }} {{ conflict.differing | join(', ') }}. Nothing is preselected: choose the CUE that matches the recording.
+            {% else %}They cannot be compared until each CUE's FILE entry is known. Nothing is preselected.{% endif %}
+        {% else %}
+            The CUE has {{ conflict.candidates[0].file_names | length }} FILE entries and does not say which one is this recording. Choose it.
+        {% endif %}
+    </p>
+    <form method="post" action="/pipeline/cue-conflicts/resolve" hx-post="/pipeline/cue-conflicts/resolve" hx-target="closest article" hx-swap="outerHTML" hx-disabled-elt="find button" class="mt-3">
+        <input type="hidden" name="media_id" value="{{ conflict.media_id }}">
+        <input type="hidden" name="card_token" value="{{ conflict.token }}">
+        <div class="relative overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
+            <table class="w-full text-left text-sm">
+                <thead class="table-head"><tr class="bg-gray-50 dark:bg-phaze-panel">
+                    <th class="table-th p-3">Use</th><th class="table-th p-3">CUE file</th><th class="table-th p-3">Link</th><th class="table-th p-3">FILE entry used</th><th class="table-th p-3">Tracks</th></tr></thead>
+                <tbody>
+                {% for row in conflict.candidates %}
+                    <tr class="border-t border-gray-200 align-top dark:border-phaze-border" data-cue-conflict-candidate="{{ row.candidate_id }}">
+                        <td class="p-3"><input type="radio" name="winner" value="{{ row.token }}" required data-cue-conflict-winner{% if conflict.proposed_id == row.candidate_id %} checked data-proposed{% endif %}
+                            aria-label="Use {{ row.source_filename or 'this CUE' }}"></td>
+                        <td class="p-3">{% if row.source_file_id %}<a class="text-link hover:underline break-all" href="/files/{{ row.source_file_id }}#companion-sources">{{ row.source_filename }}</a>{% else %}{{ row.source_filename or 'Unknown' }}{% endif %}
+                            {% if conflict.proposed_id == row.candidate_id %}<p class="text-xs text-muted">Proposed: strongest link</p>{% endif %}</td>
+                        <td class="p-3">{{ method_labels[row.method] }}</td>
+                        <td class="p-3">
+                            {% if row.cue_file_ordinal %}
+                            <span data-cue-conflict-ordinal="{{ row.cue_file_ordinal }}">FILE {{ row.cue_file_ordinal }} <span class="break-all">“{{ row.file_name }}”</span></span>
+                            {% else %}
+                            <label class="block text-xs text-muted" for="ordinal-{{ row.candidate_id }}">Which FILE entry is this recording?</label>
+                            <select id="ordinal-{{ row.candidate_id }}" name="ordinal.{{ row.candidate_id }}" data-cue-conflict-ordinal-choice
+                                    class="mt-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-100">
+                                <option value="">Choose…</option>
+                                {% for number, name in row.file_names %}<option value="{{ number }}">FILE {{ number }} “{{ name }}” · {{ row.tracks_by_file[number][0] }} tracks</option>{% endfor %}
+                            </select>
+                            {% endif %}
+                        </td>
+                        <td class="p-3">{{ row.track_count }} <span class="text-xs text-muted">· {{ row.timed_count }} with exact offsets</span>
+                            {% if conflict.differing and row.cue_file_ordinal %}{% set titles = row.titles(row.cue_file_ordinal) %}
+                            <ul class="mt-1 text-xs text-muted" data-cue-conflict-differences>{% for number in conflict.differing[:5] %}<li>Track {{ number }}: {{ titles[number - 1] if number <= titles | length else '(none)' }}</li>{% endfor %}{% if conflict.differing | length > 5 %}<li>… {{ conflict.differing | length - 5 }} more</li>{% endif %}</ul>
+                            {% endif %}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="mt-3 flex justify-end">
+            <button type="submit" class="{{ ui.btn('primary', 'md') }}">{% if many %}Use the checked CUE and reject the other {{ conflict.candidates | length - 1 }}{% else %}Use this CUE with the chosen FILE entry{% endif %}</button>
+        </div>
+    </form>
+</article>
+{% endif %}

@@ -18,8 +18,15 @@ selectable CUE source for its recording; the recording has no selected tracklist
 ordinal is determined -- the CUE has one FILE entry, or exactly one of its FILE entries names this
 recording (same file name, else same stem with another extension). Everything else is EXCLUDED and
 listed with its reason. Two reasons are AMBIGUITY, listed first and separately: more than one current
-CUE for one recording, and a FILE ordinal the CUE does not determine. Choosing between ambiguous CUEs
-is not this module's job (phaze-drote); it only refuses to guess.
+CUE FILE for one recording, and a FILE ordinal the CUE does not determine. Choosing between ambiguous
+CUEs is not this module's job -- :mod:`phaze.services.cue_conflict_review` resolves them one recording
+at a time (phaze-drote); this module only refuses to guess.
+
+**One CUE file is one CUE** (phaze-drote). A file parsed by two parser versions (``local-tracklist-v1``
+and ``-v4``) has two observations and two candidates for the same recording. Counting candidates made
+every such recording "ambiguous"; the population is therefore grouped by source object (the CUE file),
+the NEWEST parser version's candidate stands for the file, and an older parse of the same file and
+revision is excluded as ``older_parse`` -- never proposed, rejected or selected here.
 
 **Nothing unseen.** Every proposed row carries a review token: its candidate id plus a digest of the
 exact values it was shown with (observation, revision, both content hashes, FILE ordinal). A decision
@@ -38,7 +45,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 import unicodedata
 import uuid
 
-from sqlalchemy import and_, literal_column, select
+from sqlalchemy import and_, case, exists, literal_column, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import aliased
 import structlog
@@ -51,6 +58,7 @@ from phaze.services.companion_content import MEDIA_FILE_TYPES
 from phaze.services.companion_details import Observation, Source, _observation_query, _summary
 from phaze.services.local_source_import import decide_local_source
 from phaze.services.selected_tag_sources import CurrentMediaBinding
+from phaze.tracklist_providers.local_parser import PARSER_VERSIONS
 from phaze.tracklist_providers.local_release import RELEASE_PARSER_VERSIONS
 
 
@@ -76,16 +84,19 @@ METHOD_LABELS: Final = {
 }
 
 AMBIGUITY_REASONS: Final = ("multiple_cues", "file_ordinal")
-"""Excluded as AMBIGUOUS -- deciding these is phaze-drote's job, never a bulk proposal's."""
+"""Excluded as AMBIGUOUS -- resolved in the CUE conflicts queue, never by a bulk proposal."""
 
-OTHER_REASONS: Final = ("not_current", "incomplete", "already_selected", "conflict")
+OTHER_REASONS: Final = ("not_current", "incomplete", "older_parse", "already_selected", "conflict")
 """Excluded because the candidate cannot be selected as shown, not because it is ambiguous."""
 
 REASON_LABELS: Final = {
-    "multiple_cues": "More than one current CUE links to this recording",
+    "multiple_cues": "More than one current CUE file links to this recording",
     "file_ordinal": "The CUE has several FILE entries and does not say which one is this recording",
     "not_current": "The CUE source is not current for this recording",
     "incomplete": "The CUE was not completely parsed",
+    # Stopgap: older-parser observations stay current until phaze-og7sn supersedes them at import (and
+    # backfills the existing ones). Until then they are listed here, and left pending.
+    "older_parse": "An older parse of a CUE file that a newer parser version also parsed",
     "already_selected": "This recording already has a selected tracklist",
     "conflict": "A conflicting source revision needs single review",
 }
@@ -95,7 +106,13 @@ MAX_DECISIONS: Final = 200
 
 _FILE_EVIDENCE = re.compile(r"^FILE:(\d+):(.*)$", re.S)
 
-ReasonCode = Literal["multiple_cues", "file_ordinal", "not_current", "incomplete", "already_selected", "conflict"]
+ReasonCode = Literal["multiple_cues", "file_ordinal", "not_current", "incomplete", "older_parse", "already_selected", "conflict"]
+
+_TRACKLIST_PARSER_ORDER: Final = tuple(sorted(PARSER_VERSIONS, key=lambda version: int(version.rsplit("v", 1)[1])))
+"""Local tracklist parser versions, oldest first (``local-tracklist-v1`` ... the current one)."""
+
+TrackPrint = tuple[int, int, str, str | None]
+"""One parsed track: (FILE ordinal, position, fingerprint of artist/title/exact offset, title)."""
 
 
 @dataclass(frozen=True)
@@ -120,6 +137,15 @@ class CueLinkRow:
     ordinal_basis: Literal["single_file", "file_name", "file_stem"] | None = None
     reason: ReasonCode | None = None
     detail: str | None = None
+    source_object_id: uuid.UUID | None = None
+    tracks: tuple[TrackPrint, ...] = ()
+
+    def fingerprint(self, ordinal: int) -> tuple[str, ...]:
+        """The tracks under FILE ``ordinal``, in order, as content fingerprints -- equal iff same tracks and offsets."""
+        return tuple(print_ for file, _position, print_, _title in sorted(self.tracks, key=lambda t: t[1]) if file == ordinal)
+
+    def titles(self, ordinal: int) -> tuple[str | None, ...]:
+        return tuple(title for file, _position, _print, title in sorted(self.tracks, key=lambda t: t[1]) if file == ordinal)
 
     @property
     def track_count(self) -> int:
@@ -192,10 +218,11 @@ def _ordinal_for(file_names: Sequence[tuple[int, str]], media_filename: str) -> 
     return None, None
 
 
-def _file_shape(tracks: Any) -> tuple[tuple[tuple[int, str], ...], dict[int, tuple[int, int]]]:
-    """FILE names and per-FILE (tracks, qualified offsets) from the stored track evidence."""
+def _file_shape(tracks: Any) -> tuple[tuple[tuple[int, str], ...], dict[int, tuple[int, int]], tuple[TrackPrint, ...]]:
+    """FILE names, per-FILE (tracks, qualified offsets) and per-track prints from the stored track evidence."""
     names: dict[int, str] = {}
     counts: dict[int, list[int]] = defaultdict(lambda: [0, 0])
+    prints: list[TrackPrint] = []
     for track in tracks or ():
         evidence = track.get("file") if isinstance(track, dict) else None
         match = _FILE_EVIDENCE.match(evidence) if isinstance(evidence, str) else None
@@ -205,7 +232,10 @@ def _file_shape(tracks: Any) -> tuple[tuple[tuple[int, str], ...], dict[int, tup
         names.setdefault(ordinal, match.group(2))
         counts[ordinal][0] += 1
         counts[ordinal][1] += track.get("q") == "qualified"
-    return tuple(sorted(names.items())), {ordinal: (value[0], value[1]) for ordinal, value in counts.items()}
+        position = track.get("p")
+        title = track.get("n")
+        prints.append((ordinal, position if isinstance(position, int) else 0, str(track.get("h")), title if isinstance(title, str) else None))
+    return tuple(sorted(names.items())), {ordinal: (value[0], value[1]) for ordinal, value in counts.items()}, tuple(prints)
 
 
 def _population_stmt(media_ids: Iterable[uuid.UUID] | None) -> Any:
@@ -213,14 +243,19 @@ def _population_stmt(media_ids: Iterable[uuid.UUID] | None) -> Any:
     # Aliased: the shared observation query's own FileCompanion subqueries would otherwise auto-correlate
     # to a plain outer FileCompanion join and lose their FROM clause.
     link = aliased(FileCompanion)
-    # Per track: the FILE evidence it was parsed under and its offset usability -- a few bytes per
-    # track instead of the whole stored payload. Fixed SQL over this row's own payload; nothing here
-    # is interpolated from input.
+    # Per track: the FILE evidence it was parsed under, its offset usability, position, a short title
+    # and a fingerprint of what a consumer reads (artist, title, exact offset, usability) -- a few
+    # bytes per track instead of the whole stored payload. Fixed SQL over this row's own payload;
+    # nothing here is interpolated from input.
     track_shape = literal_column(
         "(SELECT jsonb_agg(jsonb_build_object("
         "'file', (SELECT e FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(t->'evidence') = 'array' THEN t->'evidence' ELSE '[]'::jsonb END) e"
         " WHERE left(e, 5) = 'FILE:' LIMIT 1),"
-        " 'q', t->'timestamp'->>'offset_usability'))"
+        " 'q', t->'timestamp'->>'offset_usability',"
+        " 'p', t->'position',"
+        " 'n', left(t->>'title', 200),"
+        " 'h', md5(jsonb_build_object('a', t->'artist', 't', t->'title', 'o', t->'timestamp'->'offset',"
+        " 'u', t->'timestamp'->'offset_usability')::text)))"
         " FROM jsonb_array_elements(CASE WHEN jsonb_typeof(provider_source_observations.payload->'tracks') = 'array'"
         " THEN provider_source_observations.payload->'tracks' ELSE '[]'::jsonb END) t)",
         JSONB,
@@ -230,6 +265,24 @@ def _population_stmt(media_ids: Iterable[uuid.UUID] | None) -> Any:
         .where(ProviderRecordingSelection.media_id == FileRecord.id, ProviderRecordingSelection.kind == "tracklist")
         .correlate(FileRecord)
         .scalar_subquery()
+    )
+    # Another candidate of this recording carries a NEWER local parse of the same file and revision --
+    # whatever that candidate's status, so rejecting the newer parse never resurrects the older one.
+    newer = aliased(Observation)
+    newer_candidate = aliased(ProviderRecordingCandidate)
+    order = {version: index for index, version in enumerate(_TRACKLIST_PARSER_ORDER)}
+    newer_parse = exists(
+        select(newer_candidate.id)
+        .join(newer, newer.id == newer_candidate.observation_id)
+        .where(
+            newer_candidate.media_id == FileRecord.id,
+            newer.object_id == Observation.object_id,
+            newer.revision == Observation.revision,
+            newer.id != Observation.id,
+            newer.parser_version.in_(_TRACKLIST_PARSER_ORDER),
+            case(order, value=newer.parser_version, else_=-1) > case(order, value=Observation.parser_version, else_=-1),
+        )
+        .correlate(Observation, FileRecord)
     )
     stmt = (
         _observation_query(FileRecord)
@@ -248,6 +301,7 @@ def _population_stmt(media_ids: Iterable[uuid.UUID] | None) -> Any:
             Observation.payload["artist"]["value"].astext.label("set_artist"),
             Observation.payload["event"]["value"].astext.label("set_event"),
             track_shape.label("track_shape"),
+            newer_parse.label("newer_parse"),
         )
         .join(ProviderRecordingCandidate, ProviderRecordingCandidate.observation_id == Observation.id)
         .join(FileRecord, FileRecord.id == ProviderRecordingCandidate.media_id)
@@ -265,8 +319,27 @@ def _population_stmt(media_ids: Iterable[uuid.UUID] | None) -> Any:
     return stmt
 
 
-def _classify(rows: Sequence[Mapping[Any, Any]]) -> CueLinkReview:
-    built: list[tuple[CueLinkRow, str, bool]] = []
+@dataclass(frozen=True)
+class Built:
+    """One population row with the facts classification needs (shared with the conflicts queue)."""
+
+    cue: CueLinkRow
+    availability: str
+    selectable: bool
+    pending: bool
+    older_parse: bool
+    conflict: bool
+    parser_version: str
+    selected_observation_id: uuid.UUID | None
+
+    @property
+    def stands_for_its_file(self) -> bool:
+        """Current, selectable, and the newest parse of its CUE file: this file's candidate."""
+        return self.availability == "current" and self.selectable and not self.older_parse
+
+
+def build_rows(rows: Sequence[Mapping[Any, Any]]) -> list[Built]:
+    built: list[Built] = []
     for row in rows:
         media = CurrentMediaBinding(row["media_id"], row["media_agent_id"], row["media_sha256"], row["media_file_type"], row["media_missing_at"])
         availability = _summary(row, media, ()).availability
@@ -274,7 +347,7 @@ def _classify(rows: Sequence[Mapping[Any, Any]]) -> CueLinkReview:
             availability = "missing"
         elif media.file_type not in MEDIA_FILE_TYPES:
             availability = "unavailable"
-        file_names, tracks_by_file = _file_shape(row["track_shape"])
+        file_names, tracks_by_file, tracks = _file_shape(row["track_shape"])
         selectable = row["status"] == "found" and row["completeness_state"] == "complete" and bool(row["track_count"]) and bool(file_names)
         method = row["derivation_method"] if row["derivation_method"] in METHOD_ORDER else "unknown"
         cue = CueLinkRow(
@@ -292,33 +365,60 @@ def _classify(rows: Sequence[Mapping[Any, Any]]) -> CueLinkReview:
             set_event=row["set_event"],
             file_names=file_names,
             tracks_by_file=tracks_by_file,
+            source_object_id=row["source_object_id"],
+            tracks=tracks,
         )
-        built.append((cue, availability, selectable))
-    qualifying: Counter[uuid.UUID] = Counter(cue.media_id for cue, availability, selectable in built if availability == "current" and selectable)
-    selected_observation = {row["media_id"]: row["selected_observation_id"] for row in rows}
-    pending = {row["candidate_id"] for row in rows if row["candidate_row_status"] == "pending"}
-    conflicts = {row["candidate_id"] for row in rows if row["conflict_with_id"] is not None}
+        built.append(
+            Built(
+                cue=cue,
+                availability=availability,
+                selectable=selectable,
+                pending=row["candidate_row_status"] == "pending",
+                older_parse=bool(row["newer_parse"]),
+                conflict=row["conflict_with_id"] is not None,
+                parser_version=row["parser_version"],
+                selected_observation_id=row["selected_observation_id"],
+            )
+        )
+    return built
+
+
+def cue_files(built: Sequence[Built]) -> dict[uuid.UUID, set[uuid.UUID | None]]:
+    """Recording -> the CUE files (source objects) that currently stand for a CUE of it."""
+    files: dict[uuid.UUID, set[uuid.UUID | None]] = defaultdict(set)
+    for item in built:
+        if item.stands_for_its_file:
+            files[item.cue.media_id].add(item.cue.source_object_id)
+    return files
+
+
+def _classify(rows: Sequence[Mapping[Any, Any]]) -> CueLinkReview:
+    built = build_rows(rows)
+    files = cue_files(built)
     review = CueLinkReview()
-    for cue, availability, selectable in built:
-        if cue.candidate_id not in pending:
+    for item in built:
+        cue = item.cue
+        if not item.pending:
             continue
         reason: ReasonCode | None = None
         detail: str | None = None
         ordinal: int | None = None
         basis: str | None = None
-        if availability != "current":
-            reason, detail = "not_current", availability
-        elif not selectable:
+        if item.availability != "current":
+            reason, detail = "not_current", item.availability
+        elif not item.selectable:
             reason = "incomplete"
-        elif qualifying[cue.media_id] > 1:
-            reason, detail = "multiple_cues", f"{qualifying[cue.media_id]} current CUEs"
+        elif item.older_parse:
+            reason, detail = "older_parse", item.parser_version
+        elif item.selected_observation_id is not None:
+            reason = "already_selected"
+        elif len(files[cue.media_id]) > 1:
+            reason, detail = "multiple_cues", f"{len(files[cue.media_id])} current CUE files"
         else:
             ordinal, basis = _ordinal_for(cue.file_names, cue.media_filename)
             if ordinal is None:
                 reason, detail = "file_ordinal", f"{len(cue.file_names)} FILE entries"
-            elif selected_observation[cue.media_id] is not None:
-                reason = "already_selected"
-            elif cue.candidate_id in conflicts:
+            elif item.conflict:
                 reason = "conflict"
         if reason is None:
             review.proposed.append(_replace(cue, cue_file_ordinal=ordinal, ordinal_basis=basis))
@@ -334,10 +434,14 @@ def _replace(row: CueLinkRow, **changes: Any) -> CueLinkRow:
     return CueLinkRow(**{**row.__dict__, **changes})
 
 
+async def load_population(session: AsyncSession, *, media_ids: Iterable[uuid.UUID] | None = None) -> Sequence[Mapping[Any, Any]]:
+    """Every non-rejected local CUE tracklist candidate (or only those of ``media_ids``). Reads only."""
+    return (await session.execute(_population_stmt(media_ids))).mappings().all()
+
+
 async def load_cue_link_review(session: AsyncSession, *, media_ids: Iterable[uuid.UUID] | None = None) -> CueLinkReview:
     """Classify every pending CUE link candidate (or only those of ``media_ids``). Reads only."""
-    rows = (await session.execute(_population_stmt(media_ids))).mappings().all()
-    return _classify(rows)
+    return _classify(await load_population(session, media_ids=media_ids))
 
 
 def parse_tokens(tokens: Sequence[str]) -> dict[uuid.UUID, str]:
@@ -400,10 +504,15 @@ __all__ = [
     "METHOD_ORDER",
     "OTHER_REASONS",
     "REASON_LABELS",
+    "Built",
     "CueLinkReview",
     "CueLinkRow",
     "DecisionOutcome",
+    "TrackPrint",
+    "build_rows",
+    "cue_files",
     "decide_cue_links",
     "load_cue_link_review",
+    "load_population",
     "parse_tokens",
 ]
