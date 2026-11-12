@@ -6,13 +6,16 @@ while dominant_style carries the duration-modal label. A score dictionary remain
 for rolling-upgrade agents.
 """
 
+import math
 from typing import Any, Literal
 import uuid
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from phaze.schemas.wire_bounds import INT32_MAX
+from phaze.services.beat_grid import stored_beat_grid
 from phaze.services.pg_text import find_pg_unsafe_json_reason
+from phaze.services.set_projection import MOOD_ORDER
 
 
 def _reject_pg_unsafe_json(v: object, info: ValidationInfo) -> object:
@@ -105,6 +108,61 @@ class StyleScore(BaseModel):
     score: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
 
     _reject_pg_unsafe_name = field_validator("name", mode="after")(_reject_pg_unsafe_json)
+
+
+class SubwindowPayload(BaseModel):
+    """One 15 s mood slice of a coarse window (``analysis_subwindow``; docs/design/0026-subwindow-mood-and-beat-grid.md).
+
+    ``mood_scores`` is positional in ``MOOD_ORDER`` and ``None`` for a slice no patch centre falls in.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    window_index: int = Field(ge=0, le=INT32_MAX)
+    sub_index: int = Field(ge=0, le=INT32_MAX)
+    start_sec: float = Field(ge=0.0, allow_inf_nan=False)
+    end_sec: float = Field(ge=0.0, allow_inf_nan=False)
+    mood_scores: list[float | None] | None = Field(default=None, max_length=len(MOOD_ORDER))
+
+    @model_validator(mode="after")
+    def _span_and_vector_shape(self) -> "SubwindowPayload":
+        if self.end_sec <= self.start_sec:
+            raise ValueError("end_sec must be greater than start_sec")
+        if self.mood_scores is not None and len(self.mood_scores) != len(MOOD_ORDER):
+            raise ValueError(f"mood_scores must hold {len(MOOD_ORDER)} values (MOOD_ORDER) or be null")
+        return self
+
+
+# DoS bounds on work-per-request (wire_bounds rule 7), not column widths: 15 s slices of a 24 h file are 5,760;
+# a 24 h file at 300 BPM is 432,000 beats.
+MAX_SUBWINDOWS = 50000
+MAX_BEATS = 600000
+MAX_BEAT_GAPS = 50000
+
+
+class BeatGridPayload(BaseModel):
+    """A file's stitched beat grid (``analysis_beat_grid``). ``beat_count`` is derived server-side, never sent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    beats: list[float] = Field(max_length=MAX_BEATS)
+    gaps: list[list[float]] = Field(default_factory=list, max_length=MAX_BEAT_GAPS)
+
+    @field_validator("beats")
+    @classmethod
+    def _beats_ascending_and_stored(cls, value: list[float]) -> list[float]:
+        # Raises ValueError (422) on a duplicate/backwards beat; rounding is idempotent on an agent's already-rounded values.
+        if any(not math.isfinite(b) or b < 0.0 for b in value):
+            raise ValueError("beats must be finite and non-negative")
+        return stored_beat_grid(value)
+
+    @field_validator("gaps")
+    @classmethod
+    def _gaps_are_spans(cls, value: list[list[float]]) -> list[list[float]]:
+        for span in value:
+            if len(span) != 2 or not all(math.isfinite(x) and x >= 0.0 for x in span) or span[1] <= span[0]:
+                raise ValueError("each gap must be a [start_sec, end_sec] pair with end > start")
+        return value
 
 
 class AnalysisWritePayload(BaseModel):
@@ -202,6 +260,12 @@ class AnalysisWritePayload(BaseModel):
     # the wire cap is once again a statement about work-per-request only, and the whole range
     # this field admits is actually storable.
     windows: list[AnalysisWindowPayload] | None = Field(default=None, max_length=50000)
+
+    # Sub-window mood and the beat grid (phaze-ek9zf, docs/design/0026-subwindow-mood-and-beat-grid.md). OPTIONAL, so an
+    # agent on the previous image (which never sends them) posts a valid payload: absent = this run produced none: the
+    # router deletes the stored rows whenever it replaces the windows (they belong to the run that wrote the windows); present = replace wholesale.
+    subwindows: list[SubwindowPayload] | None = Field(default=None, max_length=MAX_SUBWINDOWS)
+    beat_grid: BeatGridPayload | None = None
 
 
 class AnalysisWriteResponse(BaseModel):
