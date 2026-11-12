@@ -19,7 +19,7 @@ Three rules the shape here exists to keep:
 3. **No manufactured values.** A segment that intersects no window of the right tier gets
    ``None`` for that metric, never a zero, a mean of nothing, or the file's own average.
 
-Mood has a finer source when one exists (``phaze-bxp3m``, ADR-0026 section 3). A file's
+Mood has a finer source when one exists (``phaze-bxp3m``, docs/design/0026-subwindow-mood-and-beat-grid.md section 3). A file's
 ``analysis_subwindow`` rows are 15 s mood slices; a segment takes its mood from the slices whose
 MIDPOINT falls inside it, by the same rule 2 that places coarse windows. That is what lets a track
 shorter than 180 s have a mood at all. A segment with no slice carrying a mood vector falls back to

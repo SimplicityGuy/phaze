@@ -218,7 +218,7 @@ def test_a_coarse_window_with_no_mood_scores_contributes_nothing_rather_than_zer
     assert segment.energy == 0.5
 
 
-# -- phaze-bxp3m: mood from sub-window slices (ADR-0026 section 3) -------------------------------
+# -- phaze-bxp3m: mood from sub-window slices (docs/design/0026-subwindow-mood-and-beat-grid.md section 3) -------------------------------
 #
 # A slice's mood is a POSITIONAL vector in MOOD_ORDER. The vectors below are built from the
 # name-keyed scores, so a test that reads the wrong slot fails rather than agreeing by accident.

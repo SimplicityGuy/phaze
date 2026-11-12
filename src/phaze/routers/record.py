@@ -240,7 +240,7 @@ async def build_file_record_context(
         .order_by(AnalysisWindow.tier, AnalysisWindow.window_index)
     )
     windows = list((await session.execute(windows_stmt)).scalars().all())
-    # phaze-bxp3m: the file's 15 s mood slices (ADR-0026). Empty for a file analysed before sub-window
+    # phaze-bxp3m: the file's 15 s mood slices (docs/design/0026-subwindow-mood-and-beat-grid.md). Empty for a file analysed before sub-window
     # mood existed, which makes the track-segment join take its coarse path unchanged.
     subwindows = list((await session.execute(select(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id))).scalars().all())
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
