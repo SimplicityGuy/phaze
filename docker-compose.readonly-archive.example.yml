@@ -7,7 +7,8 @@
 # Nothing here touches the file-server host: the export itself is an operator step in the runbook.
 #
 # The :ro suffix is the enforcement, and tests/agents/deployment/test_readonly_archive.py pins it.
-# Stored phaze paths are CONTAINER paths: map them with GET /api/v1/agents/path-prefixes.
+# Stored phaze paths are CONTAINER paths: map them with the analytics_agent_path_prefixes view, read as the
+# read-only analytics_ro role (section 1 of docs/operations/readonly-archive-access.md has the query).
 services:
   archive-reader:
     image: alpine:3

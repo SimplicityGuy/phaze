@@ -16,11 +16,18 @@ read-only analytics role, not over HTTP: connect as `analytics_ro` and read
 documented, with the stability rule, in [Read-only analytics access](../analytics-read-only-access.md).
 
 ```sql
-SELECT f.file_id, f.current_path, p.path_prefix
+SELECT DISTINCT ON (f.file_id) f.file_id, f.current_path, p.path_prefix
 FROM analytics_files f
 JOIN analytics_agent_path_prefixes p ON p.agent_id = f.agent_id AND p.active
- AND starts_with(f.current_path, p.path_prefix);
+ AND starts_with(f.current_path, rtrim(p.path_prefix, '/') || '/')
+ORDER BY f.file_id, p.prefix_ordinal;
 ```
+
+A prefix matches only on a path boundary: `/data/music` contains `/data/music/set.mp3` but not
+`/data/music2/set.mp3`, which is why the query appends `/` to the prefix instead of comparing the
+bare strings. When more than one of the agent's prefixes contains a path, the first one
+(lowest `prefix_ordinal`) wins, the same order phaze's own containment check walks
+(`src/phaze/services/containment.py`).
 
 To open a stored path, replace its leading prefix with the consumer's own mount point of the
 read-only view (section 2) and read the result. A path that starts with none of its agent's prefixes

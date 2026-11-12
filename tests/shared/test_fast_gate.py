@@ -135,7 +135,11 @@ REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
 # phaze-p22p8 (test_analytics_read_only_docs.py, which reads tracked docs/analytics-read-only-access.md, joined the
 # floor): 27 modules, 430 passed + the cap test itself failing as expected, 125.34 s pytest (seat `phaze-p22p8`,
 # direct pytest, other seats' suites running; the new module itself is filesystem-only and runs in well under a second).
-MAX_DOCS_FLOOR_MODULES = 27
+# phaze-2al7q.3 (test_readonly_archive.py and test_096_analytics_agent_path_prefixes.py, which now read the tracked
+# readonly-archive runbook, and test_doc_symbol_links.py, which reads every tracked Markdown file, joined the floor):
+# 30 modules, 447 passed + the cap test itself failing as expected, 113.47 s pytest / 126 s wall (seat `phaze-2al7q-3`,
+# direct pytest, other seats' work on the machine).
+MAX_DOCS_FLOOR_MODULES = 30
 
 # What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
 # costs milliseconds in the floor, a false negative is a guard that never runs on the local docs

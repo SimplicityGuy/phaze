@@ -89,3 +89,24 @@ def test_probe_passes_on_a_real_unwritable_directory(tmp_path: Path) -> None:
 
 def test_probe_rejects_a_missing_directory(tmp_path: Path) -> None:
     assert _probe_module().main([str(tmp_path / "absent")]) == 1
+
+
+def test_every_http_route_the_example_compose_names_exists() -> None:
+    """phaze-2al7q.3 finding 8: the example's comments pointed consumers at a route that had been removed.
+
+    The path-prefix mapping moved from HTTP to the read-only analytics role (migration 096). Any
+    ``GET|POST|... /path`` a comment in the example still names must be a route the app serves.
+    """
+    import re
+
+    from phaze.main import app
+
+    served = {(method, route.path) for route in app.routes for method in getattr(route, "methods", None) or ()}
+    named = re.findall(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/\S+)", COMPOSE.read_text())
+    missing = [f"{method} {path}" for method, path in named if (method, path.rstrip(".,)")) not in served]
+    assert missing == [], f"the example compose names routes the app does not serve: {missing}"
+
+
+def test_the_example_compose_points_to_the_published_path_mapping() -> None:
+    text = COMPOSE.read_text()
+    assert "analytics_agent_path_prefixes" in text and "docs/operations/readonly-archive-access.md" in text

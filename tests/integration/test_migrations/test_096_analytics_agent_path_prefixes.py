@@ -16,6 +16,8 @@ Documentation of every column is enforced by ``tests/shared/test_analytics_read_
 
 import asyncio
 from collections.abc import AsyncGenerator
+from pathlib import Path
+import re
 
 import pytest
 import pytest_asyncio
@@ -143,3 +145,36 @@ async def test_downgrade_restores_the_095_shape_and_upgrade_is_repeatable() -> N
     finally:
         await engine.dispose()
         await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+_RUNBOOK = Path(__file__).resolve().parents[3] / "docs" / "operations" / "readonly-archive-access.md"
+
+
+async def test_the_runbook_resolution_query_matches_on_a_path_boundary_and_takes_the_first_prefix(seeded: tuple[AsyncEngine, AsyncEngine]) -> None:
+    """phaze-2al7q.3 finding 9: the query the runbook tells a consumer to run, run as the consumer runs it.
+
+    A bare ``starts_with(path, prefix)`` resolves ``/data/music2/...`` under the root ``/data/music``. The
+    application's own rule (``agent_watcher/locate.py::is_under``) matches on a path boundary, and its
+    containment check (``services/containment.py``) takes the first matching root in ``scan_roots`` order.
+    """
+    owner, ro = seeded
+    match = re.search(r"```sql\n(.*?)```", _RUNBOOK.read_text(), re.S)
+    assert match is not None, "the runbook's resolution query"
+    async with owner.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO agents (id, name, kind, scan_roots, created_at, updated_at) "
+                "VALUES ('store-n', 'Store N', 'fileserver', '[\"/srv\", \"/srv/music/\"]'::jsonb, NOW(), NOW())"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO files (id, sha256_hash, original_path, original_filename, current_path, file_type, file_size, agent_id) VALUES "
+                "(gen_random_uuid(), 'h2', '/data/music2/other.mp3', 'other.mp3', '/data/music2/other.mp3', 'mp3', 7, 'store-a'), "
+                "(gen_random_uuid(), 'h3', '/srv/music/nested.mp3', 'nested.mp3', '/srv/music/nested.mp3', 'mp3', 7, 'store-n')"
+            )
+        )
+    async with ro.connect() as conn:
+        resolved = {row.current_path: row.path_prefix for row in (await conn.execute(text(match.group(1)))).all()}
+
+    assert resolved == {"/data/music/set.mp3": "/data/music", "/srv/music/nested.mp3": "/srv"}
