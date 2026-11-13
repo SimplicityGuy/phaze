@@ -363,3 +363,11 @@ def test_analyze_file_asks_the_fine_pass_for_beats_only_when_it_returns_grids(mo
     monkeypatch.setattr(analysis_mod, "_assemble_analysis_result", lambda *_a, **_k: {})
     analysis_mod.analyze_file("unused.wav", "unused-models", include_grids=include_grids)
     assert seen["beats"] is include_grids
+
+
+def test_single_beat_windows_on_both_sides_of_a_seam_are_concatenated_without_judgement() -> None:
+    # Neither the accepted tail (one beat) nor the incoming window (one beat) yields an interval, so no duplicate or
+    # gap can be judged: the beats are kept as they are and no gap is recorded.
+    stitched = stitch_beat_grid([[1.0], [9.0]])
+    assert stitched.beats == [1.0, 9.0]
+    assert stitched.gaps == []
