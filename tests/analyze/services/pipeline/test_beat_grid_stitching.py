@@ -310,3 +310,56 @@ def test_a_window_the_pre_rolled_decode_skips_is_reported_with_its_own_span(
         "fine window 1 [30.0, 60.0) failed; skipping",
         "fine window 2 [60.0, 90.0) failed; skipping",
     ]
+
+
+# phaze-7hcgn.4 finding 2 (dispatcher decision, option A): bpm stays byte-identical, so a window that wants ticks still
+# pays a second tracker call on its pre-rolled buffer -- but only when the run asked for grids.
+
+
+def _counting_fine_pass(monkeypatch: pytest.MonkeyPatch, *, beats: bool) -> tuple[list[tuple[int, float, float]], list[int]]:
+    rate = analysis_mod._FINE_SAMPLE_RATE
+    spans: list[tuple[int, float, float]] = []
+    calls: list[int] = []
+
+    def decode(_path: str, _rate: int, chunk_spans: list[tuple[int, float, float]], _on_skip: object, **_kwargs: object) -> dict[int, object]:
+        spans.extend(chunk_spans)
+        return {idx: np.full(round((end - start) * rate), 0.1, dtype=np.float32) for idx, start, end in chunk_spans}
+
+    def rhythm(buf: np.ndarray) -> tuple[float, np.ndarray, float, None, None]:
+        calls.append(len(buf))
+        return (120.0, np.array([0.5, 1.0], dtype=np.float32), 3.0, None, None)
+
+    monkeypatch.setattr(analysis_mod, "_decode_windows", decode)
+    monkeypatch.setattr(analysis_mod.es, "RhythmExtractor2013", lambda **_kw: rhythm)
+    monkeypatch.setattr(analysis_mod.es, "KeyExtractor", lambda **_kw: MagicMock(return_value=("A", "minor", 0.9)))
+    windows, _ = analysis_mod._analyze_fine_windows("unused.wav", 90.0, 30, 15, beats=beats)
+    assert [w.bpm for w in windows] == [120.0, 120.0, 120.0]
+    return spans, calls
+
+
+def test_without_grids_the_fine_pass_decodes_no_pre_roll_and_calls_the_tracker_once_per_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans, calls = _counting_fine_pass(monkeypatch, beats=False)
+    assert spans == [(0, 0.0, 30.0), (1, 30.0, 60.0), (2, 60.0, 90.0)]
+    assert len(calls) == 3
+
+
+def test_with_grids_every_window_but_the_first_pays_one_tick_call_on_its_pre_rolled_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans, calls = _counting_fine_pass(monkeypatch, beats=True)
+    assert spans == [(0, 0.0, 30.0), (1, 30.0 - BEAT_PREROLL_SEC, 60.0), (2, 60.0 - BEAT_PREROLL_SEC, 90.0)]
+    assert len(calls) == 5
+
+
+@pytest.mark.parametrize("include_grids", [False, True])
+def test_analyze_file_asks_the_fine_pass_for_beats_only_when_it_returns_grids(monkeypatch: pytest.MonkeyPatch, include_grids: bool) -> None:
+    seen: dict[str, object] = {}
+
+    def fine(*_args: object, **kwargs: object) -> tuple[list[FineWindow], int]:
+        seen.update(kwargs)
+        return [], 0
+
+    monkeypatch.setattr(analysis_mod, "_probe_duration_sec", lambda _path: 60.0)
+    monkeypatch.setattr(analysis_mod, "_analyze_fine_windows", fine)
+    monkeypatch.setattr(analysis_mod, "_analyze_coarse_windows", lambda *_a, **_k: ([], 0))
+    monkeypatch.setattr(analysis_mod, "_assemble_analysis_result", lambda *_a, **_k: {})
+    analysis_mod.analyze_file("unused.wav", "unused-models", include_grids=include_grids)
+    assert seen["beats"] is include_grids

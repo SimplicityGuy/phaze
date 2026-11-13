@@ -1105,6 +1105,7 @@ def _analyze_fine_windows(
     *,
     signals: AnalysisSignals = NO_SIGNALS,
     coarse_total: int = 0,
+    beats: bool = True,
 ) -> tuple[list[FineWindow], int]:
     """FINE pass: BPM + key for EVERY ``win_sec`` window, in bounded 44.1 kHz chunks.
 
@@ -1151,6 +1152,13 @@ def _analyze_fine_windows(
     rather than interleaved with it (phaze-5lop): only the ORDER of the warnings moves, never
     which windows are dropped.
 
+    ``beats`` (phaze-7hcgn.4) asks for each window's beat ticks. They need a buffer pre-rolled by
+    ``BEAT_PREROLL_SEC`` and a SECOND tracker call on it, because bpm must stay a measurement of the
+    window's own samples (byte-identical to before the grid existed). With ``beats=False`` the windows
+    are decoded without pre-roll and the tracker runs once per window. ``analyze_file`` passes its
+    ``include_grids``. The cost of ``beats=True`` is measured in
+    ``docs/design/0026-subwindow-mood-and-beat-grid.md`` section 8.
+
     One window's measurement lives in :func:`_measure_fine_window` (phaze-48ghg.3). The D-07
     structure above it is deliberately whole and stays here: the chunk list, the per-chunk
     decode with its ``stop_at_sec`` gate, the window loop, and the ``clear`` + ``_malloc_trim``
@@ -1169,6 +1177,7 @@ def _analyze_fine_windows(
 
     rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
     key_extractor = es.KeyExtractor(profileType="edma")
+    preroll_sec = BEAT_PREROLL_SEC if beats else 0.0
     fine_windows: list[FineWindow] = []
     chunks = _chunked(natural, _FINE_CHUNK_WINDOWS)
     with otel.timed(
@@ -1192,9 +1201,9 @@ def _analyze_fine_windows(
                     decoded = _decode_windows(
                         file_path,
                         _FINE_SAMPLE_RATE,
-                        # Each window is decoded from BEAT_PREROLL_SEC early (never before 0): a few seconds of
-                        # overlap per window, so the chunk's PCM bound (D-07) is unchanged for practical purposes.
-                        [(idx, max(0.0, start - BEAT_PREROLL_SEC), end) for idx, start, end in chunk],
+                        # With beats, each window is decoded from BEAT_PREROLL_SEC early (never before 0): a few seconds
+                        # of overlap per window, so the chunk's PCM bound (D-07) is unchanged for practical purposes.
+                        [(idx, max(0.0, start - preroll_sec), end) for idx, start, end in chunk],
                         # The decode reports a skip with the span it was handed, which starts at the pre-roll;
                         # the report names the window's OWN span (phaze-7hcgn.4).
                         _own_span_reporter(chunk, _skip),
@@ -1208,7 +1217,7 @@ def _analyze_fine_windows(
                     # "inference proper", so it gets the same per-unit histogram treatment
                     # (acceptance 1 -- the two tiers must be comparable).
                     with otel.timed_metric("phaze.analysis.fine_window.duration"):
-                        measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip, BEAT_PREROLL_SEC)
+                        measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip, preroll_sec)
                     if measured is None:
                         continue  # no audio, or a failed measurement already reported in-handler
                     fine_windows.append(measured)
@@ -1603,7 +1612,7 @@ def _analyze_file_traced(
         # reporting it only once the coarse tier begins.
         coarse_total_natural = len(_iter_windows(total_sec, coarse_window_sec, 0, drop_short_trailing=False))
         fine_windows, fine_total = _analyze_fine_windows(
-            file_path, total_sec, fine_window_sec, fine_min_sec, signals=signals, coarse_total=coarse_total_natural
+            file_path, total_sec, fine_window_sec, fine_min_sec, signals=signals, coarse_total=coarse_total_natural, beats=include_grids
         )
         coarse_windows, coarse_total = _analyze_coarse_windows(
             file_path, total_sec, coarse_window_sec, models_dir, signals=signals, fine_analyzed=len(fine_windows), fine_total=fine_total
