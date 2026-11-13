@@ -539,16 +539,17 @@ are derived by phaze at runtime and need no operator action at all:
 | `memory_limit` | **pod resources** — the kernel cgroup bound (§2.5) | **operator-set**, opt-in, no code default | `backends.toml`, `[backends.kube]` | **`4Gi`** |
 | ClusterQueue `nominalQuota` (cpu + memory) | **Kueue cluster objects** | **operator-set** | the consuming deployment's ClusterQueue manifest (runbook §2) | **`6`** cpu / **`12Gi`** memory |
 | **lane concurrency** — how many analyze tasks one phaze worker runs at once | **phaze internal** | **derived at runtime** (`physical_cores // intra_op`), env-overridable | `src/phaze/services/analysis_sizing.py::derive_sizing` | **1** |
-| intra-op / inter-op / OMP thread counts | **TensorFlow thread pools** | **derived at runtime**, env-overridable | same function, applied by `apply_thread_env` at import | **4 / 1 / 4** |
+| intra-op / inter-op / OMP thread counts | **TensorFlow thread pools** | **derived at runtime**, env-overridable; **intended pin of 2 / 1 / 2 on the burst cluster** (see below) | same function, applied by `apply_thread_env` at import; the intended pin is an operator value in the `phaze-agent-env` ConfigMap | derived **4 / 1 / 4**; intended pin **2 / 1 / 2** |
 
-**Do NOT set `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` in the
-`phaze-agent-env` ConfigMap (§6).** the concurrent extractor measurement recommendation 2 originally asked for exactly
-that; host-derived analysis sizing then moved the derivation into the code, and
-[the concurrency knee recheck §10 / recommendation 2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires
-that recommendation**: all 222 analyze children in its sweep derived `4 / 1 / 4` from the host with
-nothing set. Pinning the values would freeze the measurement host's numbers onto every future burst node and undo
-the portability the derivation exists to provide. phaze never overwrites an operator-set value, so
-setting them is silent rather than loud — which is what makes it a trap.
+**The derivation is the default. The intended burst-cluster configuration pins two of its values.**
+The burst ConfigMap (`phaze-agent-env`, §6) is intended to carry `TF_NUM_INTRAOP_THREADS=2` and
+`OMP_NUM_THREADS=2`. That change is made in the deployment repository as a separate,
+operator-approved change, so it may land after this document. The ConfigMap YAML in §6 stays the
+non-thread contract; the pin is added on top of it. Until that change lands, pods run the derivation. The reason, and
+how it interacts with the derivation, is in [The 2-thread pin on the burst cluster](#the-2-thread-pin-on-the-burst-cluster)
+below. Earlier guidance said never to set these keys, because pinning them freezes one node's
+numbers onto every burst node. That risk still applies, and is why the pin is tied to one named
+node shape below.
 
 #### `cap` is not lane concurrency
 
@@ -695,12 +696,13 @@ so a stale value is identifiable **as** stale:
 | **`12Gi` / `16Gi`** | interim, sized from the analysis memory profile's **macOS** 8.5–10.5 GiB floor plus an assumed Linux allocator ratchet | **the Linux memory measurement refuted the ratchet.** Linux measured 7.92–7.99 GiB — *cheaper* than macOS, not dearer. The pair was sized against a penalty that does not exist |
 | **`9Gi` / `12Gi`** | the Linux memory measurement, against an ~8.0 GiB Linux floor with all 34 graphs co-resident (window-major) | **Superseded by the code shape changing.** model-major inference made `_run_model_sets` iterate models-major, so exactly one TF graph is resident at a time instead of 34 — cutting the design peak **68.9%** (7.986 → 2.482 GiB). Predates batch-size tuning (batch 32), host-derived analysis sizing and streaming decode as well |
 | **`3Gi` / `4Gi`** against a **2.482–2.57 GiB** design peak | the Linux memory measurement §7c / the concurrent extractor measurement §9b — the same pair, a different basis | **The pair is current; its stated basis is not.** These were envelope maxima on the pre-streaming decode pipeline. The pair survived re-derivation against streaming decode's 1.7383 GiB end-to-end peak, so the ratio is now 1.73× rather than the ~1.17× originally quoted. If you find `3Gi` justified as "design peak × 1.13" or "× 1.17", the number is right and the sentence is one generation stale |
-| **thread env in the ConfigMap** (`4 / 1 / 4`) | the concurrent extractor measurement recommendation 2 | **Retired by the concurrency knee recheck recommendation 2.** host-derived analysis sizing made it a runtime derivation; pinning it now is a portability regression, not a memory win |
+| **thread env in the ConfigMap** (`4 / 1 / 4`) | the concurrent extractor measurement recommendation 2 | **Retired by the concurrency knee recheck recommendation 2** for the 4-core measurement host, where the derivation already gave `4 / 1 / 4`. Re-opened for the 8-CPU burst cluster with four pods, where the derivation's `4` oversubscribes the node: the intended configuration pins `2 / 1 / 2` in the ConfigMap, see [The 2-thread pin on the burst cluster](#the-2-thread-pin-on-the-burst-cluster). Still not a memory win |
 
 The superseded rows are not wrong measurements of what they measured — they are correct
 measurements of code shapes that no longer exist. **The only pair you should set today is
-`3Gi`/`4Gi`**, and only with the basis the [provenance table](#provenance) gives it; the last row
-is a knob you should not set at all.
+`3Gi`/`4Gi`**, and only with the basis the [provenance table](#provenance) gives it. The thread
+row is different: the intended burst-cluster pin of `2 / 1 / 2` is a deliberate, node-specific
+setting, and the `4 / 1 / 4` value is the one to avoid on that cluster.
 
 > streaming decode also **discharges the streaming decoder evaluation recommendation 7**, which required a joint
 > measurement of the batch-size and streaming-decode changes before anyone touched this sizing.
@@ -749,6 +751,40 @@ knobs together) or any individual variable (phaze never overwrites an operator v
 | **burst measurement host (Xeon E3-1271 v3)** — the node every figure above was measured on | **4** | **4** | **1** |
 | host-store (compose lanes) | 8 | 4 | 2 |
 | a 32-core upgrade | 32 | 4 | 8 |
+
+#### The 2-thread pin on the burst cluster
+
+The derivation above sizes one analyze process as if it owned the machine. On the burst cluster
+that is wrong, because four analyze pods share one 8-CPU node. The intended pin corrects for that,
+and it is the only thread value the burst cluster is meant to set by hand.
+
+- **What is intended.** The burst ConfigMap `phaze-agent-env` pins `TF_NUM_INTRAOP_THREADS=2` and
+  `OMP_NUM_THREADS=2`. `TF_NUM_INTEROP_THREADS` is not pinned: the derivation keeps it at 1.
+- **Why 2.** The cluster runs up to four analyze pods on one 8-CPU node with no CPU limit, each
+  requesting 1500m. The fair share is 2 CPUs per pod. On a 2-CPU budget, in a thread-count measurement,
+  2 intra-op threads gave about 1.8 times the windows per wall-hour of 1 thread, while 4 threads
+  (two times oversubscribed) gave fewer windows per wall-hour than 2 and about 14 to 17 percent
+  fewer windows per CPU-hour than the 1-thread control. Scores matched the 1-thread control to 1.2e-7
+  at any thread count of 2 or more.
+  The projected gain on the burst cluster is about 10 to 14 percent more windows per wall-hour while
+  four pods run. That figure is extrapolated from the 2-CPU arms, not measured on the cluster.
+- **Why not the derivation alone.** The derivation computes `min(4, physical cores)`, which gives 4
+  on this node. It reads the cgroup CPU quota for its core count, and the cluster sets no CPU
+  limit, so it cannot see the four-pod sharing. With the derivation alone each pod would run 4 intra-op
+  threads, 16 threads on 8 CPUs.
+- **How the two interact.** `apply_thread_env` never overwrites an operator-set variable. So the
+  pinned `TF_NUM_INTRAOP_THREADS` and `OMP_NUM_THREADS` win, and the derivation supplies only
+  `TF_NUM_INTEROP_THREADS=1`. The derivation's intra-op value of 4 is still computed and logged, but
+  it is not applied. Lane concurrency is also derived but unused: a pod runs one file, not a lane.
+  The memory argument in the table above still holds once the pin is live, because the pools are
+  pinned, to a constant chosen for this node rather than to the host's core count.
+- **What the pin does not do.** It does not follow hardware. A node with a different core count, or
+  a different pod cap, needs the pin re-derived from the fair share, the same as `cap` does. Remove
+  the two keys and the next pod falls back to the derivation (4 / 1 / 4).
+- **How to confirm a pod picked it up.** A new pod logs `analyze thread sizing: ... intra_op=4
+  inter_op=1 omp=4 ... operator_set=...`. The `intra_op=4` and `omp=4` there are the derived values,
+  not the runtime ones. The runtime values are 2 and 2, and the two pinned names appear under
+  `operator_set`.
 
 #### What was measured (host-derived analysis sizing, 2026-08-06)
 
@@ -1045,14 +1081,12 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   That host keeps its own identity, and it can never look like a lane. The lane separates host from
   burst only. With more than one agent host running analysis, each host still needs its own distinct
   `PHAZE_TELEMETRY_INSTANCE` ([exporter §3](telemetry/exporter.md)).
-- **`TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` do NOT belong in this
-  ConfigMap either — and unlike `PHAZE_AGENT_KIND`, an entry here would take effect.** phaze
-  derives all three from the host at import (host-derived analysis sizing, `apply_thread_env`) and **never
-  overwrites an operator-set value**, so pinning them here silently replaces the derivation with
-  the measurement host's numbers on every burst node the ConfigMap is copied to. the concurrent extractor measurement recommendation 2
-  originally asked for `4 / 1 / 4` here; [the concurrency knee recheck recommendation
-  2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires that** — all 222 of its analyze
-  children derived `4 / 1 / 4` with nothing set. See
+- **The thread keys are not in the YAML above, and they are not a free addition either.**
+  `TF_NUM_INTRAOP_THREADS` and `OMP_NUM_THREADS` take effect when set here, and phaze never overwrites
+  an operator-set value. The intended burst-cluster configuration sets them to `2` and `2`, as a
+  deployment-repository change layered on this ConfigMap. `TF_NUM_INTEROP_THREADS` stays unset, so the
+  derivation keeps it at 1. Setting these on any other node needs its own measurement, not a copy of these
+  values. See [The 2-thread pin on the burst cluster](#the-2-thread-pin-on-the-burst-cluster) and
   [The knobs, and who owns each](#the-knobs-and-who-owns-each).
 
 > If you name the ConfigMap or the env Secret something other than the defaults, set this
