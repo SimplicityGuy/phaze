@@ -29,7 +29,7 @@ from sqlalchemy.orm import defer, selectinload
 
 from phaze.config import get_settings
 from phaze.database import async_session, get_session
-from phaze.models.analysis import AnalysisResult, AnalysisSubwindow, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_job import CloudJob
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -242,7 +242,19 @@ async def build_file_record_context(
     windows = list((await session.execute(windows_stmt)).scalars().all())
     # phaze-bxp3m: the file's 15 s mood slices (docs/design/0026-subwindow-mood-and-beat-grid.md). Empty for a file analysed before sub-window
     # mood existed, which makes the track-segment join take its coarse path unchanged.
-    subwindows = list((await session.execute(select(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id))).scalars().all())
+    # Ordered by (window, sub) so the sub-window river reads them in time order; one load serves both
+    # the track segments and the timeline river (phaze-jvo7i).
+    subwindows = list(
+        (
+            await session.execute(
+                select(AnalysisSubwindow)
+                .where(AnalysisSubwindow.file_id == file_id)
+                .order_by(AnalysisSubwindow.window_index, AnalysisSubwindow.sub_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
     pending_rows, identity = await _load_pending_rows(session, file_id)
@@ -297,7 +309,12 @@ async def build_file_record_context(
     # facts list's Duration is the timeline's own analyzed extent and its Windows row is the
     # coverage chip's own sentence, so the sidebar cannot claim a length or a coverage the
     # picture beside it does not show.
-    timeline_context = build_analysis_timeline_context(windows, analysis=analysis, track_segments=track_segments, set_profile=set_profile)
+    # phaze-jvo7i: the beat grid, read by file_id (1:1 with files). None for a file analyzed before it was
+    # stored: the timeline then draws no ruler. The sub-window rows loaded above are reused for the river.
+    beat_grid = await session.get(AnalysisBeatGrid, file_id)
+    timeline_context = build_analysis_timeline_context(
+        windows, analysis=analysis, track_segments=track_segments, set_profile=set_profile, subwindows=subwindows, beat_grid=beat_grid
+    )
     coverage_chip = timeline_context["coverage_chip"]
     record_facts = build_record_facts(
         file_type=file.file_type,
