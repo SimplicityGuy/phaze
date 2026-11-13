@@ -240,7 +240,26 @@ that worked. A window keeps ticks from `SEAM_TOLERANCE_SEC` = 0.1 s before its s
 ticked a quantum (11.61 ms) early; a beat seen from both sides is dropped by the half-interval duplicate rule.
 Cost: one extra tracker call on a 34 s buffer for every window but the first, and a 4 s overlap of decode per
 window, so the chunk's PCM bound is unchanged for practical purposes. `gaps` stays for real gaps: silence and
-undetectable sections. Tests: `test_real_ticks_lose_and_double_nothing_at_each_seam`, and
+undetectable sections.
+
+**The price of the pre-roll, measured (phaze-7hcgn.4).** On the real fine pass over a 600 s synthetic file
+(three signals: steady, ramping and wobbling tempo; essentia 2.1-beta6-dev, macOS arm64), CPU time was 14.40 /
+14.43 / 14.45 s with the second tracker call and 9.65 / 9.62 / 9.64 s with one call on the pre-rolled buffer: the
+tick call costs about 50% of the fine tier. One call cannot keep bpm byte-identical, because bpm measured on the
+pre-rolled buffer is the tempo of `[start - 4, end)`, not of the window: with one call the equivalence goldens failed
+3 of 28 (a trailing window 150.1 → 150.0, a file-level bpm 128.0 → 128.1). The dispatcher's decision, not the
+operator's (relayed 2026-11-13 on phaze-7hcgn.4): keep the two calls. Its reason: the phaze-fzubr profile put
+rhythm, key, assembly and the database write together at under 2% of total analysis CPU and the mood graphs at
+84.5%, so the one-call saving is under about 1% of the whole, too little to change what stored bpm means. The tick
+call runs only when the run asks for grids (`_analyze_fine_windows(beats=...)`, from `include_grids`); without them
+the fine pass decodes no pre-roll and calls the tracker once per window.
+
+**Tempo changes between windows (phaze-7hcgn.4).** The stitcher judges a window's beats against that window's own
+median interval, and at a seam against both tempos. Judging them against the beats already accepted dropped every
+other beat after a tempo jump of more than 2x (a real change, or a tracker octave error) and recorded each step of a
+slower window as a gap. On real ticks, a 70 → 150 BPM jump lost 15 of 185 beats and a 150 → 70 BPM drop recorded
+9 gaps that do not exist. Tests: `test_a_tempo_jump_of_more_than_2x_at_a_seam_does_not_thin_the_grid`,
+`test_a_tempo_drop_of_more_than_2x_at_a_seam_records_no_fake_gaps`. Tests: `test_real_ticks_lose_and_double_nothing_at_each_seam`, and
 `test_without_the_pre_roll_the_same_seams_lose_a_beat` as its control.
 
 **`MIN_BEAT_CONFIDENCE` = 1.0 (the implementer's decision, open to review).** A window whose tracker
@@ -279,6 +298,15 @@ the honest reading.
 `floor(W / 4) + 1` ticks whatever the beat count (`beat_tick_budget`). Recorded `gaps` are drawn as hatched
 spans, and no tick is drawn inside one. A file with no beat grid row gets no ruler at all, not an empty one.
 The ruler adds no JavaScript: its readout is its own `aria-label`.
+
+**Bounded work per render (phaze-7hcgn.4).** The next tick is found by binary search: the first beat at least
+one spacing after the last drawn one. So a render reads O(ticks × log beats) values instead of every beat
+(about 92,700 on the longest file). This relies on the grid being strictly ascending and finite, which
+`BeatGridPayload` enforces at write. Gaps closer than one spacing on the canvas are drawn as one span, and its
+label says how many recorded gaps it holds ("N recorded gaps with no beats between A and B"). So at most
+`floor(W / 4) + 1` spans are drawn, not up to 50,000. Every recorded gap is in exactly one span, and the summary
+counts all of them. Beats between the gaps inside such a span are real and are still ticked. One helper,
+`load_timeline_grids`, loads the sub-window rows and the beat grid for both the record page and the proposal row.
 
 **Tests (one per acceptance point):** `tests/shared/services/test_analysis_subwindow_river_and_beat_ruler.py`.
 The river geometry is asserted on the polygon corners, and the rendered-markup tests render the shipped
