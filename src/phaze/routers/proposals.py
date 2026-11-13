@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
-from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
 from phaze.models.set_profile import SetProfile
@@ -26,7 +26,7 @@ from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_frag
 # module -- so there is no cycle.
 from phaze.routers.shell import build_changes_review_context
 from phaze.routers.view_state import ListViewState
-from phaze.services.analysis_timeline import build_analysis_timeline_context
+from phaze.services.analysis_timeline import build_analysis_timeline_context, load_timeline_grids
 from phaze.services.collision import get_review_collision_ids
 from phaze.services.proposal_queries import (
     ProposalEditRefusedError,
@@ -451,20 +451,9 @@ async def proposal_timeline(
     # `None` for a file never analyzed to completion or predating the projection backfill.
     set_profile = await session.get(SetProfile, file_id)
 
-    # phaze-jvo7i: the same sub-window and beat-grid reads as routers/record.py, so a proposal row's river and ruler
-    # agree with the record page's for the same file.
-    subwindows = list(
-        (
-            await session.execute(
-                select(AnalysisSubwindow)
-                .where(AnalysisSubwindow.file_id == file_id)
-                .order_by(AnalysisSubwindow.window_index, AnalysisSubwindow.sub_index)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    beat_grid = await session.get(AnalysisBeatGrid, file_id)
+    # phaze-jvo7i / phaze-7hcgn.4: the same sub-window and beat-grid read as routers/record.py (one helper), so a
+    # proposal row's river and ruler agree with the record page's for the same file.
+    subwindows, beat_grid = await load_timeline_grids(session, file_id)
 
     return templates.TemplateResponse(
         request=request,
