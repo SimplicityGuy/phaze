@@ -50,6 +50,20 @@ from phaze.services.analysis_derive import (
     derive_mood,
     derive_style,
 )
+from phaze.services.analysis_embeddings import (
+    BATCH,
+    EMBEDDING_DIM,
+    EMBEDDING_OUTPUT,
+    FRAME_HOP,
+    FRAME_SIZE,
+    INPUT_NODE,
+    LOGITS_DIM,
+    LOGITS_OUTPUT,
+    MEL_BANDS,
+    count_patches,
+    patch_batches,
+    with_embedding,
+)
 from phaze.services.analysis_models import (
     _DEFAULT_TF_BATCH_SIZE,  # re-export only; see the note above  # noqa: F401
     _FIXED_BATCH_SIZE,  # re-export only; see the note above  # noqa: F401
@@ -392,6 +406,52 @@ def _release_classifier_timed(model: ModelConfig) -> None:
     """
     with otel.timed_metric("phaze.analysis.model.graph.release.duration", **_model_labels(model)):
         _release_classifier(model.filename)
+
+
+class FusedEffnetDiscogs:
+    """``TensorflowPredictEffnetDiscogs(output="PartitionedCall:0")`` plus the embedding, from ONE session (phaze-l5mzm).
+
+    Called like the wrapper: ``classifier(audio_16k)`` returns the same ``[patches, 400]`` logits matrix
+    the wrapper returns -- bit for bit, measured -- as an
+    :class:`~phaze.services.analysis_embeddings.EffnetActivations` carrying the window's pooled 1280-d
+    embedding, or a bare ``(0,)`` array (the wrapper's own answer) when the buffer holds under one patch.
+    Rationale, the measurements and the memory account: :mod:`phaze.services.analysis_embeddings`.
+
+    Only standard-mode algorithms, so there is no streaming network to disconnect (D-09). The graph is
+    held by ``_predict`` and released like any wrapper: :func:`_release_classifier` drops the instance.
+    """
+
+    def __init__(self, graph_path: str) -> None:
+        self._predict = es.TensorflowPredict(graphFilename=graph_path, inputs=[INPUT_NODE], outputs=[LOGITS_OUTPUT, EMBEDDING_OUTPUT])
+
+    def __call__(self, audio_16k: Any) -> Any:
+        bands = _effnet_mel_bands(audio_16k)
+        n_patches = count_patches(len(bands))
+        if n_patches == 0:
+            return np.zeros(0, dtype=np.float32)
+        logits = np.empty((n_patches, LOGITS_DIM), dtype=np.float32)
+        embedding_rows = np.empty((n_patches, EMBEDDING_DIM), dtype=np.float32)
+        start = 0
+        for batch, real in patch_batches(bands):
+            pool = essentia.Pool()
+            pool.set(INPUT_NODE, batch)
+            out = self._predict(pool)
+            logits[start : start + real] = np.asarray(out[LOGITS_OUTPUT]).reshape(BATCH, LOGITS_DIM)[:real]
+            embedding_rows[start : start + real] = np.asarray(out[EMBEDDING_OUTPUT]).reshape(BATCH, EMBEDDING_DIM)[:real]
+            start += real
+        # The same float32 mean _predict_single takes over the logits, so "pooled" means one thing for both.
+        return with_embedding(logits, np.mean(embedding_rows, axis=0))
+
+
+def _effnet_mel_bands(audio_16k: Any) -> Any:
+    """The wrapper's front end: ``TensorflowInputMusiCNN`` bands over 512/256 frames, as ``[frames, 96]``."""
+    cutter = es.FrameCutter(frameSize=FRAME_SIZE, hopSize=FRAME_HOP)
+    mel = es.TensorflowInputMusiCNN()
+    audio = np.ascontiguousarray(audio_16k, dtype=np.float32)
+    rows = []
+    while len(frame := cutter(audio)):
+        rows.append(mel(frame))
+    return np.asarray(rows, dtype=np.float32).reshape(-1, MEL_BANDS)
 
 
 def _vm_hwm_from_status_lines(status_lines: Iterable[str]) -> float | None:
