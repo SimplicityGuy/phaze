@@ -1,11 +1,12 @@
-"""Discogs matching over stored tracklists."""
+"""Discogs matching over stored tracklists, stored local sources, bulk CUE link review and CUE conflicts."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any, Literal, cast
+import uuid  # noqa: TC003 -- FastAPI resolves the Form parameter annotation at runtime
 
-from fastapi import Depends, Request
+from fastapi import Depends, Form, Request
 from fastapi.responses import HTMLResponse
 
 from phaze.database import get_session
@@ -16,7 +17,19 @@ from phaze.database import get_session
 # this package is runtime-imported for the SQLAlchemy constructs the routes build.
 from phaze.models.tracklist import Tracklist  # noqa: TC001
 from phaze.routers.pipeline._common import _background_tasks, logger, router, templates
+from phaze.routers.request_guards import require_same_origin_form
 from phaze.services import enqueue_router
+from phaze.services.cue_conflict_review import CONFLICT_ORDER, load_cue_conflicts, resolve_cue_conflict
+from phaze.services.cue_link_review import (
+    AMBIGUITY_REASONS,
+    MAX_DECISIONS,
+    METHOD_LABELS,
+    METHOD_ORDER,
+    REASON_LABELS,
+    DecisionOutcome,
+    decide_cue_links,
+    load_cue_link_review,
+)
 from phaze.services.pagination import DEFAULT_PAGE_SIZE
 from phaze.services.pipeline import get_match_pending_tracklists
 from phaze.services.pipeline.tracklists import get_match_pending_recording_sources
@@ -133,3 +146,149 @@ async def local_source_sets_fragment(
         name="pipeline/partials/_local_source_sets.html",
         context={"request": request, "source_page": source_page, "source_kind": kind, "inventory_view": inventory_view},
     )
+
+
+CUE_LINK_PAGE_SIZE = 50
+"""Rows per page in each half of the CUE link review; a decision covers at most one page's checked rows."""
+
+
+def _int_param(request: Request, name: str) -> int:
+    try:
+        return max(1, int(request.query_params.get(name, "1")))
+    except ValueError:
+        return 1
+
+
+async def _cue_link_context(request: Request, session: AsyncSession, *, page: int, excluded_page: int) -> dict[str, Any]:
+    review = await load_cue_link_review(session)
+    start, excluded_start = (page - 1) * CUE_LINK_PAGE_SIZE, (excluded_page - 1) * CUE_LINK_PAGE_SIZE
+    proposed = review.proposed[start : start + CUE_LINK_PAGE_SIZE]
+    groups = [(method, [row for row in proposed if row.method == method]) for method in METHOD_ORDER]
+    return {
+        "request": request,
+        "proposed_total": len(review.proposed),
+        "proposed_counts": review.proposed_counts(),
+        "excluded_total": len(review.excluded),
+        "excluded_counts": review.excluded_counts(),
+        "groups": [(method, rows) for method, rows in groups if rows],
+        "excluded": review.excluded[excluded_start : excluded_start + CUE_LINK_PAGE_SIZE],
+        "page": page,
+        "has_next": start + CUE_LINK_PAGE_SIZE < len(review.proposed),
+        "excluded_page": excluded_page,
+        "excluded_has_next": excluded_start + CUE_LINK_PAGE_SIZE < len(review.excluded),
+        "method_labels": METHOD_LABELS,
+        "reason_labels": REASON_LABELS,
+        "ambiguity_reasons": AMBIGUITY_REASONS,
+    }
+
+
+@router.get("/pipeline/cue-link-review", response_class=HTMLResponse)
+async def cue_link_review_fragment(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """Unambiguous pending CUE link candidates grouped by link method, and every exclusion with its reason.
+
+    Read-only: nothing is selected until the operator checks rows and posts a decision.
+    """
+    # phaze-2dxhd. Kept out of the docstring: route docstrings become operator-facing OpenAPI text.
+    context = await _cue_link_context(request, session, page=_int_param(request, "page"), excluded_page=_int_param(request, "excluded_page"))
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_cue_link_review.html", context=context)
+
+
+@router.post("/pipeline/cue-link-review/decide", response_class=HTMLResponse, dependencies=[Depends(require_same_origin_form)])
+async def decide_cue_link_review(
+    request: Request,
+    action: Literal["select", "reject"] = Form(...),
+    review_tokens: list[str] = Form(default_factory=list, max_length=MAX_DECISIONS),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Approve or reject every checked candidate through the audited single-review path -- all, or none.
+
+    A row that changed after it was shown (no longer proposed, or different revision, hashes or FILE
+    ordinal) refuses the whole batch with 409 and redraws the review; nothing is applied blind.
+    """
+    try:
+        outcome = await decide_cue_links(session, review_tokens, action, actor="admin")
+    except ValueError as exc:
+        outcome, status_code = DecisionOutcome(action=action, error=str(exc)), 422
+    else:
+        status_code = 409 if outcome.stale or (outcome.error and review_tokens) else 200
+    if outcome.applied:
+        await session.commit()
+    context = await _cue_link_context(request, session, page=1, excluded_page=1)
+    context.update(outcome=outcome, failed=not outcome.applied)
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_cue_link_review.html", context=context, status_code=status_code)
+
+
+CUE_CONFLICT_PAGE_SIZE = 20
+"""Recordings per page of the CUE conflicts queue; each card is decided on its own."""
+
+
+def _conflict_context(request: Request) -> dict[str, Any]:
+    return {"request": request, "method_labels": METHOD_LABELS, "reason_labels": REASON_LABELS}
+
+
+@router.get("/pipeline/cue-conflicts", response_class=HTMLResponse)
+async def cue_conflicts_fragment(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """Recordings whose CUE is ambiguous, one card each, with their CUE files compared.
+
+    Read-only: a CUE is preselected only where every CUE file of the recording has identical tracks
+    and offsets, and nothing is selected until the operator confirms a card.
+    """
+    # phaze-drote. Kept out of the docstring: route docstrings become operator-facing OpenAPI text.
+    conflicts = await load_cue_conflicts(session)
+    page = _int_param(request, "page")
+    start = (page - 1) * CUE_CONFLICT_PAGE_SIZE
+    context = _conflict_context(request)
+    context.update(
+        conflicts=conflicts[start : start + CUE_CONFLICT_PAGE_SIZE],
+        total=len(conflicts),
+        counts={reason: sum(conflict.reason == reason for conflict in conflicts) for reason in CONFLICT_ORDER},
+        identical_total=sum(conflict.identical for conflict in conflicts),
+        page=page,
+        has_next=start + CUE_CONFLICT_PAGE_SIZE < len(conflicts),
+    )
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_cue_conflicts.html", context=context)
+
+
+@router.post("/pipeline/cue-conflicts/resolve", response_class=HTMLResponse, dependencies=[Depends(require_same_origin_form)])
+async def resolve_cue_conflict_card(
+    request: Request,
+    media_id: uuid.UUID = Form(...),
+    card_token: str = Form(..., max_length=64),
+    winner: str = Form("", max_length=128),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Use the checked CUE for this recording and reject its other CUE files, in one audited step.
+
+    A card whose CUE files changed after it was shown applies nothing (409) and is redrawn as it is now.
+    """
+    form = await request.form()
+    candidate = winner.partition(".")[0]
+    raw_ordinal = form.get(f"ordinal.{candidate}")
+    accept_conflict = form.get(f"accept_conflict.{candidate}") == "true"
+    try:
+        ordinal = int(raw_ordinal) if isinstance(raw_ordinal, str) and raw_ordinal else None
+    except ValueError:
+        ordinal = None
+    if not winner:
+        outcome, conflict = None, next(iter(await load_cue_conflicts(session, media_ids={media_id})), None)
+        error: str | None = "Check the CUE to use first."
+        status_code = 422
+    else:
+        result = await resolve_cue_conflict(
+            session,
+            media_id=media_id,
+            card_token=card_token,
+            winner_token=winner,
+            cue_file_ordinal=ordinal,
+            actor="admin",
+            accept_conflict=accept_conflict,
+        )
+        outcome, conflict, error = result, result.conflict, result.error
+        status_code = 200 if result.applied else 409 if result.stale else 422
+        if result.applied:
+            await session.commit()
+        elif result.stale:
+            conflict = next(iter(await load_cue_conflicts(session, media_ids={media_id})), None)
+    context = _conflict_context(request)
+    context.update(conflict=conflict, outcome=outcome, error=error, media_id=media_id)
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_cue_conflict_card.html", context=context, status_code=status_code)

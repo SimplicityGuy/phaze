@@ -58,6 +58,7 @@ async def command_body(request: Request, model: type[ImportLocalSource] | type[S
         "expected_revision",
         "cue_file_ordinal",
         "text_section_ordinal",
+        "replaced_by_observation_id",
     ):
         if values.get(key) == "":
             values[key] = None

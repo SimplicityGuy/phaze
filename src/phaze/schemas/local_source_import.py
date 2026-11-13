@@ -42,6 +42,16 @@ class SourceDecision(BaseModel):
     cue_file_ordinal: int | None = Field(default=None, gt=0, le=4096)
     text_section_ordinal: int | None = Field(default=None, gt=0, le=4096)
     accept_text_warnings: bool = False
+    # A rejection made because a sibling source of the same recording was chosen instead (phaze-drote).
+    # Only valid on a reject, and only naming the source that is now selected; recorded in the audit
+    # payload so the history says why this source was set aside.
+    replaced_by_observation_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def replacement_only_on_reject(self) -> Self:
+        if self.replaced_by_observation_id is not None and (self.action != "reject" or self.replaced_by_observation_id == self.observation_id):
+            raise ValueError("Only a rejection can name a replacing source, and never itself")
+        return self
 
 
 class ImportResult(BaseModel):

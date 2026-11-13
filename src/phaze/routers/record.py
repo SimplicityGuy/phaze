@@ -293,7 +293,6 @@ async def build_file_record_context(
         tracklist_review.tracks if tracklist_review is not None else (),
         windows,
         metadata_row.duration if metadata_row is not None else None,
-        media_id=file_id,
         subwindows=subwindows,
     )
 

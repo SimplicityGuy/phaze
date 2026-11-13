@@ -131,7 +131,7 @@ JSONB without re-running Essentia. Projection math and its fixed 11-value mood o
 
 ### Sub-window mood and the beat grid
 
-Migration `095` adds two tables for analysis output the pipeline used to discard
+Migration `098` adds two tables for analysis output the pipeline used to discard
 ([the storage decision](design/0026-subwindow-mood-and-beat-grid.md)). `analysis_subwindow`
 holds one row per 15 s slice of each coarse window, keyed `(file_id, window_index, sub_index)`,
 where `window_index` is the coarse window's own index. `start_sec` / `end_sec` are file seconds,
@@ -249,10 +249,10 @@ just show-db-history         # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-095)
+### Post-baseline chain (040-098)
 
-`alembic/versions/` holds **57** files: the `039` baseline plus a linear chain to the current
-head, **`095`**.
+`alembic/versions/` holds **60** files: the `039` baseline plus a linear chain to the current
+head, **`098`**.
 
 | Rev | Change |
 |-----|--------|
@@ -311,9 +311,12 @@ head, **`095`**.
 | `092` | Persist remote lookup batch cursors, deduplicated recording/provider work, batch memberships and bounded successful-read continuation evidence |
 | `093` | Add nullable `metadata.duration_source` (`NULL` = legacy, `tags` = the tag reader's length, `audio_frames` = recomputed from the real MPEG frames behind a junk prefix), constrained to those values; existing rows untouched |
 | `094` | Add nullable `analysis.coarse_work_done` / `analysis.coarse_work_total`, the coarse work-step counters `coarse_work_percent` is computed from, so the analyze queue can show `step a/T`; `NULL` for existing rows and for agents that predate them |
-| `095` | Create `analysis_subwindow` (mood per 15 s sub-window of each coarse window) and `analysis_beat_grid` (one stitched float32 beat grid per file); both start empty, existing tables untouched — **head** |
+| `095` | Create the seven stable `analytics_*` views and grant `SELECT` on them (and `USAGE` on `public`) to the read-only role `analytics_ro` (no base-table privilege). The role is **provisioned by the deployment before upgrading** and never created by a migration; 095 fails, before any DDL, while it is absent. See [Read-only analytics access](analytics-read-only-access.md#provisioning-the-role) |
+| `096` | Publish each agent's container path prefixes to `analytics_ro`: new view `analytics_agent_path_prefixes` (one row per agent and prefix) and `agent_id` appended to `analytics_files` so a file joins to its agent; no credential column is projected |
+| `097` | Add `ix_files_created_at_id` on `files (created_at, id)`, built `CONCURRENTLY`: the cloud staging walk's FIFO keyset order, so a page is an index scan that stops after its `LIMIT` instead of a sort of every awaiting row |
+| `098` | Create `analysis_subwindow` (mood per 15 s sub-window of each coarse window) and `analysis_beat_grid` (one stitched float32 beat grid per file); both start empty, existing tables untouched — **head** |
 
-**Four migrations in this chain (`048`, `050`, `058`, `081`) build an index `CREATE INDEX
+**Five migrations in this chain (`048`, `050`, `058`, `081`, `097`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
 the same three load-bearing properties:**
 

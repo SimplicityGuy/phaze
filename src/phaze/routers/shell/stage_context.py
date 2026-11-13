@@ -472,7 +472,7 @@ async def _junk_stage_context(request: Request, session: AsyncSession) -> dict[s
 
 
 async def _cue_stage_context(session: AsyncSession) -> dict[str, Any]:
-    """The Cue stage's eligible + gated preview cards, built IN MEMORY (no disk write).
+    """The Cue stage's legacy tracklist cards -- all gated, display-only (ADR-0027 (retire legacy timestamp qualification)) -- built IN MEMORY.
 
     get_cue_review_cards is a read-only, SAVEPOINT-wrapped, degrade-safe assembly over the
     existing cue reads (NO write_cue_file, NO enqueue, NO backend change) that returns [] on

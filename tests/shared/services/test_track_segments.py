@@ -13,7 +13,7 @@ selected by overlap instead of by midpoint, produces a different number in every
 from __future__ import annotations
 
 from dataclasses import fields
-from functools import partial
+from fractions import Fraction
 import uuid
 
 import pytest
@@ -23,22 +23,23 @@ from phaze.models.tracklist import TracklistTrack
 from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, ribbons
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import MOOD_ORDER, camelot_number, key_name_for_camelot
-from phaze.services.track_segments import TrackSegment, build_track_segments as _build_track_segments
+from phaze.services.track_segments import TrackSegment, build_track_segments
+from phaze.tracklist_providers.domain import ProviderTrack, RationalOffset, Timestamp
 from tests._timing import qualified_timing
 
 
 MEDIA_ID = uuid.uuid4()
-build_track_segments = partial(_build_track_segments, media_id=MEDIA_ID)
 
 
-def _track(position: int, timestamp: str | None) -> TracklistTrack:
-    return TracklistTrack(
-        version_id=uuid.uuid4(),
-        position=position,
-        timestamp=timestamp,
-        timestamp_evidence=qualified_timing(timestamp, MEDIA_ID),
-        title=f"Track {position}",
-    )
+def _track(position: int, timestamp: str | None) -> ProviderTrack:
+    """A selected-source track whose ``timestamp`` is a qualified, recording-bound offset.
+
+    ``None`` -- or text ``qualified_timing`` cannot read as an offset -- gives an untimed track.
+    Only a selected source's projection can carry such an offset; a legacy ``TracklistTrack`` is
+    display-only (docs/design/0027-retire-legacy-timestamp-qualification.md).
+    """
+    evidence = qualified_timing(timestamp, MEDIA_ID)
+    return ProviderTrack(position=position, title=f"Track {position}", timestamp=Timestamp.model_validate(evidence) if evidence else None)
 
 
 def _fine(index: int, start: float, end: float, *, bpm: float | None = None, camelot: str | None = None) -> AnalysisWindow:
@@ -85,14 +86,63 @@ def test_a_track_without_a_timestamp_yields_no_segment_and_the_next_one_absorbs_
     assert not any(segment.position == 2 for segment in segments)
 
 
-def test_an_unparseable_timestamp_is_the_same_as_an_absent_one_and_never_raises() -> None:
-    """parse_timestamp_string is total (phaze-97u7): decorated and empty cells are absences."""
-    tracks = [_track(1, "0:00"), _track(2, ""), _track(3, "~12:00"), _track(4, "[1:02:03]"), _track(5, "600")]
+def test_a_legacy_tracklist_track_never_yields_a_segment_even_with_qualified_looking_evidence() -> None:
+    """ADR-0027 (retire legacy timestamp qualification): legacy timing is display-only.
 
-    segments = build_track_segments(tracks, [], 3600.0)
+    The legacy row below carries exactly the evidence the retired ``qualified_legacy_offset``
+    accepted -- matching original text, ``recording:<media>`` origin, qualified offset -- and a
+    raw timestamp that parses. It still yields nothing, while the selected-source track built from
+    the same evidence does: the boundary comes only from a reviewed selection's projection.
+    """
+    legacy = TracklistTrack(
+        version_id=uuid.uuid4(), position=1, timestamp="5:00", timestamp_evidence=qualified_timing("5:00", MEDIA_ID), title="Legacy"
+    )
 
-    assert [segment.position for segment in segments] == [1, 5]
-    assert segments[1].start_sec == 600.0
+    assert build_track_segments([legacy], [], 3600.0) == []
+    assert [segment.start_sec for segment in build_track_segments([legacy, _track(2, "5:00")], [], 3600.0)] == [300.0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "usability"),
+    [("offset", "approximate"), ("offset", "unusable"), ("clock", "qualified"), ("unknown", "qualified")],
+)
+def test_a_selected_track_without_a_qualified_offset_yields_no_segment(kind: str, usability: str) -> None:
+    """Rule 1: only ``kind == offset`` with ``offset_usability == qualified`` places a boundary."""
+    # model_construct: the domain validator may itself refuse some of these pairings; this pins the
+    # segment reader's own guard, independent of whether an upstream validator caught it first.
+    qualified = Timestamp.model_validate(qualified_timing("10:00", MEDIA_ID))
+    unqualified = ProviderTrack.model_construct(
+        position=2, title="Track 2", timestamp=Timestamp.model_construct(**{**dict(qualified), "kind": kind, "offset_usability": usability})
+    )
+
+    segments = build_track_segments([_track(1, "0:00"), unqualified, _track(3, "20:00")], [], 3600.0)
+
+    assert [segment.position for segment in segments] == [1, 3]
+    assert segments[0].end_sec == 1200.0
+
+
+def test_a_qualified_offset_too_large_for_a_float_yields_no_segment() -> None:
+    """A valid rational offset can exceed float range; it is skipped, never raised or clamped."""
+    huge = ProviderTrack(position=2, title="Track 2", timestamp=Timestamp.model_validate(qualified_timing("x", MEDIA_ID, seconds=Fraction(10**400))))
+
+    segments = build_track_segments([_track(1, "0:00"), huge, _track(3, "20:00")], [], 3600.0)
+
+    assert [segment.position for segment in segments] == [1, 3]
+    assert segments[0].end_sec == 1200.0
+
+
+def test_a_negative_offset_that_bypassed_validation_yields_no_segment() -> None:
+    """``RationalOffset`` refuses a negative numerator; the reader still refuses one built around it."""
+    qualified = Timestamp.model_validate(qualified_timing("10:00", MEDIA_ID))
+    negative = ProviderTrack.model_construct(
+        position=2,
+        title="Track 2",
+        timestamp=Timestamp.model_construct(**{**dict(qualified), "offset": RationalOffset.model_construct(numerator=-60, denominator=1)}),
+    )
+
+    segments = build_track_segments([_track(1, "0:00"), negative, _track(3, "20:00")], [], 3600.0)
+
+    assert [segment.position for segment in segments] == [1, 3]
 
 
 def test_a_file_with_no_tracklist_yields_an_empty_list() -> None:

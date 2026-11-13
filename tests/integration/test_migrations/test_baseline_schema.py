@@ -388,7 +388,10 @@ def test_baseline_is_the_only_migration() -> None:
         "092_remote_lookup_batches.py",
         "093_metadata_duration_source.py",
         "094_coarse_work_steps.py",
-        "095_subwindow_mood_and_beat_grid.py",
+        "095_analytics_ro_role.py",
+        "096_analytics_agent_path_prefixes.py",
+        "097_files_created_at_index.py",
+        "098_subwindow_mood_and_beat_grid.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -417,10 +420,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` lands at the current head (091: provider source read sequence)."""
+    """A bare ``upgrade head`` lands at the current head (098: sub-window mood and the beat grid)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "095"
+    assert version == "098"
 
 
 @pytest.mark.asyncio
@@ -854,7 +857,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "095"
+        assert version == "098"
     finally:
         if engine is not None:
             await engine.dispose()

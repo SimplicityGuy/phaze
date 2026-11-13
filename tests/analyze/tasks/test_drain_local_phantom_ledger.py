@@ -57,7 +57,7 @@ _CREATE_SAQ_JOBS = (
 @pytest.fixture(autouse=True)
 def _fresh_resume_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start at the FIFO head; the drain's cross-tick cursor is process-local module state (phaze-1l03t)."""
-    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursor", None)
+    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursors", dict.fromkeys(release_awaiting_cloud.CLOUD_BANDS))
 
 
 async def _seed_phantom_lane(session: AsyncSession) -> tuple[list[str], uuid.UUID]:

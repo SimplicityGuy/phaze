@@ -1,8 +1,0 @@
-{% import "ui/primitives.html" as ui %}
-{% if tracklist.cue_version is defined and tracklist.cue_version is not none and tracklist.cue_version >= 1 %}
-{{ ui.status_pill('CUE v' ~ tracklist.cue_version, 'success') }}
-{% elif tracklist.cue_version is defined and tracklist.cue_version == 0 %}
-{{ ui.status_pill('No CUE', 'neutral') }}
-{% else %}
-{{ ui.status_pill('Not Eligible', 'attention') }}
-{% endif %}

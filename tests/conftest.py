@@ -33,7 +33,6 @@ from tests import bh_test_report
 from tests._background_drain import leaked_background_tasks_message, pending_router_background_tasks
 from tests._queue_fakes import install_fake_queues
 from tests._real_models import apply_default as _apply_real_models_default
-from tests._timing import qualified_timing
 from tests.db_guard import (
     SharedTestDatabaseError,
     TestDatabaseUnreachableError,
@@ -943,16 +942,17 @@ def seed_duplicate_group(session: AsyncSession, make_file):  # type: ignore[no-u
 def seed_cue_set(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
     """Return an async factory inserting an applied file + approved Tracklist + a version/track.
 
-    ``eligible=True`` seeds >=1 timestamped track (the cue eligibility gate); ``eligible=False``
-    seeds a track with NO timestamp (the ineligible "awaiting tracklist match" card).
+    ``timestamped=True`` seeds a track with display-only timestamp text; ``timestamped=False`` seeds
+    one with none. Either way the card is gated: legacy timing never qualifies as a CUE offset
+    (docs/design/0027-retire-legacy-timestamp-qualification.md).
 
     Phase 85: applied-ness is carried by an EXECUTED ``RenameProposal`` (the ``applied()`` gate),
     not ``files.state``; the file is seeded ``state='moved'`` so a reverted ``state == EXECUTED``
     cue guard would drop it (mutation-safe).
     """
 
-    async def _make(*, eligible: bool = True, original_filename: str | None = None) -> tuple[FileRecord, Tracklist, TracklistVersion]:
-        fname = original_filename or ("cue-eligible.mp3" if eligible else "cue-ineligible.mp3")
+    async def _make(*, timestamped: bool = True, original_filename: str | None = None) -> tuple[FileRecord, Tracklist, TracklistVersion]:
+        fname = original_filename or ("cue-timed.mp3" if timestamped else "cue-untimed.mp3")
         file = await make_file(original_filename=fname)
         session.add(
             RenameProposal(
@@ -980,8 +980,7 @@ def seed_cue_set(session: AsyncSession, make_file):  # type: ignore[no-untyped-d
             position=1,
             title="Track 1",
             artist="Artist",
-            timestamp="00:00:00" if eligible else None,
-            timestamp_evidence=qualified_timing("00:00:00", file.id) if eligible else None,
+            timestamp="00:00:00" if timestamped else None,
         )
         session.add(track)
         tracklist.latest_version_id = version.id

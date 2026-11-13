@@ -298,6 +298,44 @@ absent from every test**: what the client sends at connect time is interpreted b
 terminates the connection. Any connection-level setting (startup parameters, TLS options, auth
 method) is only as verified as the connection path it was tested through.
 
+### 3.11 "`pg_advisory_xact_lock` serializes two migrations that create the same role"
+
+Held for bead `phaze-2al7q.3`, in the bead's own design notes (*"make role creation and ALTER ROLE
+race-safe across concurrent seats (for example pg_advisory_xact_lock around it ...)"*), for migration
+095's cluster-wide `analytics_ro` role. Two seats migrate their own databases on the one 5433 harness, so
+the belief is that an advisory lock taken by each serializes their role DDL.
+
+| | |
+| --- | --- |
+| **True where** | two sessions in the **same** database. Every advisory-lock use in this repo so far is that case (the drain's per-tick lock, the test suite's session lock, the per-decision lock in `decide_local_source`), and in it the lock works exactly as believed. |
+| **False here** | the two sessions are in **different databases of the same cluster**. An advisory lock's key is scoped to the current database, so the two never meet; the role they both write lives in the cluster. |
+| **Measured** | 2026-11-12, PostgreSQL 18.6 on the 5433 harness, asyncpg 0.31.0. Session A in one seat database: `BEGIN; SELECT pg_advisory_xact_lock(424242)`. Session B in another seat database, with `lock_timeout = '1s'`, same call: **granted at once** (not blocked). The same pair with `LOCK TABLE pg_catalog.pg_authid IN SHARE UPDATE EXCLUSIVE MODE` instead: B **times out** (blocked across databases), while a new login and an `ALTER ROLE` on another role both still succeed under A's lock. The race itself, replayed with 095's own statements from two databases: `duplicate key value violates unique constraint "pg_authid_rolname_index"` for two upgrades, `role <oid> was concurrently dropped` for a downgrade racing an upgrade (replayed by `test_095_role_concurrency.py`, removed with 095's role DDL by `phaze-euo4a`, §3.12; the harness's own provisioning in `tests/analytics_role.py` still takes the `pg_authid` lock, for the same reason). |
+| **How it surfaced** | the implementing seat measured the lock's scope before using it, because the race it had to close was between databases and every advisory lock it knew of was within one. |
+| **What it cost** | about five minutes. Avoided: a migration that reads as race-safe, would pass any single-seat test, and would still fail exactly as before when two seats migrate at once. |
+
+The neighbouring system is **the same lock, one scope wider**: what is shared (a role, a tablespace, a
+database name) decides which lock can protect it. Per-database primitives cannot serialize cluster-wide
+objects; a lock on the shared catalog the object lives in can.
+
+### 3.12 "The role the test harness migrates as can run whatever production's app role runs"
+
+Held, unexamined, by every migration test in this repo up to bead `phaze-euo4a`: they all connect as the harness's
+bootstrap superuser (`POSTGRES_USER`). Migration 095 shipped in 2026.11.0 with `CREATE ROLE analytics_ro`, `ALTER ROLE ...
+SET` and a `LOCK` on `pg_authid` (§3.11 made that DDL race-safe, and never asked whether the app role may issue it at all).
+
+| | |
+| --- | --- |
+| **True where** | the harness, CI's service container and this repo's own compose stack: in each, the role phaze connects as **is** the cluster superuser, so role DDL succeeds. |
+| **False here** | production. Its app role is a `LOGIN` role with no `SUPERUSER`, `CREATEROLE` or `CREATEDB`, a member (with inherit) of the database owner. The owner is the cluster superuser, but the superuser attribute is never inherited through membership. |
+| **Measured** | 2026-11-12: the 2026.11.0 deploy crash-looped on 094 -> 095 with `InsufficientPrivilegeError: permission denied to create role`. Each attempt rolled back, and production stayed at 094 and was rolled back (bead `phaze-euo4a`). Reproduced in this repo, same day, PostgreSQL 18.6 on the 5433 harness: `tests/integration/test_migrations/test_restricted_app_role.py` builds production's role shape and migrates as it, and on the 2026.11.0 tree (`b3c9f3fb`) it reports `2 failed, 1 passed`, both failures `permission denied to alter role` (the harness already had the role, so `CREATE` was skipped and `ALTER ROLE` was the first refusal). Production's table ownership at 094, read for this entry: 31 tables owned by the app role, 19 by the database owner. The test covers both histories. |
+| **How it surfaced** | production, which makes this the one instance in the catalogue that was not caught in minutes. |
+| **What it cost** | a failed release, a rollback, and a P0 bead. |
+
+The general form is CLAUDE.md's rule 3, applied to a migration: **a migration's real consumer is the role production runs
+it as, not the role the test harness happens to connect as.** A test harness's superuser vouches only for what a
+superuser can do. `tests/shared/test_migrations_issue_no_role_ddl.py` is the cheap tripwire for the one shape that bit;
+the restricted-role test is the check that generalises to shapes nobody has thought of yet.
+
 ______________________________________________________________________
 
 ## 4. The trigger

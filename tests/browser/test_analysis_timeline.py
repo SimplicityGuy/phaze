@@ -335,10 +335,7 @@ async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any, f
     Returns the seeded profile's ``peak_sec`` alongside the page, because that stored value is
     the ONE quantity the rest position advertises (phaze-0zx26).
     """
-    from datetime import date
-
-    from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-    from tests._timing import qualified_timing
+    from tests._selected_cue import cue_sheet, select_cue
 
     file = await seed.file(filename="<set-01>.mp3")
     await seed.metadata(file, duration=_INSPECTION_DURATION_SEC)
@@ -353,41 +350,9 @@ async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any, f
     assert rest_sec is not None, "the seeded profile must carry a peak for the page to rest on"
     assert rest_sec != _RAW_COARSE_PEAK_MIDPOINT_SEC, "stored peak equals the raw-window argmax: this fixture no longer tells them apart"
 
-    tracklist = Tracklist(
-        external_id="inspection-set",
-        source_url="https://example.test/tracklist",
-        file_id=file.id,
-        match_confidence=94,
-        artist="Example Artist",
-        event="Norwood Festival",
-        date=date(2026, 8, 1),
-    )
-    seed.session.add(tracklist)
-    await seed.session.flush()
-    version = TracklistVersion(tracklist_id=tracklist.id, version_number=1)
-    seed.session.add(version)
-    await seed.session.flush()
-    seed.session.add_all(
-        [
-            TracklistTrack(
-                version_id=version.id,
-                position=1,
-                timestamp="0:00",
-                timestamp_evidence=qualified_timing("0:00", file.id),
-                artist="First Artist",
-                title="Opening Track",
-            ),
-            TracklistTrack(
-                version_id=version.id,
-                position=2,
-                timestamp="5:00",
-                timestamp_evidence=qualified_timing("5:00", file.id),
-                artist="Second Artist",
-                title="Closing Track",
-            ),
-        ]
-    )
-    tracklist.latest_version_id = version.id
+    # A reviewed selected CUE: legacy tracklist timing is display-only (ADR-0027 (retire legacy timestamp qualification)), so the selected
+    # source is the only fixture whose tracks can carry exact boundaries for the timeline ticks.
+    await select_cue(seed.session, file, cue_sheet(("First Artist", "Opening Track", "00:00:00"), ("Second Artist", "Closing Track", "05:00:00")))
     await seed.session.commit()
 
     await page.goto(f"/files/{file.id}", wait_until="domcontentloaded")

@@ -9,8 +9,8 @@ Additive only: no existing table, column or row changes. Both tables start empty
 re-analysis fills them, and the archive-wide re-analysis is deliberately out of this change -- so
 there is nothing to backfill and no statistics to seed.
 
-Revision ID: 095
-Revises: 094
+Revision ID: 098
+Revises: 097
 """
 
 from collections.abc import Sequence
@@ -21,8 +21,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 
-revision: str = "095"
-down_revision: str | None = "094"
+revision: str = "098"
+down_revision: str | None = "097"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -59,10 +59,10 @@ _BASE_TIME = datetime(2026, 7, 27, 3, 0, 0, tzinfo=UTC)
 def _fresh_resume_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every test at the FIFO head and restore the module's cross-tick cursor afterwards (phaze-1l03t).
 
-    ``_resume_cursor`` is process-local module state that a budget-bounded tick sets; monkeypatching it
+    ``_resume_cursors`` is process-local module state that a budget-bounded tick sets; monkeypatching it
     here (rather than assigning) is what guarantees a cursor left by one test never leaks into the next.
     """
-    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursor", None)
+    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursors", dict.fromkeys(release_awaiting_cloud.CLOUD_BANDS))
 
 
 class _CloudStub:
@@ -181,12 +181,12 @@ async def test_keyset_cursor_pages_past_the_head_of_line_run(session: AsyncSessi
     """
     poisoned_ids, behind_ids = await _seed_poisoned_lane(session)
 
-    first = await get_cloud_staging_candidates(session, _FREE_CLOUD_SLOTS)
+    first = await get_cloud_staging_candidates(session, _FREE_CLOUD_SLOTS, band="rest")
     assert [f.id for f, _ in first] == poisoned_ids[:_FREE_CLOUD_SLOTS]
 
     # Page forward from the last row of the first page: the poisoned tail, then the routable files.
     last = first[-1][0]
-    rest = await get_cloud_staging_candidates(session, 100, after=(last.created_at, last.id))
+    rest = await get_cloud_staging_candidates(session, 100, band="rest", after=(last.created_at, last.id))
     assert [f.id for f, _ in rest] == poisoned_ids[_FREE_CLOUD_SLOTS:] + behind_ids
 
 
@@ -205,13 +205,13 @@ async def test_keyset_cursor_is_exact_across_a_created_at_tie(session: AsyncSess
     seen: list[uuid.UUID] = []
     cursor: tuple[datetime, uuid.UUID] | None = None
     for _ in range(3):
-        page = await get_cloud_staging_candidates(session, 3, after=cursor)
+        page = await get_cloud_staging_candidates(session, 3, after=cursor, band="rest")
         seen.extend(f.id for f, _ in page)
         cursor = (page[-1][0].created_at, page[-1][0].id)
     assert len(seen) == len(set(seen)) == 9
     assert set(seen) == {f.id for f in tied}
     # And the walk is genuinely exhausted -- no fourth page.
-    assert await get_cloud_staging_candidates(session, 3, after=cursor) == []
+    assert await get_cloud_staging_candidates(session, 3, after=cursor, band="rest") == []
 
 
 @pytest.mark.asyncio
@@ -437,7 +437,7 @@ async def test_a_held_prefix_exactly_the_scan_budget_long_no_longer_starves_the_
 
     first = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
     assert first == {"staged": 0, "skipped": _SMALL_BUDGET}
-    assert release_awaiting_cloud._resume_cursor is not None
+    assert release_awaiting_cloud._resume_cursors["rest"] is not None
 
     second = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
     assert second["staged"] == _FREE_CLOUD_SLOTS
@@ -499,7 +499,7 @@ async def test_a_healthy_lane_never_carries_a_cursor(
     _, behind_ids = await _seed_lane(session, held=0, routable=_ROUTABLE_BEHIND)
 
     assert (await stage_cloud_window(_make_ctx(DedupFakeTaskRouter())))["staged"] == _FREE_CLOUD_SLOTS
-    assert release_awaiting_cloud._resume_cursor is None
+    assert release_awaiting_cloud._resume_cursors["rest"] is None
     assert cloud.dispatched == behind_ids[:_FREE_CLOUD_SLOTS]
 
 
@@ -520,10 +520,10 @@ async def test_a_tick_that_fills_its_slots_from_the_cursor_returns_the_next_tick
     await _seed_lane(session, held=_SMALL_BUDGET, routable=_FREE_CLOUD_SLOTS)
 
     await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
-    assert release_awaiting_cloud._resume_cursor is not None
+    assert release_awaiting_cloud._resume_cursors["rest"] is not None
     second = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
     assert second["staged"] == _FREE_CLOUD_SLOTS
-    assert release_awaiting_cloud._resume_cursor is None
+    assert release_awaiting_cloud._resume_cursors["rest"] is None
 
 
 @pytest.mark.asyncio
@@ -536,13 +536,13 @@ async def test_a_cursor_past_the_end_of_the_queue_wraps_to_the_head_in_the_same_
     _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     _, behind_ids = await _seed_lane(session, held=0, routable=_FREE_CLOUD_SLOTS)
-    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursor", (_BASE_TIME + timedelta(days=365), uuid.uuid4()))
+    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursors", {"cue": None, "rest": (_BASE_TIME + timedelta(days=365), uuid.uuid4())})
 
     result = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
 
     assert result["staged"] == _FREE_CLOUD_SLOTS
     assert cloud.dispatched == behind_ids
-    assert release_awaiting_cloud._resume_cursor is None
+    assert release_awaiting_cloud._resume_cursors["rest"] is None
 
 
 @pytest.mark.asyncio
@@ -554,10 +554,10 @@ async def test_an_empty_queue_clears_the_cursor(
     cloud = _CloudStub()
     _patch_backends(monkeypatch, [cloud, _FullLocalBackend(id="local", rank=99, cap=1)])
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursor", (_BASE_TIME, uuid.uuid4()))
+    monkeypatch.setattr(release_awaiting_cloud, "_resume_cursors", {"cue": None, "rest": (_BASE_TIME, uuid.uuid4())})
 
     assert await stage_cloud_window(_make_ctx(DedupFakeTaskRouter())) == {"staged": 0, "skipped": 0}
-    assert release_awaiting_cloud._resume_cursor is None
+    assert release_awaiting_cloud._resume_cursors["rest"] is None
 
 
 @pytest.mark.asyncio
@@ -573,14 +573,14 @@ async def test_a_rolled_back_tick_does_not_move_the_cursor(
     await _seed_lane(session, held=2 * _SMALL_BUDGET, routable=1)
 
     await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
-    carried = release_awaiting_cloud._resume_cursor
-    assert carried is not None
+    carried = dict(release_awaiting_cloud._resume_cursors)
+    assert carried["rest"] is not None
 
     async def _boom(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("synthetic mid-walk failure")
 
-    monkeypatch.setattr(release_awaiting_cloud, "_walk_candidate_pages", _boom)
+    monkeypatch.setattr(release_awaiting_cloud, "_walk_bands", _boom)
     result = await stage_cloud_window(_make_ctx(DedupFakeTaskRouter()))
 
     assert result["staged"] == 0
-    assert release_awaiting_cloud._resume_cursor == carried
+    assert release_awaiting_cloud._resume_cursors == carried

@@ -7,7 +7,7 @@ mood graph returns a `[patches, classes]` matrix, and `_predict_single` in
 `src/phaze/services/analysis.py` averages it into one vector per 180 s coarse window.
 `RhythmExtractor2013` returns beat ticks for every 30 s fine window, and `_measure_fine_window`
 drops them. This record fixes how both are stored: the sub-window length, the two storage shapes,
-and what was measured to choose them. Migration `095` implements it. The rest of the epic (pooling,
+and what was measured to choose them. Migration `098` implements it. The rest of the epic (pooling,
 stitching, the agent wire, track segments, the timeline) builds on these shapes.
 
 Every choice below was made by the implementing seat, inside the design space the bead states, and
@@ -204,7 +204,7 @@ What currently works that this could break:
 The tests that prove each still works:
 
 - `tests/shared/models/test_analysis_subwindow_beat_grid.py::test_existing_analysis_tables_keep_exactly_their_columns`;
-- `tests/integration/test_migrations/test_095_subwindow_mood_and_beat_grid.py`, which reads a
+- `tests/integration/test_migrations/test_098_subwindow_mood_and_beat_grid.py`, which reads a
   pre-existing `analysis_window` row back unchanged after upgrade and after downgrade;
 - the baseline suite's autogenerate-drift and constraint-definition tests;
 - `tests/discovery/services/test_moved_file_state.py::test_invalidate_content_state_drops_exactly_the_state_derived_from_the_old_bytes`;

@@ -304,34 +304,17 @@ async def test_actual_selected_tag_approval_and_write_boundary_revalidation(clie
     assert len(router.captures) == 1
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        "raw",
-        "unknown",
-        "clock",
-        "minute",
-        "intrinsic",
-        "other_target",
-        "original_changed",
-        "array",
-        "boolean",
-        "decimal",
-        "zero_denominator",
-        "extra",
-        "long_evidence",
-        "wrong_evidence_type",
-        "oversized_integer",
-        "empty_evidence",
-        "second_fraction",
-        "frame_fraction",
-        "qualified",
-    ],
-)
-async def test_legacy_exact_boundaries_require_typed_recording_review(session, make_file, case):
-    """Actual PG eligibility and actual CUE/record joins agree; raw evidence never authorizes precision."""
+@pytest.mark.parametrize("case", ["raw", "intrinsic", "qualified"])
+async def test_legacy_timing_is_display_only_even_with_formerly_qualifying_evidence(session, make_file, case):
+    """ADR-0027 (retire legacy timestamp qualification): no legacy row yields an exact boundary.
+
+    ``qualified`` is the exact evidence shape the retired ``qualified_legacy_offset`` accepted
+    (matching original text, ``recording:<media>`` origin, qualified frame offset) -- the case that
+    discriminates removal from the old behaviour, which turned it into ``INDEX 01 00:01:01``. Every
+    case is gated, yields no CUE tracks or INDEX, joins no segment, and the stored row is untouched.
+    """
     from phaze.routers.record import build_file_record_context
-    from phaze.services.cue_review import eligible_tracklist_stmt, gated_tracklist_stmt
+    from phaze.services.cue_review import gated_tracklist_stmt
     from tests._timing import qualified_timing
 
     media = await make_file()
@@ -348,71 +331,21 @@ async def test_legacy_exact_boundaries_require_typed_recording_review(session, m
     evidence = qualified_timing(raw, media.id, seconds=Fraction(76, 75))
     if case == "raw":
         evidence = None
-    elif case == "unknown":
-        evidence = {"original": raw}
-    elif case == "clock":
-        evidence.update(kind="clock", offset=None, offset_usability="unusable")
-    elif case == "minute":
-        evidence.update(precision="minute", offset={"numerator": 60, "denominator": 1}, offset_usability="approximate")
     elif case == "intrinsic":
         evidence["origin"] = "FILE:1:recording.mp3"
-    elif case == "other_target":
-        evidence["origin"] = f"recording:{uuid.uuid4()}"
-    elif case == "original_changed":
-        evidence["original"] = "different"
-    elif case == "array":
-        evidence = []
-    elif case == "boolean":
-        evidence["offset"]["numerator"] = True
-    elif case == "decimal":
-        evidence["offset"]["numerator"] = 76.5
-    elif case == "zero_denominator":
-        evidence["offset"]["denominator"] = 0
-    elif case == "extra":
-        evidence["unexpected"] = "not domain evidence"
-    elif case == "long_evidence":
-        evidence["evidence"] = ["x" * 4097]
-    elif case == "wrong_evidence_type":
-        evidence["evidence"] = [True]
-    elif case == "empty_evidence":
-        evidence["evidence"] = []
-    elif case == "second_fraction":
-        evidence["precision"] = "second"
-    elif case == "frame_fraction":
-        evidence["offset"]["denominator"] = 74
-    elif case == "oversized_integer":
-        evidence["offset"] = {"numerator": 10**4096, "denominator": 1}
     track = TracklistTrack(version_id=version.id, position=1, title="Retained", timestamp=raw, timestamp_evidence=evidence)
     session.add(track)
     await session.flush()
     original_id = track.id
-    eligible = {row[0].id for row in (await session.execute(eligible_tracklist_stmt())).all()}
-    gated = {row[0].id for row in (await session.execute(gated_tracklist_stmt())).all()}
-    assert (legacy.id in eligible) == (case == "qualified")
-    assert (legacy.id in gated) == (case != "qualified")
+    assert legacy.id in {row[0].id for row in (await session.execute(gated_tracklist_stmt())).all()}
     cue = await build_cue_tracks_for_file(session, media.id)
+    assert cue == [], "a legacy tracklist is never a CUE source"
+    output = generate_cue_content("recording.mp3", "mp3", cue)
+    assert "INDEX 01" not in output and "TRACK 01" not in output
     context = await build_file_record_context(media.id, session)
-    if case == "qualified":
-        assert cue[0].timestamp_seconds == Fraction(76, 75)
-        assert "INDEX 01 00:01:01" in generate_cue_content("recording.mp3", "mp3", cue)
-        assert context["track_segments"][0].start_sec == float(Fraction(76, 75))
-    else:
-        assert cue[0].timestamp_seconds is None
-        output = generate_cue_content("recording.mp3", "mp3", cue)
-        assert "INDEX 01" not in output and "TRACK 01" not in output
-        assert not context["track_segments"]
+    assert not context["track_segments"]
     await session.refresh(track)
     assert track.id == original_id and track.timestamp == raw and track.timestamp_evidence == evidence
-
-
-async def test_huge_qualified_legacy_offset_cannot_crash_analysis_boundary(session, make_file):
-    from tests._timing import qualified_timing
-
-    media = await make_file()
-    track = TracklistTrack(
-        version_id=uuid.uuid4(), position=1, timestamp="12:35", timestamp_evidence=qualified_timing("12:35", media.id, seconds=Fraction(10**400))
-    )
-    assert not build_track_segments([track], [], 20, media_id=media.id)
 
 
 def test_huge_qualified_provider_offset_cannot_crash_analysis_boundary():

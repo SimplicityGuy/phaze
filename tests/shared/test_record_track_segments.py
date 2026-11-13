@@ -18,12 +18,11 @@ import pytest
 
 from phaze.models.analysis import AnalysisSubwindow, AnalysisWindow
 from phaze.models.metadata import FileMetadata
-from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.record import build_file_record_context
 from phaze.services.analysis_timeline import MOOD_HUES
 from phaze.services.set_projection import MOOD_ORDER
 from phaze.services.track_segments import TrackSegment
-from tests._timing import qualified_timing
+from tests._selected_cue import cue_sheet, selected_cue_media
 
 
 if TYPE_CHECKING:
@@ -38,32 +37,18 @@ DURATION = 1200.0
 
 
 async def _seed_set_with_tracklist_and_windows(make_file, session: AsyncSession) -> FileRecord:  # type: ignore[no-untyped-def]
-    """A two-track set: track 1 timestamped at 0:00, track 2 with NO timestamp at all.
+    """A two-track selected CUE: track 1 at INDEX 01 00:00:00, track 2 with NO INDEX at all.
+
+    A reviewed selected source, because legacy tracklist timing is display-only (ADR-0027 (retire legacy timestamp qualification)).
 
     Windows are placed so track 1's segment [0, 1200) contains all of them and the expected
     values are hand-computable: median BPM of (126, 130) is 128.0, modal Camelot is 8A ("A
     minor"), mean energy of (0.4, 0.6) is 0.5, and mood_party's mean (0.9) beats mood_sad's.
     """
-    file_rec = await make_file(original_filename=LIVE_SET_FILENAME)
-    session.add(FileMetadata(file_id=file_rec.id, duration=DURATION))
-    tracklist = Tracklist(external_id="ext-seg", source_url="https://example.invalid/tracklist", file_id=file_rec.id, match_confidence=95)
-    session.add(tracklist)
-    await session.flush()
-    version = TracklistVersion(tracklist_id=tracklist.id, version_number=1)
-    session.add(version)
-    await session.flush()
-    tracklist.latest_version_id = version.id
-    session.add(
-        TracklistTrack(
-            version_id=version.id,
-            position=1,
-            artist="Coldwave",
-            title="Opener",
-            timestamp="00:00",
-            timestamp_evidence=qualified_timing("00:00", file_rec.id),
-        )
+    file_rec = await selected_cue_media(
+        session, cue_sheet(("Coldwave", "Opener", "00:00:00"), ("Duskline", "Untimed", None)), filename=LIVE_SET_FILENAME
     )
-    session.add(TracklistTrack(version_id=version.id, position=2, artist="Duskline", title="Untimed", timestamp=None))
+    session.add(FileMetadata(file_id=file_rec.id, duration=DURATION))
     session.add_all(
         [
             AnalysisWindow(file_id=file_rec.id, tier="fine", window_index=0, start_sec=0.0, end_sec=30.0, bpm=126.0, musical_key="A minor"),
@@ -170,31 +155,14 @@ async def test_the_four_columns_render_on_both_record_presentations(client: Asyn
         # Every existing column survives.
         assert "Opener" in body
         assert "Untimed" in body
-        assert "Stored tracklist" in body
+        assert "Selected tracklist" in body
 
 
 @pytest.mark.asyncio
 async def test_a_file_with_no_windows_renders_the_table_exactly_as_before(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
     """Nothing analyzed yet: four em-dash cells, the tracklist itself unchanged and no error."""
-    file_rec = await make_file(original_filename=LIVE_SET_FILENAME)
+    file_rec = await selected_cue_media(session, cue_sheet(("Coldwave", "Opener", "00:00:00")), filename=LIVE_SET_FILENAME)
     session.add(FileMetadata(file_id=file_rec.id, duration=DURATION))
-    tracklist = Tracklist(external_id="ext-bare", source_url="https://example.invalid/tracklist", file_id=file_rec.id)
-    session.add(tracklist)
-    await session.flush()
-    version = TracklistVersion(tracklist_id=tracklist.id, version_number=1)
-    session.add(version)
-    await session.flush()
-    tracklist.latest_version_id = version.id
-    session.add(
-        TracklistTrack(
-            version_id=version.id,
-            position=1,
-            artist="Coldwave",
-            title="Opener",
-            timestamp="00:00",
-            timestamp_evidence=qualified_timing("00:00", file_rec.id),
-        )
-    )
     await session.commit()
 
     response = await client.get(f"/record/{file_rec.id}")
@@ -202,7 +170,7 @@ async def test_a_file_with_no_windows_renders_the_table_exactly_as_before(client
 
     assert response.status_code == 200
     assert "Opener" in response.text
-    assert "Stored tracklist" in response.text
+    assert "Selected tracklist" in response.text
     # The segment exists (the track IS timestamped) but measures nothing, so every one of the
     # four values is an explicit absence -- not a zero, which would read as a silent track.
     assert context is not None

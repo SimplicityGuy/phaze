@@ -9,46 +9,14 @@ suffix naming, and UTF-8 BOM file writing.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import os
 import re
 from typing import TYPE_CHECKING
-
-from pydantic import ValidationError
-
-from phaze.tracklist_providers.domain import Timestamp
 
 
 if TYPE_CHECKING:
     from fractions import Fraction
     from pathlib import Path
-    import uuid
-
-
-def qualified_legacy_offset(raw: str | None, evidence: object, media_id: uuid.UUID | None) -> Fraction | None:
-    """Only explicitly revalidated, target-bound legacy evidence authorizes an exact offset.
-
-    Historical raw text stays displayable. Its syntax supplies no meaning or precision, and
-    neither an approved tracklist nor an intrinsic FILE origin qualifies a recording boundary.
-    Strict JSON validation keeps the SQL eligibility predicate and this adapter on typed evidence.
-    """
-    if raw is None or media_id is None or not isinstance(evidence, dict):
-        return None
-    try:
-        timestamp = Timestamp.model_validate_json(json.dumps(evidence), strict=True)
-    except (ValidationError, TypeError, ValueError):
-        return None
-    if (
-        timestamp.original != raw
-        or timestamp.origin != f"recording:{media_id}"
-        or timestamp.kind != "offset"
-        or timestamp.offset_usability != "qualified"
-        or timestamp.offset is None
-        or len(str(timestamp.offset.numerator)) > 4096
-        or len(str(timestamp.offset.denominator)) > 4096
-    ):
-        return None
-    return timestamp.offset.as_fraction()
 
 
 @dataclass
@@ -118,7 +86,8 @@ def parse_timestamp_string(ts: str | None) -> float | None:
     writable verbatim via the inline editor. Any of "", whitespace, a decorated/bracketed time
     ("~5:00", "[1:02:03]"), or a non-numeric segment must return None per this docstring's
     contract, NOT raise. This syntax utility does not qualify legacy timestamp evidence; exact
-    CUE and segment consumers use ``qualified_legacy_offset`` and retain this raw string for display.
+    CUE and segment consumers read offsets only from a reviewed selected source
+    (docs/design/0027-retire-legacy-timestamp-qualification.md); this raw string is display-only.
 
     Args:
         ts: Timestamp string or None.
@@ -238,7 +207,7 @@ def retarget_cue_file_line(content: str, audio_filename: str) -> str:
     fact about where the sheet lands, which is decided by :func:`write_cue_file`, not by whoever
     rendered the text.
 
-    Those two were different machines and they disagreed. ``phaze.routers.cue.generate_cue`` renders
+    Those two were different machines and they disagreed. ``phaze.services.selected_cue`` (behind ``routers.cue.generate_selected_cue``) renders
     ``FILE`` from the UNRESOLVED ``FileRecord.current_path`` while ``tasks/cue_write.py::_write_sync``
     containment-resolves that path and writes beside the RESOLVED file, so any entry whose
     ``current_path`` is a symlink into a differently-named target produced a sheet naming a sibling
