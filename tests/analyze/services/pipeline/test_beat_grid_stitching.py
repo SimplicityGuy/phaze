@@ -243,3 +243,44 @@ def test_the_first_window_has_no_pre_roll_and_one_tracker_call() -> None:
     assert measured is not None
     assert calls.call_count == 1
     assert measured.beats == pytest.approx((0.5,))
+
+
+# phaze-7hcgn.4 finding 1: an octave jump or drop between windows (RhythmExtractor2013 octave errors, or a real
+# tempo change of more than 2x) must neither thin the grid nor record fake gaps. Each window's ticks come from one
+# tracker run, so the window's OWN spacing is the reference inside it; the accepted tail matters only at the seam.
+
+
+def test_an_octave_jump_up_keeps_every_beat_of_the_faster_window() -> None:
+    # 120 BPM, then the tracker reports 260 BPM (a jump of more than 2x): every fast beat is a beat the tracker gave.
+    slow = _train(0.0, 30.0, interval=0.5)
+    fast = _train(30.0, 60.0, interval=60.0 / 260.0, origin=30.0)
+    later = _train(60.0, 90.0, interval=60.0 / 260.0, origin=60.0)
+    stitched = stitch_beat_grid([slow, fast, later])
+    assert stitched.beats == slow + fast + later, "the grid was thinned after the jump"
+    assert stitched.gaps == []
+
+
+def test_an_octave_drop_records_no_fake_gaps() -> None:
+    # 128 BPM, then the tracker halves to 60 BPM: the 1.0 s steps are the new tempo, not missing beats.
+    fast = _train(0.0, 30.0, interval=60.0 / 128.0)
+    slow = _train(30.0, 60.0, interval=1.0, origin=30.0)
+    stitched = stitch_beat_grid([fast, slow])
+    assert stitched.beats == fast + slow
+    assert stitched.gaps == [], "a slower window's own spacing was recorded as gaps"
+
+
+def test_a_real_gap_inside_a_window_after_an_octave_drop_is_still_recorded() -> None:
+    # The window's own spacing is the reference, so a hole in the slow window is a gap against 1.0 s, not 0.47 s.
+    fast = _train(0.0, 30.0, interval=60.0 / 128.0)
+    slow = [b for b in _train(30.0, 60.0, interval=1.0, origin=30.0) if not 40.5 < b < 44.5]
+    stitched = stitch_beat_grid([fast, slow])
+    assert stitched.gaps == [(40.0, 45.0)]
+
+
+def test_a_beat_seen_from_both_sides_of_an_octave_seam_is_kept_once() -> None:
+    slow = [*_train(0.0, 30.0, interval=0.5), 30.0]
+    fast = [30.004, *_train(30.2, 60.0, interval=0.2, origin=30.0)]
+    stitched = stitch_beat_grid([slow, fast])
+    assert stitched.beats.count(30.0) == 1
+    assert 30.004 not in stitched.beats
+    assert stitched.gaps == []

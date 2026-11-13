@@ -88,12 +88,9 @@ class StitchedBeatGrid:
     gaps: list[tuple[float, float]] = field(default_factory=list)
 
 
-def _local_median_interval(accepted: Sequence[float], window_beats: Sequence[float]) -> float | None:
-    """Median beat interval near a seam: the accepted tail's, else the incoming window's own."""
-    tail = accepted[-(_LOCAL_INTERVALS + 1) :]
-    intervals = [b - a for a, b in pairwise(tail) if b > a]
-    if not intervals:
-        intervals = [b - a for a, b in pairwise(window_beats) if b > a]
+def _median_interval(beats: Sequence[float]) -> float | None:
+    """Median of the strictly positive intervals of ``beats``, or ``None`` when there are none."""
+    intervals = [b - a for a, b in pairwise(beats) if b > a]
     return float(median(intervals)) if intervals else None
 
 
@@ -104,34 +101,49 @@ def stitch_beat_grid(windows: Iterable[Sequence[float]]) -> StitchedBeatGrid:
     contributes an empty sequence, or is simply absent: either way it adds no beats, and the span it
     leaves between two accepted beats is what the gap rule below records.
 
-    At every step the next candidate beat is compared with the last ACCEPTED beat, against the
-    LOCAL median interval (the trailing accepted intervals, falling back to the incoming window's own
-    when fewer than two beats exist yet):
+    Each candidate beat is compared with the last ACCEPTED beat, against a reference interval:
 
-    - closer than :data:`DUPLICATE_FRACTION` x median (or not strictly later): a duplicate -- dropped;
-    - wider than :data:`GAP_FACTOR` x median: a gap -- ``(last, candidate)`` is RECORDED and the
+    - closer than :data:`DUPLICATE_FRACTION` x reference (or not strictly later): a duplicate -- dropped;
+    - wider than :data:`GAP_FACTOR` x reference: a gap -- ``(last, candidate)`` is RECORDED and the
       candidate is kept. Nothing is interpolated: a gap holds no invented beats.
 
-    Where no median can be formed (fewer than two beats on either side of the seam) no gap can be
-    judged, so none is recorded; the beats are simply concatenated. Silence before the first beat or
-    after the last is not a gap between beats and is not recorded either.
+    **The reference is the window's OWN spacing** (phaze-7hcgn.4). A window's ticks come from one tracker
+    run, so their median interval is that run's tempo. When the tempo changes by more than 2x between
+    windows -- a real change, or a ``RhythmExtractor2013`` octave error -- judging the new window against
+    the beats already accepted would drop every other beat of a faster window (and keep dropping them,
+    because the thinned grid then confirms its own median), or record each step of a slower window as a
+    gap. Inside a window, the window's own median is therefore the reference, and a window with fewer
+    than two beats falls back to the accepted tail's.
+
+    **At a seam** (the last accepted beat came from an earlier window) both tempos are legitimate, so a
+    step is a duplicate only if it is a duplicate under BOTH (``min``), and a gap only if it is a gap under
+    BOTH (``max``). The tail is the last :data:`_LOCAL_INTERVALS` accepted intervals.
+
+    Where no reference can be formed (fewer than two beats on either side) no gap can be judged, so none
+    is recorded; the beats are simply concatenated. Silence before the first beat or after the last is
+    not a gap between beats and is not recorded either.
     """
     beats: list[float] = []
     gaps: list[tuple[float, float]] = []
     for window_beats in windows:
+        own = _median_interval(window_beats)
+        tail = _median_interval(beats[-(_LOCAL_INTERVALS + 1) :])
+        seam = True  # until this window's first beat is accepted, ``beats[-1]`` belongs to an earlier window
         for beat in window_beats:
             if not beats:
                 beats.append(beat)
+                seam = False
                 continue
             last = beats[-1]
             if beat <= last:
                 continue
-            local = _local_median_interval(beats, window_beats)
             delta = beat - last
-            if local is not None:
-                if delta < DUPLICATE_FRACTION * local:
+            references = [r for r in ((own, tail) if seam else (own if own is not None else tail,)) if r is not None]
+            if references:
+                if delta < DUPLICATE_FRACTION * min(references):
                     continue
-                if delta > GAP_FACTOR * local:
+                if delta > GAP_FACTOR * max(references):
                     gaps.append((last, beat))
             beats.append(beat)
+            seam = False
     return StitchedBeatGrid(beats=beats, gaps=gaps)
