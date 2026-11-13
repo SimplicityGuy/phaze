@@ -1078,6 +1078,25 @@ def _owned_ticks(ticks: Any, origin_sec: float, start_sec: float) -> tuple[float
     return tuple(t for t in (origin_sec + float(tick) for tick in ticks) if t >= floor)
 
 
+def _own_span_reporter(
+    spans: Sequence[tuple[int, float, float]],
+    on_skip: Callable[[int, float, float, bool], None],
+) -> Callable[[int, float, float, bool], None]:
+    """Wrap ``on_skip`` so a skip reported with a pre-rolled decode span names the window's own span.
+
+    The fine pass decodes each window from ``BEAT_PREROLL_SEC`` before its start, and the decode reports
+    a skipped window with the span it was given. A factory, for the same reason as
+    :func:`_make_span_reporter`: built per chunk, it binds this chunk's geometry rather than the loop's.
+    """
+    geometry = {idx: (start, end) for idx, start, end in spans}
+
+    def _report(window_index: int, start: float, end: float, exc_info: bool = True) -> None:
+        own_start, own_end = geometry.get(window_index, (start, end))
+        on_skip(window_index, own_start, own_end, exc_info)
+
+    return _report
+
+
 def _analyze_fine_windows(
     file_path: str,
     total_sec: float,
@@ -1176,7 +1195,9 @@ def _analyze_fine_windows(
                         # Each window is decoded from BEAT_PREROLL_SEC early (never before 0): a few seconds of
                         # overlap per window, so the chunk's PCM bound (D-07) is unchanged for practical purposes.
                         [(idx, max(0.0, start - BEAT_PREROLL_SEC), end) for idx, start, end in chunk],
-                        _skip,
+                        # The decode reports a skip with the span it was handed, which starts at the pre-roll;
+                        # the report names the window's OWN span (phaze-7hcgn.4).
+                        _own_span_reporter(chunk, _skip),
                         stop_at_sec=_chunk_stop_sec(chunks, position),
                         # Keeps the per-window EasyLoader fallback audible to the stall watchdog; see
                         # _decode_windows' docstring for why an unbeaten fallback is always killed.

@@ -284,3 +284,29 @@ def test_a_beat_seen_from_both_sides_of_an_octave_seam_is_kept_once() -> None:
     assert stitched.beats.count(30.0) == 1
     assert 30.004 not in stitched.beats
     assert stitched.gaps == []
+
+
+def test_a_window_the_pre_rolled_decode_skips_is_reported_with_its_own_span(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # phaze-7hcgn.4 finding 6: the decode is handed spans that start BEAT_PREROLL_SEC early, and reports a skipped
+    # window with the span it was given. The log line and the skip must still name the window's own [start, end).
+    seen: list[tuple[int, float, float]] = []
+
+    def decode(_path: str, _rate: int, spans: list[tuple[int, float, float]], on_skip: object, **_kwargs: object) -> dict[int, object]:
+        seen.extend(spans)
+        for idx, start, end in spans:
+            on_skip(idx, start, end, False)  # type: ignore[operator]
+        return {}
+
+    monkeypatch.setattr(analysis_mod, "_decode_windows", decode)
+    with caplog.at_level("WARNING", logger=analysis_mod.log.name):
+        windows, total = analysis_mod._analyze_fine_windows("unused.wav", 90.0, 30, 15)
+    assert (windows, total) == ([], 3)
+    assert seen[1] == (1, 30.0 - BEAT_PREROLL_SEC, 60.0)  # the decode really is pre-rolled
+    messages = [r.getMessage() for r in caplog.records if "failed; skipping" in r.getMessage()]
+    assert messages == [
+        "fine window 0 [0.0, 30.0) failed; skipping",
+        "fine window 1 [30.0, 60.0) failed; skipping",
+        "fine window 2 [60.0, 90.0) failed; skipping",
+    ]
