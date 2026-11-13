@@ -6,6 +6,7 @@ while dominant_style carries the duration-modal label. A score dictionary remain
 for rolling-upgrade agents.
 """
 
+from collections.abc import Mapping
 import math
 from typing import Any, Literal
 import uuid
@@ -163,6 +164,25 @@ class BeatGridPayload(BaseModel):
             if len(span) != 2 or not all(math.isfinite(x) and x >= 0.0 for x in span) or span[1] <= span[0]:
                 raise ValueError("each gap must be a [start_sec, end_sec] pair with end > start")
         return value
+
+
+def grid_payload_fields(result: Mapping[str, Any]) -> dict[str, Any]:
+    """The optional grid fields of an :class:`AnalysisWritePayload`, from an ``analyze_file`` result.
+
+    Both producers (the worker lane's ``process_file`` and the pod lane's job runner) build their PUT body
+    through this one helper (phaze-7hcgn.4). The keys are present only when the child ran with
+    ``include_grids`` (phaze-ek9zf; an older child image omits both). A field is set ONLY when present: an
+    unset field is dropped by ``exclude_unset``, so a run without grids sends exactly the body it always
+    did (a ``null`` key would be an unknown field to a server that predates them).
+    """
+    fields: dict[str, Any] = {}
+    raw_subwindows = result.get("subwindows")
+    if isinstance(raw_subwindows, list):
+        fields["subwindows"] = [SubwindowPayload(**row) for row in raw_subwindows]
+    raw_beat_grid = result.get("beat_grid")
+    if isinstance(raw_beat_grid, dict):
+        fields["beat_grid"] = BeatGridPayload(**raw_beat_grid)
+    return fields
 
 
 class AnalysisWritePayload(BaseModel):

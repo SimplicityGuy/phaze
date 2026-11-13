@@ -207,3 +207,17 @@ def test_both_producers_carry_the_grids_when_the_child_made_them_and_omit_the_ke
     assert "subwindows" not in without
     assert "beat_grid" not in without
     assert isinstance(build(_child_result(grids=False)), AnalysisWritePayload)
+
+
+def test_both_producers_build_the_grid_fields_through_one_helper() -> None:
+    # phaze-7hcgn.4 finding 7: the two producers had byte-identical copies of the grid-field block; one helper now.
+    from phaze import job_runner
+    from phaze.schemas import agent_analysis
+    from phaze.tasks import functions
+
+    assert job_runner.grid_payload_fields is agent_analysis.grid_payload_fields
+    assert functions.grid_payload_fields is agent_analysis.grid_payload_fields
+    # A malformed shape from the child is left out, never sent as an unknown or null key.
+    assert agent_analysis.grid_payload_fields({"subwindows": {"not": "a list"}, "beat_grid": [1.0]}) == {}
+    fields = agent_analysis.grid_payload_fields(_child_result(grids=True))
+    assert set(fields) == {"subwindows", "beat_grid"}

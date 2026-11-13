@@ -31,7 +31,7 @@ import pytest
 
 from phaze.services import analysis as analysis_mod
 from phaze.services.analysis import analyze_file
-from phaze.services.analysis_subwindows import PATCH_GEOMETRY, positive_index
+from phaze.services.analysis_subwindows import PATCH_GEOMETRY, positive_class_index
 from phaze.services.analysis_windows import SUBWINDOW_SEC
 from phaze.services.set_projection import MOOD_ORDER, positive_class_vector
 from tests._real_models import ENV_VAR as _REAL_MODELS_ENV_VAR
@@ -149,7 +149,7 @@ def test_the_coarse_output_is_identical_with_and_without_the_grids(audio: Path) 
 def test_a_pooling_that_double_counts_patches_is_rejected(audio: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def overlap_pool(patches: Any, labels: Any, classifier_type: str, n_slices: int, sub_sec: int = SUBWINDOW_SEC) -> tuple[list[float], list[int]]:
         matrix = np.atleast_2d(np.asarray(patches))
-        column = matrix[:, positive_index(labels)].astype(np.float64)
+        column = matrix[:, positive_class_index(labels)].astype(np.float64)
         length, hop = PATCH_GEOMETRY[classifier_type]
         sums, counts = [0.0] * n_slices, [0] * n_slices
         for k, value in enumerate(column):

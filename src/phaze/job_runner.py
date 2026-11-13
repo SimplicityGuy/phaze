@@ -69,10 +69,9 @@ from phaze.schemas.agent_analysis import (
     AnalysisProgressPayload,
     AnalysisWindowPayload,
     AnalysisWritePayload,
-    BeatGridPayload,
     PresignDownloadMetadata,
     StyleScore,
-    SubwindowPayload,
+    grid_payload_fields,
 )
 from phaze.services.agent_client import AgentApiServerError
 from phaze.services.analysis_exec import AnalysisSubprocessError, format_failure_detail, run_analysis_subprocess
@@ -460,16 +459,6 @@ def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
         style_rows = [{"name": name, "score": score} for name, score in sorted(fallback.items(), key=lambda item: (-item[1], item[0]))]
     style_scores = [StyleScore(**row) for row in style_rows] if style_rows else None
     dominant_style = result.get("style")
-    # phaze-ek9zf: present only when the child ran with include_grids (an older child image omits both keys).
-    raw_subwindows = result.get("subwindows")
-    raw_beat_grid = result.get("beat_grid")
-    # Set ONLY when present: an unset field is dropped by ``exclude_unset``, so a run without grids sends exactly the
-    # body it always did (a `null` key would be an unknown field to a server that predates them).
-    grid_fields: dict[str, Any] = {}
-    if isinstance(raw_subwindows, list):
-        grid_fields["subwindows"] = [SubwindowPayload(**row) for row in raw_subwindows]
-    if isinstance(raw_beat_grid, dict):
-        grid_fields["beat_grid"] = BeatGridPayload(**raw_beat_grid)
     return AnalysisWritePayload(
         bpm=result.get("bpm"),
         musical_key=result.get("musical_key"),
@@ -483,7 +472,7 @@ def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
         coarse_windows_analyzed=result.get("coarse_windows_analyzed"),
         coarse_windows_total=result.get("coarse_windows_total"),
         windows=windows,
-        **grid_fields,
+        **grid_payload_fields(result),
     )
 
 
