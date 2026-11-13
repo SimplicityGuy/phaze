@@ -134,3 +134,31 @@ def test_payload_names_the_model_and_lists_windows_in_index_order() -> None:
 
 def test_payload_of_no_windows_is_an_empty_list_not_an_absent_key() -> None:
     assert embeddings_payload({})["windows"] == []
+
+
+def test_only_the_embedding_model_builds_the_fused_classifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flag selects the fused route; the plain genre model keeps the wrapper it has always used.
+
+    Asserted at the essentia boundary with a stand-in ``es``: which constructor is called, with which
+    outputs. That the fused route then reproduces the wrapper is the real-graph test's job.
+    """
+    from unittest.mock import MagicMock
+
+    import phaze.services.analysis as analysis_mod
+    from phaze.services.analysis_models import GENRE_EMBEDDING_MODEL, GENRE_MODEL
+
+    fake_es = MagicMock()
+    monkeypatch.setattr(analysis_mod, "es", fake_es)
+
+    plain = analysis_mod._construct_classifier(GENRE_MODEL, "/models/g.pb", 64)
+    fused = analysis_mod._construct_classifier(GENRE_EMBEDDING_MODEL, "/models/g.pb", 64)
+
+    assert plain is fake_es.TensorflowPredictEffnetDiscogs.return_value
+    fake_es.TensorflowPredictEffnetDiscogs.assert_called_once_with(graphFilename="/models/g.pb", batchSize=64)
+    assert isinstance(fused, analysis_mod.FusedEffnetDiscogs)
+    fake_es.TensorflowPredict.assert_called_once_with(
+        graphFilename="/models/g.pb", inputs=["serving_default_melspectrogram"], outputs=["PartitionedCall:0", "PartitionedCall:1"]
+    )
+    # Same identity on every metric label: the embedding route reports under the genre model's own series.
+    assert analysis_mod._model_labels(GENRE_EMBEDDING_MODEL) == analysis_mod._model_labels(GENRE_MODEL)
+    assert GENRE_EMBEDDING_MODEL.filename == GENRE_MODEL.filename

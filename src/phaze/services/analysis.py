@@ -302,6 +302,10 @@ def _construct_classifier(model: ModelConfig, graph_path: str, batch_size: int) 
         classifier = es.TensorflowPredictMusiCNN(graphFilename=graph_path, batchSize=batch_size)
     elif model.classifier_type == "vggish":
         classifier = es.TensorflowPredictVGGish(graphFilename=graph_path, batchSize=batch_size)
+    elif model.classifier_type == "effnet_discogs" and model.fused_embedding:
+        # phaze-l5mzm: the same graph and the same logits, plus the embedding, from one session. The batch is
+        # the graph's fixed 64 (the wrapper's own, below), so ``batch_size`` has nothing to set here.
+        classifier = FusedEffnetDiscogs(graph_path)
     elif model.classifier_type == "effnet_discogs":
         # batchSize stays 64 here (via analysis_models._FIXED_BATCH_SIZE) because the graph's Placeholder
         # is fixed at 64, and `lastBatchMode` stays unpassed at its default "same" --
