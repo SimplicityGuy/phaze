@@ -14,8 +14,11 @@ of the resolution the ticks carry in the first place.
 
 from __future__ import annotations
 
+from array import array
 from dataclasses import dataclass, field
-from itertools import pairwise
+from itertools import islice, pairwise
+import math
+import operator
 from statistics import median
 import struct
 from typing import TYPE_CHECKING
@@ -39,12 +42,20 @@ def stored_beat_grid(beats: Iterable[float]) -> list[float]:
     A duplicate or a backwards step -- including two beats that only collapse onto one float32 value
     after rounding -- is a stitching defect upstream, and storing it would hand every reader a grid
     it has to re-validate.
+
+    The whole grid is rounded in ONE C-level pass (``array("f")`` holds IEEE float32, the same rounding
+    as :func:`to_stored_precision`) and checked in another: ``BeatGridPayload`` runs this synchronously in
+    the request path on up to 600,000 beats, where a per-beat ``struct`` round trip cost about 0.1 s
+    (measured, phaze-7hcgn.4). A value beyond float32 range becomes ``inf`` there, and is refused.
     """
-    stored = [to_stored_precision(beat) for beat in beats]
-    for previous, current in pairwise(stored):
-        if current <= previous:
-            msg = f"beat grid must be strictly ascending at float32 precision: {previous!r} then {current!r}"
-            raise ValueError(msg)
+    stored = array("f", beats).tolist()
+    if not all(map(math.isfinite, stored)):
+        msg = "beat grid holds a value beyond float32 range"
+        raise ValueError(msg)
+    if not all(map(operator.lt, stored, islice(stored, 1, None))):
+        previous, current = next((a, b) for a, b in pairwise(stored) if b <= a)
+        msg = f"beat grid must be strictly ascending at float32 precision: {previous!r} then {current!r}"
+        raise ValueError(msg)
     return stored
 
 

@@ -221,3 +221,13 @@ def test_both_producers_build_the_grid_fields_through_one_helper() -> None:
     assert agent_analysis.grid_payload_fields({"subwindows": {"not": "a list"}, "beat_grid": [1.0]}) == {}
     fields = agent_analysis.grid_payload_fields(_child_result(grids=True))
     assert set(fields) == {"subwindows", "beat_grid"}
+
+
+@pytest.mark.parametrize("bad", [[1.0, float("nan")], [1.0, float("inf")], [-0.5, 1.0]], ids=["nan", "inf", "negative"])
+def test_a_beat_grid_with_a_non_finite_or_negative_beat_is_refused(bad: list[float]) -> None:
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import BeatGridPayload
+
+    with pytest.raises(ValidationError, match="finite and non-negative"):
+        BeatGridPayload(beats=bad)

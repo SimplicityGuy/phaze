@@ -153,7 +153,8 @@ class BeatGridPayload(BaseModel):
     @classmethod
     def _beats_ascending_and_stored(cls, value: list[float]) -> list[float]:
         # Raises ValueError (422) on a duplicate/backwards beat; rounding is idempotent on an agent's already-rounded values.
-        if any(not math.isfinite(b) or b < 0.0 for b in value):
+        # Whole-list checks in C (phaze-7hcgn.4): this runs synchronously in the request path on up to MAX_BEATS beats.
+        if not all(map(math.isfinite, value)) or (value and min(value) < 0.0):
             raise ValueError("beats must be finite and non-negative")
         return stored_beat_grid(value)
 
