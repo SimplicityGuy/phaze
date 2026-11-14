@@ -43,8 +43,8 @@ single-cluster configuration, IS that backend's own cap, the quantity acceptance
 backend can only hold ``cap`` in-flight rows, so it can only hold ``cap`` slots; the union cannot
 exceed the sum. **The bound remains a multiple of the CONCURRENCY and never of the corpus** -- a
 slot is reused by the next Job, so the figure does not move as the archive grows. At the deployed
-cap of 4 the analysis role's 2,295-series block costs 9,180 series; a per-pod identity would be
-2,295 x 11,428 = 26,227,260.
+cap of 4 the analysis role's 2,298-series block costs 9,192 series; a per-pod identity would be
+2,298 x 11,428 = 26,261,544.
 
 **EXHAUSTION RETURNS None, IT DOES NOT RAISE.** Instrumentation may never be the thing that fails
 the work it observes (``telemetry.bootstrap``'s acceptance-7 contract, and

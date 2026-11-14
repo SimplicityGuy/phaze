@@ -337,20 +337,21 @@ the process falls back to the shared identity rather than minting an unbounded o
 
 | | series |
 | --- | ---: |
-| analysis-role catalogue block | 2,295 |
+| analysis-role catalogue block | 2,298 |
 | × 4 slots (host lane, `phaze-21nnf`) | **9,160** |
-| × (4 host-lane + 4 burst-lane slots), separate identity spaces (`phaze-7nl67`) | **18,360** |
+| × (4 host-lane + 4 burst-lane slots), separate identity spaces (`phaze-7nl67`) | **18,384** |
 | whole-catalogue ceiling, before | 8,609 |
 | whole-catalogue ceiling, host lane only | 15,479 |
-| whole-catalogue ceiling, both lanes (current) | **24,682** |
-| a per-pod id instead: 2,295 × 11,428 files | **26,227,260** |
+| whole-catalogue ceiling, both lanes (current) | **24,706** |
+| a per-pod id instead: 2,298 × 11,428 files | **26,261,544** |
 
 (The per-instance base moved 8,587 → 8,609 when the runtime-config reload family,
 `phaze-mvq8z.4`, added 22 series, to 8,612 with the controller reload fix's three gauges, and to
-8,617 when the grid-drop counter, `phaze-7hcgn.5`, added 5 analysis-role series; the analysis-role
-block moved 2,290 → 2,295 with it. The rows above for the 9,160 and 15,479 stages are the figures
+8,617 when the grid-drop counter, `phaze-7hcgn.5`, added 5 analysis-role series, and to 8,620 when the
+embedding-drop counter, `phaze-l5mzm`, added 3 more; the analysis-role block moved 2,290 → 2,295 → 2,298
+with them. The rows above for the 9,160 and 15,479 stages are the figures
 of their time. See
-[`metric-catalogue.md`](../telemetry/metric-catalogue.md#the-instance-multiplier-8617-becomes-24682-and-the-reason-it-stops-there).
+[`metric-catalogue.md`](../telemetry/metric-catalogue.md#the-instance-multiplier-8620-becomes-24706-and-the-reason-it-stops-there).
 The two operator-decision quotes below (round 3/4, 2026-09-24) predate that change and are left
 verbatim at the figures actually discussed at the time.)
 
@@ -381,14 +382,14 @@ caps)` = 9,160. That reuse was the residual §8d recorded, not a saving: a host 
 on the same index merged. Every burst Job now carries a code-injected `PHAZE_TELEMETRY_LANE=burst`,
 which `_instance_id` puts between the base and the slot (`phaze-analysis-burst-<n>`), so the two
 lanes' identities are disjoint. **The analysis block is now
-`2,295 x (worker_process_pool_size + Σ kueue caps)`**, which is `2,295 x 8` = **18,360** at the
-deployed pool of 4 and cap of 4. The whole-catalogue ceiling is **24,682**. That is one analysis block
+`2,298 x (worker_process_pool_size + Σ kueue caps)`**, which is `2,298 x 8` = **18,384** at the
+deployed pool of 4 and cap of 4. The whole-catalogue ceiling is **24,706**. That is one analysis block
 (9,160 series when this shipped) more than the shared-space figure, and it is the price of not merging.
 
 **Why no collision-free design costs less: 8 producers need 8 identities.** When both lanes are
 busy, up to `worker_process_pool_size + Σ kueue caps` = 4 + 4 = **8** analysis producers export
 cumulative counters at once, and two producers under one identity merge (§8a). So any design that
-never merges needs at least 8 distinct identities, which is 2,295 × 8 = 18,360 series:
+never merges needs at least 8 distinct identities, which is 2,298 × 8 = 18,384 series:
 - a distinct burst lane (shipped) meets exactly that floor;
 - offsetting burst slots above the host pool meets it too;
 - one shared allocator would have to be sized 8, and so meets it as well;
@@ -396,19 +397,19 @@ never merges needs at least 8 distinct identities, which is 2,295 × 8 = 18,360 
 
 The old 9,160 was reachable only because producers collided. A deployment that already set
 `PHAZE_TELEMETRY_INSTANCE` on the agent host, as `telemetry/exporter.md` §3 advises, was already
-paying 18,360.
+paying 18,384.
 
-**The 8-producer floor and the 24,682 ceiling are PER AGENT HOST.** Each agent host that runs
+**The 8-producer floor and the 24,706 ceiling are PER AGENT HOST.** Each agent host that runs
 analysis has its own slot pool counting from 0: the fileserver agent and every `kind="compute"`
 agent (`docs/k8s-burst.md`). The burst term is shared across the whole deployment, but each host adds
-its own pool. So the general form is `2,295 x (Σ over analysis hosts of worker_process_pool_size + Σ
+its own pool. So the general form is `2,298 x (Σ over analysis hosts of worker_process_pool_size + Σ
 kueue caps)`. Those hosts' identities are kept apart only by `PHAZE_TELEMETRY_INSTANCE`, not by the
 lane. The lane separates the host lane from the burst lane, never one host from another. With more
 than one analysis host, a distinct `PHAZE_TELEMETRY_INSTANCE` per host is therefore **required for
 correctness**, and `telemetry/exporter.md` §3 says so.
 
 **No term in it is the corpus**, which is the property the whole scheme exists for. Raising
-`worker_process_pool_size` or a `cap` costs 2,295 per index and nothing else.
+`worker_process_pool_size` or a `cap` costs 2,298 per index and nothing else.
 
 **Dashboards and alert rules are unchanged, and that was checked rather than assumed.** Every
 expression in `dashboards/*.json` and `alerts/phaze-alerts.yml` already wraps its selector in
@@ -591,8 +592,8 @@ this, withdrawing an earlier comment that had read the answer as covering the ch
   `disown_inherited_slot`. That stops a hand-set lane from moving every host child into the burst
   space.
 
-**Cardinality: the lanes' slots now ADD rather than share**, as restated in §8b: 18,360 for the
-analysis block and 24,682 for the catalogue ceiling at the deployed configuration (18,320 and 24,617
+**Cardinality: the lanes' slots now ADD rather than share**, as restated in §8b: 18,384 for the
+analysis block and 24,706 for the catalogue ceiling at the deployed configuration (18,320 and 24,617
 when this shipped, +9,160 series). **No collision-free design costs less.** Eight concurrent producers need eight identities.
 
 `test_a_host_lane_child_and_a_burst_pod_on_the_same_slot_get_distinct_identities` drives a real

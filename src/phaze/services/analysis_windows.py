@@ -66,6 +66,10 @@ class CoarseWindow:
     # positional in MOOD_ORDER, or None for a slice holding no patch centre. Empty when the patch
     # matrices were unavailable. Not in as_payload_dict (phaze-x3gak).
     subwindow_moods: tuple[tuple[float, ...] | None, ...] = ()
+    # This window's pooled Discogs-EffNet embedding, as analysis_embeddings.encode_embedding's base64 of
+    # 1280 little-endian float16 values, or None: not asked for, silent, under one patch, or dropped.
+    # Not in as_payload_dict; it travels only in the result's "embeddings" key, when asked for.
+    embedding: str | None = None
 
     def as_payload_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""
