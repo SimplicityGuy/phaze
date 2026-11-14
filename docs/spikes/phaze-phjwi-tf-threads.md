@@ -78,7 +78,17 @@ The control's cost per window is 104.8 cpu-s for the 12-graph sweep (419 s / 4),
 The two per-hour columns are derived: windows ÷ seconds × 3600. The conc-4 row's windows per cpu-hour
 read 29.1 when first published, which the row's own cpu seconds do not support (4 / 496 × 3600 = 29.03;
 even 496.5 s gives 29.00), so it is corrected to 29.0; the measured cpu seconds are unchanged. Every
-other derived cell agrees with its row to rounding.
+other derived cell agrees with its row to rounding, the control's windows per wall-hour only narrowly.
+The table records whole seconds. From them, the control's 4 / 419 × 3600 = 34.37 rounds to **34.4**,
+yet its wall cell reads **34.3** beside a cpu cell of 34.4 at the same 419 s. The two cells are
+consistent only if the unrecorded raw times differed below the second: 34.3 needs a raw wall time
+above 419.21 s (4 × 3600 / 34.35) and under 419.5 s (the most that rounds to 419), and 34.4 needs a
+raw cpu time at or under 419.21 s. The raw seconds were not kept, so this record cannot say whether
+that is what happened or whether 34.3 is a slip. **The wall-hour speedups below are therefore taken
+from the wall seconds directly** (every arm ran the same 4 windows, so the ratio of windows per
+wall-hour is the inverse ratio of wall seconds), which does not depend on that cell. Dividing the
+rounded per-hour cells instead gives 61.3 / 34.3 = 1.79, 63.2 / 34.3 = 1.84 and 63.7 / 34.3 = 1.86;
+the third decimal is inside the rounding either way.
 
 **Two ways to state CPU cost, not to be mixed.** "More cpu-s per window" is the ratio of cpu seconds,
 `cpu_s / 419`; "fewer windows per cpu-hour" is `1 − (windows per cpu-hour) / 34.4`. They describe the
@@ -90,8 +100,9 @@ What the matrix says:
 
 1. **Throughput per wall-hour is set by how many of the budget's CPUs are kept busy.** One thread in a
    2-CPU container leaves one CPU idle (34.3 windows per wall-hour); two threads in one worker (61.3 to
-   63.2) and two single-thread workers (63.7) both fill it, at **1.79x to 1.84x** for the threads
-   (61.3 / 34.3 to 63.2 / 34.3) and **1.86x** for the workers (63.7 / 34.3). That reproduces the 2-thread
+   63.2) and two single-thread workers (63.7) both fill it, at **1.78x to 1.84x** for the threads
+   (419 / 235 = 1.783 to 419 / 228 = 1.838 wall seconds) and **1.85x** for the workers (419 / 226 =
+   1.854). That reproduces the 2-thread
    gain `phaze-8y6l8` saw.
 2. **Per cpu-hour, one thread per worker is the most efficient setting**, always. Two intra-op threads
    cost **5.7% to 7.2% more cpu-s per window** (443 to 449 against 419 cpu s; equivalently 5.5% to 6.7%
@@ -139,14 +150,16 @@ is drained or accept the loss of the running analyses (nothing resumes mid-file)
 
 1. **Local analyze lane (8-core host, 4 workers x 1 thread, no CPU cap).** Keep intra/inter/OMP at
    1/1/1. If the operator will give analysis more of the host, raise
-   `PHAZE_LANE_ANALYZE_CONCURRENCY` (4 to 5 or 6), not the thread count: each added worker adds a full
-   ~34 windows per cpu-hour at the efficient setting. Expected gain: **+25% to +50% windows per
-   wall-hour** if the cores are free (**projected** from this matrix, not measured at 8 cores; the host
+   `PHAZE_LANE_ANALYZE_CONCURRENCY` (4 to 5 or 6), not the thread count: each added single-thread worker
+   keeps one more core busy and so adds about **34 windows per wall-hour** (the control: one worker at 1
+   thread, 4 / 419 × 3600 = 34.4), while windows per **cpu**-hour stay at about 34 whatever the worker
+   count, since that is the efficient setting's cost per window. Expected gain: **+25% to +50% windows
+   per wall-hour** (5 / 4 = 1.25; 6 / 4 = 1.50) if the cores are free (**projected** from this matrix, not measured at 8 cores; the host
    showed a load of about 5 with 4 workers, so 6 workers would leave under 1 core for everything else,
    which is the operator's call). Memory is not the limit (62 GiB host, about 1 GiB per worker).
    Rollback: set the variable back to 4 and recreate the container.
 2. **Cloud compute agent (concurrency 1).** No change: with one worker, the derived threads
-   (`min(4, physical cores)`) fill the cores, which is the case this matrix shows paying about 1.8x (1.79x to 1.84x).
+   (`min(4, physical cores)`) fill the cores, which is the case this matrix shows paying about 1.8x (1.78x to 1.84x).
    Rollback: not applicable.
 3. **Burst pods (the burst cluster: 8-CPU node, up to 4 pods, `cpu_request` 1500m, no CPU limit, no thread
    env).** Verified oversubscription. No thread variable reaches the pod, so each analysis child derives

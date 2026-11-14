@@ -86,7 +86,9 @@ float precision, and the run was one TF thread as deployed, so the profile below
 ### Per-stage cost
 
 CPU seconds, summed over the six files. "Per audio-hour" divides by 6.675 h. Wall time equalled cpu time
-to 0.05% (wall/cpu 1.0000 to 1.0014 per file), so the machine was not starving the container.
+to within 0.14% per file (wall/cpu 1.0000 to 1.0014, and 1.0014 − 1 = 0.14%), so the machine was not
+starving the container. An earlier version said "to 0.05%"; the per-file ratios recorded here do not
+support that figure, and no aggregate ratio was recorded that would.
 
 | stage | cpu-s per fine window (30 s) | cpu-s per coarse window (180 s) | cpu-s per audio-hour | share |
 |---|---|---|---|---|

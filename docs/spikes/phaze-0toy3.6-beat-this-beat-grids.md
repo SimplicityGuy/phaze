@@ -13,8 +13,11 @@ ______________________________________________________________________
 `phaze-7hcgn` plans to keep a per-file beat grid, which today is discarded from `RhythmExtractor2013`'s per-30 s fine
 window. `docs/spikes/phaze-8ghbw-analysis-alternatives.md` (E4) named Beat This! (Foscarin, Schlüter, Widmer, ISMIR 2024,
 arXiv 2407.21658) as the one credible alternative tracker. That survey also recorded what was unknown: its inference cost,
-its tempo output (none) and how it behaves on windows. It is **not a CPU lever** (`docs/spikes/phaze-zaf2l-where-phaze-spends-time.md`
-puts the fine tier at 97.7% decode). So the question is:
+its tempo output (none) and how it behaves on windows. It is **not a CPU lever**: decode, not the beat tracker, dominates the fine tier.
+`docs/spikes/phaze-zaf2l-where-phaze-spends-time.md` measured the fine tier at 97.7% decode, but on **one 10-hour file**;
+`docs/spikes/phaze-fzubr-analysis-cpu-profile.md`'s six files put decode at about 81% of the fine tier (1.48 cpu-s of
+1.48 + 0.32 + 0.017 = 1.817 per fine window, 0.81), and decode varies about tenfold by file (35 to 352 cpu-s per
+audio-hour). So the question is:
 
 1. Is Beat This!'s beat grid better than `RhythmExtractor2013`'s, measured on named data?
 2. What does it cost (cpu-s per 30 s window, RSS across many windows)?
@@ -112,9 +115,11 @@ construction, which flatters any competent tracker, and what they show is narrow
 on drum texture (above) that Beat This! does not. **No claim about the archive's music follows from either table.**
 See Recommendation for the measurement that would settle it.
 
-Also note the paper's own caveat, which this data does not contradict or confirm: Beat This! has *lower* continuity than a
-DBN system. Here CMLt (0.586) is well below F1 (0.779) on GuitarSet, consistent with that caveat even on training-set
-material, so a stored grid should not assume it is metrically continuous over a whole file.
+Also note the paper's own caveat: Beat This! has *lower* continuity than a DBN system. **This data neither supports nor
+contradicts it.** CMLt below F1 does not discriminate between the trackers: on GuitarSet it holds for `bt_full` (0.586 vs
+0.779) and equally for `re2013` (0.464 vs 0.591), and GuitarSet is contaminated in Beat This!'s favour anyway (above);
+no DBN tracker was run. The caveat itself, from the paper, is the reason a stored grid should not assume it is
+metrically continuous over a whole file.
 
 ### 2. Window boundaries (grid stitching)
 
@@ -269,8 +274,8 @@ ______________________________________________________________________
 3. **Treat the stitched grid as per-window, not metrically continuous**: store each window's beats with their window
    index so a later pass can reconcile each boundary, **chiefly ticks dropped or doubled at window edges** (the cause of
    `re2013`'s bad boundaries in §2) and secondarily a phase step between windows (seen once in `re2013`). Beat This!
-   showed neither on the fixtures, but its continuity is below its F1 and its 0.12 s edge margin is untested on real
-   material. If `re2013`'s edge losses matter to the comparison, record the gap and its sign at each boundary next
+   showed neither on the fixtures, but the paper reports lower continuity than a DBN system (§1; this spike's data
+   neither supports nor contradicts that) and its 0.12 s edge margin is untested on real material. If `re2013`'s edge losses matter to the comparison, record the gap and its sign at each boundary next
    time; this spike kept only the count.
 4. **File follow-ups, not part of this bead:** (a) re-measure `small0` (8.1 MB) once the checkpoint host serves it, or
    from a vendored copy, because a model one-tenth the size could change the adoption cost; (b) verify `beat-this` and
