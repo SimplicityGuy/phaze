@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from fractions import Fraction
+import math
 import uuid
 
 import pytest
@@ -350,6 +351,54 @@ def test_a_segment_whose_slices_carry_no_mood_falls_back_to_the_coarse_answer() 
 
     assert first.mood == "mood_relaxed"
     assert second.mood == "mood_happy"
+
+
+def test_with_partial_sub_window_coverage_the_uncovered_coarse_windows_still_count() -> None:
+    """phaze-7hcgn.5 finding F: one track over three coarse windows, only the first of which has slices.
+
+    Window 0 [0, 180) has 12 slices, all mood_happy 0.6. Windows 1 and 2 [180, 540) have no slices (their sub-window
+    mood was dropped, or never stored) and both say mood_sad 0.9. Two thirds of the track is measured sad; the slices
+    alone would say happy. Each uncovered window stands in for its 12 slices: happy 0.6 over 12, sad 0.9 over 24 -> sad.
+    """
+    tracks = [_track(1, "0:00")]
+    coarse = [
+        _coarse(0, 0.0, 180.0, moods={"mood_sad": 0.1}),
+        _coarse(1, 180.0, 360.0, moods={"mood_sad": 0.9}),
+        _coarse(2, 360.0, 540.0, moods={"mood_sad": 0.9}),
+    ]
+    slices = [_slice(0, i, i * 15.0, (i + 1) * 15.0, {"mood_happy": 0.6}) for i in range(12)]
+
+    (segment,) = build_track_segments(tracks, coarse, 540.0, subwindows=slices)
+
+    assert segment.mood == "mood_sad"
+
+
+def test_with_full_sub_window_coverage_the_coarse_windows_add_nothing() -> None:
+    """The finer source still wins wherever it covers the window: a covered coarse window is not counted twice."""
+    tracks = [_track(1, "0:00")]
+    coarse = [_coarse(0, 0.0, 180.0, moods={"mood_sad": 0.9})]
+    slices = [_slice(0, i, i * 15.0, (i + 1) * 15.0, {"mood_happy": 0.6}) for i in range(12)]
+
+    (segment,) = build_track_segments(tracks, coarse, 180.0, subwindows=slices)
+
+    assert segment.mood == "mood_happy"
+
+
+def test_partial_coverage_skips_null_slots_unscored_windows_and_unplaceable_windows() -> None:
+    """The mixed mean reads only finite scores: a slice's NULL slot, an uncovered coarse window with no mood scores,
+    and a coarse window with a non-finite bound (which no segment can place) all contribute nothing."""
+    tracks = [_track(1, "0:00")]
+    coarse = [
+        _coarse(0, 0.0, 180.0, moods={"mood_sad": 0.1}),
+        _coarse(1, 180.0, 360.0, moods=None),
+        _coarse(2, 360.0, math.inf, moods={"mood_sad": 1.0}),
+    ]
+    slices = [_slice(0, 0, 0.0, 15.0, {"mood_happy": 0.6})]
+    slices[0].mood_scores = [None if name == "mood_sad" else score for name, score in zip(MOOD_ORDER, slices[0].mood_scores or [], strict=True)]
+
+    (segment,) = build_track_segments(tracks, coarse, 540.0, subwindows=slices)
+
+    assert segment.mood == "mood_happy"
 
 
 def test_a_file_without_subwindows_produces_exactly_todays_segments() -> None:

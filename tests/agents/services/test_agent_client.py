@@ -562,3 +562,113 @@ async def test_get_config_is_a_single_attempt(client):  # type: ignore[no-untype
         await client.get_config()
     assert route.call_count == 1
     assert route.calls.last.request.extensions["timeout"]["read"] == 5.0, "the poll must use its own short timeout, not the client's 30s default"
+
+
+# phaze-7hcgn.5 finding D: grids go only to a control plane whose whoami advertises them. The old-server stub below
+# behaves like a server that predates the grid fields: its analysis body forbids unknown keys, so a grid is a 422.
+
+_GRID_KEYS = {"subwindows", "beat_grid"}
+
+
+def _whoami_body(*capabilities: str) -> dict[str, object]:
+    body: dict[str, object] = {"agent_id": "test-agent-01", "name": "n", "scan_roots": [], "created_at": "2026-01-01T00:00:00"}
+    if capabilities:
+        body["capabilities"] = list(capabilities)
+    return body
+
+
+def _analysis_put(file_id: uuid.UUID, *, accepts_grids: bool) -> respx.Route:
+    import json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if not accepts_grids and _GRID_KEYS & set(body):
+            return httpx.Response(422, json={"detail": [{"type": "extra_forbidden", "loc": ["body", sorted(_GRID_KEYS & set(body))[0]]}]})
+        return httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)})
+
+    return respx.put(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}").mock(side_effect=handler)
+
+
+def _payload_with_grids():  # type: ignore[no-untyped-def]
+    from phaze.job_runner import _build_payload
+    from phaze.services.set_projection import MOOD_ORDER
+
+    result = {
+        "bpm": 124.0,
+        "musical_key": "A minor",
+        "windows": [{"tier": "fine", "window_index": 0, "start_sec": 0.0, "end_sec": 30.0, "bpm": 124.0, "musical_key": "A minor"}],
+        "subwindows": [{"window_index": 0, "sub_index": 0, "start_sec": 0.0, "end_sec": 15.0, "mood_scores": [0.1] * len(MOOD_ORDER)}],
+        "beat_grid": {"beats": [0.5, 1.0], "gaps": []},
+    }
+    return _build_payload(result)
+
+
+@respx.mock
+@pytest.mark.parametrize("whoami", [_whoami_body(), _whoami_body("some_other_feature")], ids=["no_key", "without_grids"])
+async def test_a_newer_agent_against_an_older_server_completes_its_analysis_without_grids(client, whoami):  # type: ignore[no-untyped-def]
+    import json
+
+    file_id = uuid.uuid4()
+    probe = respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(200, json=whoami))
+    put = _analysis_put(file_id, accepts_grids=False)
+    await client.put_analysis(file_id, _payload_with_grids())
+    assert probe.call_count == 1
+    assert put.call_count == 1  # one PUT, accepted: no 422 and no retry
+    body = json.loads(put.calls.last.request.content)
+    assert not _GRID_KEYS & set(body)
+    assert body["bpm"] == 124.0
+    assert body["musical_key"] == "A minor"
+    assert len(body["windows"]) == 1
+
+
+@respx.mock
+async def test_a_newer_agent_against_a_server_with_the_capability_sends_its_grids(client):  # type: ignore[no-untyped-def]
+    import json
+
+    from phaze.schemas.agent_identity import ANALYSIS_GRIDS_CAPABILITY
+
+    file_id = uuid.uuid4()
+    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(200, json=_whoami_body(ANALYSIS_GRIDS_CAPABILITY)))
+    put = _analysis_put(file_id, accepts_grids=True)
+    await client.put_analysis(file_id, _payload_with_grids())
+    body = json.loads(put.calls.last.request.content)
+    assert body["beat_grid"]["beats"] == [0.5, 1.0]
+    assert len(body["subwindows"]) == 1
+
+
+@respx.mock
+async def test_the_capability_is_asked_fresh_on_every_put_so_a_server_upgrade_is_followed(client):  # type: ignore[no-untyped-def]
+    import json
+
+    from phaze.schemas.agent_identity import ANALYSIS_GRIDS_CAPABILITY
+
+    file_id = uuid.uuid4()
+    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(
+        side_effect=[httpx.Response(200, json=_whoami_body()), httpx.Response(200, json=_whoami_body(ANALYSIS_GRIDS_CAPABILITY))]
+    )
+    put = _analysis_put(file_id, accepts_grids=True)
+    await client.put_analysis(file_id, _payload_with_grids())
+    await client.put_analysis(file_id, _payload_with_grids())
+    assert [bool(_GRID_KEYS & set(json.loads(call.request.content))) for call in put.calls] == [False, True]
+
+
+@respx.mock
+async def test_an_unreadable_capability_omits_the_grids_and_still_puts(client):  # type: ignore[no-untyped-def]
+    import json
+
+    file_id = uuid.uuid4()
+    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(404))
+    put = _analysis_put(file_id, accepts_grids=False)
+    await client.put_analysis(file_id, _payload_with_grids())
+    assert not _GRID_KEYS & set(json.loads(put.calls.last.request.content))
+
+
+@respx.mock
+async def test_a_put_without_grids_asks_nothing_first(client):  # type: ignore[no-untyped-def]
+    from phaze.schemas.agent_analysis import AnalysisWritePayload
+
+    file_id = uuid.uuid4()
+    probe = respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(200, json=_whoami_body()))
+    _analysis_put(file_id, accepts_grids=False)
+    await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
+    assert probe.call_count == 0

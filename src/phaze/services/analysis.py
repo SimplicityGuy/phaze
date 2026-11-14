@@ -86,6 +86,7 @@ from phaze.services.beat_grid import (
     stored_beat_grid,
     to_stored_precision,
 )
+from phaze.services.grid_drops import record_grid_drop, tally_grid_drops
 from phaze.telemetry import instruments as telemetry, tracing as otel
 
 
@@ -923,6 +924,7 @@ def _run_model_sets_over_windows(
     """
     features: dict[int, dict[str, Any]] = {key: {model_set.name: {} for model_set in MODEL_SETS} for key, _ in buffers}
     failed: set[int] = set()
+    pool_failed: set[int] = set()  # windows whose sub-window pooling raised: no sub-window mood, mood kept
     audible_buffers = []
     for key, buf in buffers:
         if _has_analyzable_signal(buf):
@@ -943,11 +945,19 @@ def _run_model_sets_over_windows(
                     and slices_by_window is not None
                     and patches is not None
                     and key in slices_by_window
+                    and key not in pool_failed
                     and model.classifier_type in PATCH_GEOMETRY
                 ):
-                    pooled_out.setdefault(key, {}).setdefault(model_set.name, []).append(
-                        pool_positive_class(patches, labels, model.classifier_type, slices_by_window[key])
-                    )
+                    # Pooling has its OWN per-window failure scope (phaze-7hcgn.5 finding C): a raise drops this
+                    # window's sub-window mood -- all of it, never a partial set of variants -- and keeps its mood.
+                    try:
+                        pooled = pool_positive_class(patches, labels, model.classifier_type, slices_by_window[key])
+                    except Exception:
+                        pool_failed.add(key)
+                        pooled_out.pop(key, None)
+                        record_grid_drop("coarse_pooling", f"coarse window {key} sub-window mood", exc_info=True)
+                    else:
+                        pooled_out.setdefault(key, {}).setdefault(model_set.name, []).append(pooled)
             on_model_done()
 
     for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, audible_buffers, models_dir, failed, on_failure).items():
@@ -1045,11 +1055,16 @@ def _measure_fine_window(
         bpm, beat_ticks, confidence, _, _beats_intervals = rhythm_extractor(buf)
         key, scale, _strength = key_extractor(buf)
         tick_origin = start
+        beat_confidence = confidence
         if lead_samples:
-            _bpm, beat_ticks, beat_confidence, _, _ = rhythm_extractor(full)
-            tick_origin = start - lead
-        else:
-            beat_confidence = confidence
+            # The tick-only call has its OWN failure scope (phaze-7hcgn.5 finding B): ticks are grid data, so a raise
+            # here costs this window its beats -- a recorded gap in the grid -- never its bpm and key.
+            try:
+                _bpm, beat_ticks, beat_confidence, _, _ = rhythm_extractor(full)
+                tick_origin = start - lead
+            except Exception:
+                record_grid_drop("fine_ticks", f"fine window {idx} [{start}, {end}) beat ticks", exc_info=True)
+                beat_ticks, beat_confidence = (), 0.0
         return FineWindow(
             window_index=idx,
             start_sec=start,
@@ -1276,6 +1291,14 @@ def _derive_coarse_window(
     idx, start, end = span
     if idx in failed:
         return None  # already reported, in-handler, by the model sweep that failed it
+    # () when the patch matrices were unavailable: absent, not a row of NULLs. Combined in its OWN try, before the
+    # window's (phaze-7hcgn.5 finding C): a sub-window error costs the window its slices, never its mood or style.
+    subwindow_moods: tuple[tuple[float, ...] | None, ...] = ()
+    if pooled:
+        try:
+            subwindow_moods = combine_variants(pooled, n_slices_for(start, end))
+        except Exception:
+            record_grid_drop("coarse_pooling", f"coarse window {idx} sub-window mood", exc_info=True)
     try:
         features = features_by_window[idx]
         return CoarseWindow(
@@ -1286,8 +1309,7 @@ def _derive_coarse_window(
             style=derive_style(features["genre"]),
             danceability=derive_danceability(features),
             features=features,
-            # () when the patch matrices were unavailable: absent, not a row of NULLs.
-            subwindow_moods=combine_variants(pooled, n_slices_for(start, end)) if pooled else (),
+            subwindow_moods=subwindow_moods,
         )
     except Exception:  # per-window failure isolation: skip, never fail the file
         on_skip(idx, start, end, True)
@@ -1564,7 +1586,7 @@ def analyze_file(
     # keeps the two raw callbacks unchanged (analysis_child.py passes both by keyword), and
     # builds the seam once here rather than threading progress_cb/heartbeat_cb separately.
     signals = AnalysisSignals(progress_cb, heartbeat_cb)
-    with otel.span("analysis.file", {"phaze.file.path": file_path}) as file_span:
+    with otel.span("analysis.file", {"phaze.file.path": file_path}) as file_span, tally_grid_drops(f"analysis of {file_path}"):
         return _analyze_file_traced(
             file_path,
             models_dir,
@@ -1719,6 +1741,11 @@ def _assemble_analysis_result(
         "coarse_windows_total": coarse_total,
     }
     if include_grids:
-        result["subwindows"] = _subwindow_payloads(coarse_windows)
-        result["beat_grid"] = _beat_grid_payload(fine_windows)
+        # Each grid in its own scope (phaze-7hcgn.5): a grid that cannot be assembled is left OUT of the result, which
+        # the writer reads as "this run produced none" -- the windows and aggregates above are already complete.
+        for key, build in (("subwindows", lambda: _subwindow_payloads(coarse_windows)), ("beat_grid", lambda: _beat_grid_payload(fine_windows))):
+            try:
+                result[key] = build()
+            except Exception:
+                record_grid_drop("assembly", f"the file's {key}", exc_info=True)
     return result

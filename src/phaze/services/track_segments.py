@@ -40,13 +40,14 @@ import statistics
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, MOOD_NAMES
+from phaze.services.analysis_windows import iter_subwindows
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import MOOD_ORDER, camelot_number, key_name_for_camelot, modal_camelot
 from phaze.tracklist_providers.domain import ProviderTrack
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from phaze.models.analysis import AnalysisSubwindow, AnalysisWindow
     from phaze.models.tracklist import TracklistTrack
@@ -263,15 +264,23 @@ def _is_score(raw: Any) -> bool:
     return isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw)
 
 
-def _argmax_mood_vector(vectors: Sequence[Sequence[float | None] | None]) -> str | None:
+def _argmax_mood_vector(
+    vectors: Sequence[Sequence[float | None] | None],
+    uncovered: Sequence[AnalysisWindow] = (),
+) -> str | None:
     """:func:`_argmax_mood` for sub-window slices, whose mood is a POSITIONAL vector in ``MOOD_ORDER``.
 
     Same arithmetic and same tie rule: each mood's mean over the slices that carry a finite score
     for it, the highest mean wins, ties go to the earlier name in ``MOOD_NAMES``. ``None`` vectors
     (slices no patch centre fell in) and short vectors contribute nothing.
+
+    ``uncovered`` are the segment's coarse windows that no slice with a mood covers (phaze-7hcgn.5 finding F): a
+    window whose sub-window mood was dropped, or one analysed before sub-windows existed. Each stands in for the
+    slices it would have produced -- its name-keyed scores, weighted by its slice count -- so a segment's mood is the
+    mean over ALL of its measured time, not over only the part that happens to have slices.
     """
     sums = dict.fromkeys(MOOD_NAMES, 0.0)
-    counts = dict.fromkeys(MOOD_NAMES, 0)
+    counts = dict.fromkeys(MOOD_NAMES, 0.0)
     for vector in vectors:
         if vector is None:
             continue
@@ -280,10 +289,22 @@ def _argmax_mood_vector(vectors: Sequence[Sequence[float | None] | None]) -> str
             if _is_score(raw):
                 sums[name] += float(raw)
                 counts[name] += 1
+    if not any(counts.values()):
+        return None  # no slice carries a mood: the caller's coarse path, unchanged
+    for window in uncovered:
+        scores = window.mood_scores
+        weight = len(iter_subwindows(window.start_sec, window.end_sec))
+        if not isinstance(scores, dict) or not weight:
+            continue
+        for name in MOOD_NAMES:
+            raw = scores.get(name)
+            if _is_score(raw):
+                sums[name] += float(raw) * weight
+                counts[name] += weight
     return _argmax_of_means(sums, counts)
 
 
-def _argmax_of_means(sums: dict[str, float], counts: dict[str, int]) -> str | None:
+def _argmax_of_means(sums: Mapping[str, float], counts: Mapping[str, float]) -> str | None:
     means = {name: sums[name] / counts[name] for name in MOOD_NAMES if counts[name]}
     if not means:
         return None
@@ -301,8 +322,9 @@ def build_track_segments(
     """Join the scraped tracklist to the window projection, one segment per timestamped track.
 
     ``subwindows`` is the file's ``analysis_subwindow`` rows, if it has any. A segment's ``mood`` is
-    then the argmax of the sub-window slices whose midpoint falls in it; a segment none of whose
-    slices carries a mood vector keeps the coarse answer. ``None`` or empty is exactly the coarse
+    then the argmax of the sub-window slices whose midpoint falls in it, together with any of its coarse
+    windows that no such slice covers, each weighted as the slices it would have had (phaze-7hcgn.5); a
+    segment none of whose slices carries a mood vector keeps the coarse answer. ``None`` or empty is exactly the coarse
     path, so a file analysed before sub-window mood existed is unchanged.
 
     Segments are half-open ``[start, end)`` and consecutive: track *i* ends where the next
@@ -333,7 +355,10 @@ def build_track_segments(
         in_coarse = coarse.within(start, end)
         in_slices = slices.within(start, end)
         camelot = modal_camelot(in_fine)
-        mood = _argmax_mood_vector([row.mood_scores for row in in_slices]) if in_slices else None
+        uncovered = [
+            window for window in in_coarse if not any(row.mood_scores is not None for row in slices.within(window.start_sec, window.end_sec))
+        ]
+        mood = _argmax_mood_vector([row.mood_scores for row in in_slices], uncovered) if in_slices else None
         if mood is None:
             mood = _argmax_mood(in_coarse)
         segments.append(

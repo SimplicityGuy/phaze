@@ -351,15 +351,42 @@ class PhazeAgentClient:
         return MetadataWriteResponse.model_validate(response.json())
 
     async def put_analysis(self, file_id: uuid.UUID, payload: AnalysisWritePayload) -> AnalysisWriteResponse:
-        """PUT /api/internal/agent/analysis/{file_id} -- essentia analysis upsert (D-26)."""
+        """PUT /api/internal/agent/analysis/{file_id} -- essentia analysis upsert (D-26).
+
+        **Grids go only to a server that advertises them (phaze-7hcgn.5 finding D).** A control plane that predates
+        ``subwindows``/``beat_grid`` forbids unknown fields, so sending them is a 422, and ``FAILURE_IS_TERMINAL``
+        turns that into a discarded analysis -- on any rollout that upgrades an agent before its server. So when the
+        payload carries a grid, whoami is asked first, on every such PUT (a later server upgrade or rollback is
+        followed, never cached past), and the grids are left out unless it lists ``analysis_grids``. This is a
+        capability check rather than a retry-without-grids on 422: a 422 cannot say WHICH field the server refused,
+        and retrying on it would also mask a genuine validation defect in the core fields.
+        """
         from phaze.schemas.agent_analysis import AnalysisWriteResponse  # noqa: PLC0415
 
+        grids = sorted(payload.model_fields_set & {"subwindows", "beat_grid"})
+        exclude: set[str] = set()
+        if grids and not await self._server_accepts_analysis_grids():
+            from phaze.services.grid_drops import record_grid_drop  # noqa: PLC0415
+
+            exclude = set(grids)
+            record_grid_drop("server_capability", f"{', '.join(grids)} of file {file_id}: the control plane does not accept grids", count=len(grids))
         response = await self._request(
             "PUT",
             f"/api/internal/agent/analysis/{file_id}",
-            json=payload.model_dump(mode="json", exclude_unset=True),
+            json=payload.model_dump(mode="json", exclude_unset=True, exclude=exclude),
         )
         return AnalysisWriteResponse.model_validate(response.json())
+
+    async def _server_accepts_analysis_grids(self) -> bool:
+        """Whether the control plane's whoami lists ``analysis_grids``. Not knowing reads as no: the safe direction."""
+        from phaze.schemas.agent_identity import ANALYSIS_GRIDS_CAPABILITY  # noqa: PLC0415
+
+        try:
+            identity = await self.whoami()
+        except Exception as exc:  # any failure to learn the capability omits the grids; the PUT then reports its own error
+            logger.warning("agent_api grid capability unknown, omitting grids error=%s", type(exc).__name__)
+            return False
+        return ANALYSIS_GRIDS_CAPABILITY in identity.capabilities
 
     async def request_download_url(self, file_id: uuid.UUID) -> tuple[str, str, str | None, PresignDownloadMetadata | None]:
         """POST /api/internal/agent/files/{file_id}/presign-download -- mint a fresh presigned GET URL (KJOB-02).

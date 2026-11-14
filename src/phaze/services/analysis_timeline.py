@@ -5,7 +5,7 @@ numeric SVG geometry, elapsed-time ticks, and an inspection payload. It must nev
 stride, or otherwise reinterpret coverage.
 """
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Sequence
 import math
 from typing import TYPE_CHECKING, Final, NamedTuple, Protocol, cast
@@ -769,21 +769,36 @@ def _thinned_beat_ticks(beats: Sequence[float], total_sec: float, width: float) 
     return ticks
 
 
-def _gap_label(start: float, end: float, count: int) -> str:
+def _gap_label(start: float, end: float, count: int, beats_inside: int) -> str:
+    span = f"{format_elapsed_time(start)} to {format_elapsed_time(end)}"
+    if beats_inside:
+        return f"{count} recorded gaps from {span}, with {beats_inside} beat{'s' if beats_inside != 1 else ''} among them"
     if count == 1:
-        return f"No beats recorded {format_elapsed_time(start)} to {format_elapsed_time(end)}"
-    return f"{count} recorded gaps with no beats between {format_elapsed_time(start)} and {format_elapsed_time(end)}"
+        return f"No beats recorded {span}"
+    return f"{count} recorded gaps with no beats between {span}"
 
 
-def _drawn_beat_gaps(pairs: Sequence[Sequence[float]], total_sec: float, width: float) -> tuple[list[dict[str, object]], int]:
+def _beats_strictly_inside(beats: Sequence[float], start: float, end: float) -> int:
+    """How many beats lie in the OPEN interval ``(start, end)``: a gap's own endpoints are the beats that bound it."""
+    return max(0, bisect_left(beats, end) - bisect_right(beats, start))
+
+
+def _drawn_beat_gaps(
+    pairs: Sequence[Sequence[float]], total_sec: float, width: float, beats: Sequence[float] = ()
+) -> tuple[list[dict[str, object]], int]:
     """The recorded gaps as drawn spans, and how many recorded gaps there are in all.
 
-    Gaps closer than :data:`BEAT_TICK_SPACING_PX` on the canvas are drawn as ONE span that says how many
-    recorded gaps it holds, so the markup holds at most ``floor(width / spacing) + 1`` spans whatever the
-    gap count (up to 50,000 on the wire). No recorded gap is dropped: each is in exactly one span, and
-    the summary counts them all (phaze-7hcgn.4).
+    **The DOM is bounded by the canvas column, and silence is claimed only where there are no beats
+    (phaze-7hcgn.5 finding E).** Recorded gaps whose start falls in the same :data:`BEAT_TICK_SPACING_PX`
+    column are drawn as ONE span -- they are closer together than the ruler can show apart -- so the markup
+    holds at most ``floor(width / spacing) + 1`` spans whatever the gap count (up to 50,000 on the wire), and
+    each recorded gap is in exactly one span, all counted in the summary (phaze-7hcgn.4). A span is a
+    ``"silence"`` -- the hatched "no beats" claim -- only when no beat lies strictly inside it; a span that
+    takes in beats between its gaps is a ``"cluster"``, drawn differently and labelled with the beats it holds.
+    The previous rule chained every gap within one spacing of the last into one span, which could stretch a
+    "no beats" span across minutes of real beats.
     """
-    spans: list[list[float]] = []  # [start, end, count]
+    spans: list[list[float]] = []  # [start, end, count, column]
     recorded = 0
     gap_px = BEAT_TICK_SPACING_PX * total_sec / width
     for pair in sorted((p for p in pairs if len(p) == 2), key=lambda p: (float(p[0]), float(p[1]))):
@@ -792,22 +807,26 @@ def _drawn_beat_gaps(pairs: Sequence[Sequence[float]], total_sec: float, width: 
         if not end > start:
             continue
         recorded += 1
-        if spans and start - spans[-1][1] < gap_px:
+        column = math.floor(start / gap_px)
+        if spans and (spans[-1][3] == column or start <= spans[-1][1]):  # same column, or overlapping the last span
             spans[-1][1] = max(spans[-1][1], end)
             spans[-1][2] += 1
         else:
-            spans.append([start, end, 1])
-    drawn = [
-        {
-            "start_sec": start,
-            "end_sec": end,
-            "gap_count": int(count),
-            "left_pct": round(start / total_sec * 100, 4),
-            "width_pct": round((end - start) / total_sec * 100, 4),
-            "label": _gap_label(start, end, int(count)),
-        }
-        for start, end, count in spans
-    ]
+            spans.append([start, end, 1, column])
+    drawn: list[dict[str, object]] = []
+    for start, end, count, _column in spans:
+        inside = _beats_strictly_inside(beats, start, end)
+        drawn.append(
+            {
+                "start_sec": start,
+                "end_sec": end,
+                "gap_count": int(count),
+                "kind": "cluster" if inside else "silence",
+                "left_pct": round(start / total_sec * 100, 4),
+                "width_pct": round((end - start) / total_sec * 100, 4),
+                "label": _gap_label(start, end, int(count), inside),
+            }
+        )
     return drawn, recorded
 
 
@@ -822,8 +841,9 @@ def beat_ruler(beat_grid: AnalysisBeatGrid | None, total_sec: float, width: floa
     """
     if beat_grid is None or not math.isfinite(total_sec) or total_sec <= 0 or width <= 0:
         return None
-    ticks = _thinned_beat_ticks(beat_grid.beats or [], total_sec, width)
-    gaps, recorded = _drawn_beat_gaps(beat_grid.gaps or [], total_sec, width)
+    beats = beat_grid.beats or []
+    ticks = _thinned_beat_ticks(beats, total_sec, width)
+    gaps, recorded = _drawn_beat_gaps(beat_grid.gaps or [], total_sec, width, beats)
     beat_count = int(beat_grid.beat_count)
     summary = f"Beat ruler: {beat_count} beats" + (f", {recorded} recorded gap{'s' if recorded != 1 else ''} with no beats" if recorded else "")
     return {
