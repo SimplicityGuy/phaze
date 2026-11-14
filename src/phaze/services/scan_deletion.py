@@ -37,7 +37,7 @@ from sqlalchemy import CursorResult, String, cast as sql_cast, delete, exists, f
 import structlog
 
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisEmbedding, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
 from phaze.models.companion_content import CompanionContentFeatures
@@ -380,7 +380,7 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
     its own output table (``services/stage_status.py``), so deleting the output is what makes the
     stage eligible again:
 
-    - ``analysis_window`` / ``analysis_subwindow`` / ``analysis_beat_grid`` / ``analysis`` /
+    - ``analysis_window`` / ``analysis_subwindow`` / ``analysis_beat_grid`` / ``analysis_embedding`` / ``analysis`` /
       ``set_profile``: analysis of the old audio, including a failure row (``failed_at``), which
       would otherwise read FAILED and never retry. A beat grid timed against the old bytes would
       otherwise outlive the windows it came with and mis-time the new file's ruler.
@@ -410,6 +410,7 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
         (AnalysisWindow.__tablename__, delete(AnalysisWindow).where(AnalysisWindow.file_id == file_id)),
         (AnalysisSubwindow.__tablename__, delete(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id)),
         (AnalysisBeatGrid.__tablename__, delete(AnalysisBeatGrid).where(AnalysisBeatGrid.file_id == file_id)),
+        (AnalysisEmbedding.__tablename__, delete(AnalysisEmbedding).where(AnalysisEmbedding.file_id == file_id)),
         (AnalysisResult.__tablename__, delete(AnalysisResult).where(AnalysisResult.file_id == file_id)),
         (SetProfile.__tablename__, delete(SetProfile).where(SetProfile.file_id == file_id)),
         (FileMetadata.__tablename__, delete(FileMetadata).where(FileMetadata.file_id == file_id)),

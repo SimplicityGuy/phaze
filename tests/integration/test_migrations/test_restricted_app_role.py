@@ -164,6 +164,8 @@ async def test_the_whole_chain_upgrades_and_downgrades_as_the_app_role(app_db: A
     await asyncio.to_thread(upgrade_to, cfg, "head")
     await _assert_analytics_interface(app_db, present=True)
     assert await _scalar(app_db.superuser, "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'files'") == app_db.role
+    # 099 (phaze-g79ea): the embedding table is built by the app role and touches no role.
+    assert await _scalar(app_db.superuser, "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'analysis_embedding'") == app_db.role
 
     await asyncio.to_thread(downgrade_to, cfg, "094")
     await _assert_analytics_interface(app_db, present=False)
