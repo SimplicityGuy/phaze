@@ -68,27 +68,42 @@ the 33-graph ensemble, per `phaze-8y6l8` and `phaze-fzubr`); that is history, no
 | conc 1, intra 4 / inter 1 / omp 4 (2x oversubscribed) | 254 | 505 | 56.7 | 28.5 | 1.99 | 1.2e-7 |
 | **conc 2**, intra 1 / inter 1 / omp 1 | 226 | 449 | **63.7** | 32.1 | 1.99 | 0 |
 | conc 2, intra 2 / inter 1 / omp 2 (2x oversubscribed) | 245 | 490 | 58.8 | 29.4 | 2.00 | 1.2e-7 |
-| conc 4, intra 1 / inter 1 / omp 1 (2x oversubscribed) | 248 | 496 | 58.0 | 29.1 | 2.00 | 0 |
+| conc 4, intra 1 / inter 1 / omp 1 (2x oversubscribed) | 248 | 496 | 58.0 | 29.0 | 2.00 | 0 |
 | 1-CPU budget, conc 1, intra 1 (2 windows) | 209 | 209 | 34.4 | 34.4 | 1.00 | 0 |
 | 1-CPU budget, conc 1, intra 2 / omp 2 (2x oversubscribed, 2 windows) | 222 | 222 | 32.4 | 32.4 | 1.00 | 1.2e-7 |
 
 The control's cost per window is 104.8 cpu-s for the 12-graph sweep (419 s / 4), consistent with
 `phaze-fzubr`'s 100.5 cpu-s (96.8 + 3.67) on that sample.
 
+The two per-hour columns are derived: windows ÷ seconds × 3600. The conc-4 row's windows per cpu-hour
+read 29.1 when first published, which the row's own cpu seconds do not support (4 / 496 × 3600 = 29.03;
+even 496.5 s gives 29.00), so it is corrected to 29.0; the measured cpu seconds are unchanged. Every
+other derived cell agrees with its row to rounding.
+
+**Two ways to state CPU cost, not to be mixed.** "More cpu-s per window" is the ratio of cpu seconds,
+`cpu_s / 419`; "fewer windows per cpu-hour" is `1 − (windows per cpu-hour) / 34.4`. They describe the
+same runs but are different numbers: 449 s is **7.2% more cpu-s per window** (449 / 419 = 1.072) and
+**6.7% fewer windows per cpu-hour** (1 − 32.1 / 34.4 = 0.067). The items below quote cpu-s per window
+first, from the cpu s column, and give the per-cpu-hour fall alongside.
+
 What the matrix says:
 
 1. **Throughput per wall-hour is set by how many of the budget's CPUs are kept busy.** One thread in a
-   2-CPU container leaves one CPU idle (34.3 windows per wall-hour); two threads in one worker (62 to
-   63) and two single-thread workers (63.7) both fill it, at 1.81x to 1.86x. That reproduces the 2-thread
+   2-CPU container leaves one CPU idle (34.3 windows per wall-hour); two threads in one worker (61.3 to
+   63.2) and two single-thread workers (63.7) both fill it, at **1.79x to 1.84x** for the threads
+   (61.3 / 34.3 to 63.2 / 34.3) and **1.86x** for the workers (63.7 / 34.3). That reproduces the 2-thread
    gain `phaze-8y6l8` saw.
 2. **Per cpu-hour, one thread per worker is the most efficient setting**, always. Two intra-op threads
-   cost **5.5% to 6.7%** more CPU per window (32.1 to 32.5 against 34.4 windows per cpu-hour); two
-   workers cost 6.7%, about the same; oversubscribing the budget costs **14% to 17%** (28.5 to 29.4)
-   whether by threads or by workers. Under a 1-CPU budget a second thread is a net loss on both axes.
+   cost **5.7% to 7.2% more cpu-s per window** (443 to 449 against 419 cpu s; equivalently 5.5% to 6.7%
+   fewer windows per cpu-hour, 32.5 to 32.1 against 34.4); two workers cost **7.2%** more cpu-s per window
+   (449 / 419; 6.7% fewer windows per cpu-hour), about the same; oversubscribing the budget costs
+   **17% to 21% more cpu-s per window** (490 / 419 = 1.169 to 505 / 419 = 1.205; 14.5% to 17.2% fewer
+   windows per cpu-hour, 29.4 to 28.5 against 34.4) whether by threads or by workers. Under a 1-CPU
+   budget a second thread is a net loss on both axes.
 3. **Threads and workers are interchangeable at a fixed budget.** `conc 2 x 1 thread` (63.7) and
-   `conc 1 x 2 threads` (62.1 to 63.2) differ by 1% to 3%, which is inside the spread of the three
-   2-thread variants below (228 to 235 s, about 3%). I did not repeat any configuration, so 3% is the
-   only noise estimate available. Workers also need about 1 GiB each, threads share one process.
+   `conc 1 x 2 threads` (61.3 to 63.2) differ by 1% to 4% (63.7 / 63.2 = 1.008; 63.7 / 61.3 = 1.039),
+   about the spread of the three 2-thread variants below (228 to 235 s, 235 / 228 = 1.031, about 3%). I
+   did not repeat any configuration, so 3% is the only noise estimate available. Workers also need about 1 GiB each, threads share one process.
 4. **Inter-op 2 and OMP 1 against 2 change nothing** at intra 2 (228, 232 and 235 s). `analysis_sizing.py`
    pins inter-op at 1; this agrees.
 5. **Equivalence.** Maximum absolute difference against the control over all 12 graphs and 4 windows:
@@ -107,7 +122,8 @@ What the matrix says:
 ## Verdict
 
 - **Threads buy wall-clock only where the budget has idle CPUs.** They never improve CPU efficiency
-  (always a 5% to 7% loss, 14% to 17% when oversubscribed), and results are unchanged to 1.2e-7.
+  (always 5.7% to 7.2% more cpu-s per window, 17% to 21% more when oversubscribed), and results are
+  unchanged to 1.2e-7.
 - **Where a lane's CPU budget is already filled by concurrent workers, more threads are a pure loss.**
   The deployed local analyze lane runs 4 workers at 1 thread each, which is the efficient setting;
   what it leaves on the table is idle cores, not thread tuning.
@@ -130,7 +146,7 @@ is drained or accept the loss of the running analyses (nothing resumes mid-file)
    which is the operator's call). Memory is not the limit (62 GiB host, about 1 GiB per worker).
    Rollback: set the variable back to 4 and recreate the container.
 2. **Cloud compute agent (concurrency 1).** No change: with one worker, the derived threads
-   (`min(4, physical cores)`) fill the cores, which is the case this matrix shows paying 1.8x or more.
+   (`min(4, physical cores)`) fill the cores, which is the case this matrix shows paying about 1.8x (1.79x to 1.84x).
    Rollback: not applicable.
 3. **Burst pods (the burst cluster: 8-CPU node, up to 4 pods, `cpu_request` 1500m, no CPU limit, no thread
    env).** Verified oversubscription. No thread variable reaches the pod, so each analysis child derives
@@ -140,8 +156,8 @@ is drained or accept the loss of the running analyses (nothing resumes mid-file)
    derivation sees no CPU quota (there is no limit), so it ignores that four pods share the node. Four
    busy pods then run 16 threads on 8 CPUs (about 2x oversubscribed; 4x if the derivation were somehow
    bypassed and TF used 8). Fair share is 2 CPUs per pod, which is exactly this matrix's 2-CPU budget:
-   there, 4 intra-op threads gave 56.7 windows per wall-hour and 28.5 per cpu-hour, against 62 to 63 and
-   32.1 to 32.5 for 2 threads. **Recommendation: pin 2 intra-op threads (and OMP 2) per pod, by adding
+   there, 4 intra-op threads gave 56.7 windows per wall-hour and 28.5 per cpu-hour, against 61.3 to 63.2 and
+   32.1 to 32.5 for 2 threads (62.1 and 32.5 for the intra 2 / OMP 2 row recommended here). **Recommendation: pin 2 intra-op threads (and OMP 2) per pod, by adding
    `TF_NUM_INTRAOP_THREADS=2` and `OMP_NUM_THREADS=2` to the `phaze-agent-env` ConfigMap.** It is
    an operator change with no code, it reaches new pods only, and it is the setting the matrix supports
    (1 thread would leave half of each pod's fair share idle, about 45% less throughput per pod). A CPU

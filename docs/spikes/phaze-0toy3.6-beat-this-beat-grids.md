@@ -45,7 +45,8 @@ ______________________________________________________________________
   `beat_position` namespace; audio `audio_mono-mic`, 44.1 kHz. **39 of its 360 clips**, taken by a fixed stride over the
   sorted file list (the volume was nearly full, so the audio was range-fetched rather than downloaded whole; ~98 MB on
   disk). Clips are 30–45 s of solo or accompaniment acoustic guitar, so each is tracked as one 30 s window plus a remainder
-  window when the remainder is at least 5 s.
+  window when the remainder is at least 5 s. **GuitarSet turned out to be one of Beat This!'s training datasets**, which
+  invalidates it as a fair comparison (§1).
 - **Locally generated synthetic drum fixtures** (generated in the benchmark, never stored): kick on beats 1 and 3, snare on
   2 and 4, hi-hat on every eighth, a bass tone alternating every bar; 60 s each at 70, 90, 110, 120, 127.3, 140, 160 and
   180 BPM plus one slow ramp 120→140 BPM (9 cases), with exact beat times. A 300 s fixture at 120 and 127.3 BPM serves the
@@ -94,17 +95,26 @@ its tempo was right** (AMLt 0.97), meaning its ticks were placed on the wrong ph
 shows no such failure: `re2013` lands within +29 ms of truth at 100, 120 and 140 BPM, with F1 0.99–1.00, and `bt_full`
 within 0–20 ms. So the misses are a property of tracking real drum texture, not of `re2013`'s latency.
 
-**Reading the two tables with the right weight.** The synthetic fixtures are easy and unambiguous by construction, which
-flatters Beat This! and says only that `re2013` has phase and octave failures that Beat This! lacks. The GuitarSet gap
-(+0.19 F1) is the more honest number, and it is on **solo guitar**, not the full-band concert audio phaze mostly holds.
-Beat This! on GuitarSet is also outside the evaluation the authors recommend: the README says `final*` evaluate fairly
-only on GTZAN or datasets not in its training sets, and **this spike did not check whether GuitarSet is among the 16
-training datasets**, so the +0.19 may be partly optimistic. **No claim about the archive's music follows from these
-numbers.** See Recommendation for the measurement that would settle it.
+**Reading the two tables with the right weight.** **The GuitarSet comparison is not fair evidence: GuitarSet is in
+Beat This!'s training data.** Checked after this spike first reported (PR #805 review, bead `phaze-0toy3.7`,
+2026-11-14): the authors' annotation repository `CPJKU/beat_this_annotations` (`gh api
+repos/CPJKU/beat_this_annotations/contents`, read at commit `fd9fcc08`) has a `guitarset` directory among its 16 dataset
+directories, and `gtzan` is the held-out test set. The `CPJKU/beat_this` README, line 105 at commit `b95c8ab0`, says
+*"the results may be unfairly good if you run inference on any file from the training datasets"* and that `final*`
+can only be evaluated fairly on GTZAN or datasets the paper did not use. `final0` is a `final*` checkpoint, so its
+GuitarSet clips, these 39 among them, were training material. The GuitarSet gap (0.779 vs 0.591, +0.19 F1) is
+therefore **contaminated in Beat This!'s favour** and is not evidence that it tracks unseen guitar better; how much of
+the gap survives on unseen audio is unknown from this data. `re2013` is a hand-designed signal-processing extractor
+with no learned training set to overlap.
+
+That leaves the **synthetic fixtures as the only clean accuracy evidence** here. They are easy and unambiguous by
+construction, which flatters any competent tracker, and what they show is narrow: `re2013` has phase and octave failures
+on drum texture (above) that Beat This! does not. **No claim about the archive's music follows from either table.**
+See Recommendation for the measurement that would settle it.
 
 Also note the paper's own caveat, which this data does not contradict or confirm: Beat This! has *lower* continuity than a
-DBN system. Here CMLt (0.586) is well below F1 (0.779) for the same reason, so a stored grid should not assume it is
-metrically continuous over a whole file.
+DBN system. Here CMLt (0.586) is well below F1 (0.779) on GuitarSet, consistent with that caveat even on training-set
+material, so a stored grid should not assume it is metrically continuous over a whole file.
 
 ### 2. Window boundaries (grid stitching)
 
@@ -122,10 +132,19 @@ beat).
 Two findings. First, Beat This! stitched cleanly: independent windows agreed on the same phase and the gap across each
 boundary was within ±2.4% of one beat interval (0.976–1.018), so tracking each 30 s window separately and concatenating
 loses no beats on this fixture. The model discards its outer 6 frames (0.12 s) per chunk (its own `border_size`), so a beat
-inside that margin of a window edge is the place a miss would occur, and the synthetic data did not provoke one. Second,
-`re2013`'s grid is **not stable across independent windows**: at 127.3 BPM one window flipped to the opposite phase from
-the other nine. A grid stitched from per-window `re2013` ticks can therefore contain a half-beat step at a boundary.
-That matters for `phaze-7hcgn` whichever tracker it keeps.
+inside that margin of a window edge is the place a miss would occur, and the synthetic data did not provoke one.
+
+Second, `re2013`'s bad boundaries are **not explained by phase flips**. At 120 BPM its offset was −232 ms in *every*
+window, so its phase was the same on both sides of every boundary, yet all 9 boundaries were bad. At 127.3 BPM one window
+flipped phase (−0.7 ms against −216 ms in the other nine), but a single window touches at most the 2 boundaries on its
+own edges, so it cannot account for 8 bad ones. A constant phase cannot move the gap across a boundary; only the beat
+count at the window edges can. So the bad boundaries come from **ticks dropped or added near window edges**: with the
+phase held constant, a gap above 1.25 beat intervals means ticks are missing at the edge, and one below 0.75 an extra
+tick. **The recorded data
+does not say which**: this spike kept the count of bad boundaries per run, not the gap at each boundary or its sign, so
+neither the direction nor how far from the edge the missing or extra ticks sit can be stated here. Separately, the one
+flipped window at 127.3 BPM shows `re2013`'s phase is **not stable across independent windows** either, so a stitched
+`re2013` grid can also carry a half-beat step at a boundary. Both matter for `phaze-7hcgn` whichever tracker it keeps.
 
 Derived tempo from IBIs is coarse for Beat This!: frames are 20 ms, so 127.3 BPM (0.471 s) reads as 125.0 BPM (0.480 s)
 from the median IBI. A tempo for storage should come from a robust fit over many beats (mean IBI over a window or the
@@ -143,10 +162,19 @@ Per 30 s window, 100 windows after warm-up, `process_time`, machine under load (
 
 - **Beat This! costs about 9.8× `re2013` per window** (2.338 vs 0.239 cpu-s, one thread), i.e. 0.078 cpu-s per second of
   audio against 0.008. More torch threads buy wall time at the price of cpu-s (4 threads: +27% cpu-s for −31% wall).
-- It **replaces** the rhythm half of the fine window rather than adding to it, so the net is about **+2.1 cpu-s per window**.
-  On the 4,761.835 s file `phaze-zaf2l` measured end to end (7,119.473 s at `cap = 4`), that is 158.7 windows and about
-  **+333 cpu-s**, about 4.7% of that file's wall clock if the extra work ran serially on one core. That is a rough
-  framing, not a measured end-to-end figure, and the cpu-s were taken on a loaded machine.
+- **The net depends on what supplies stored BPM**, and there are two cases:
+  - **Keep `re2013` as the BPM source** and add Beat This! for the grid only: `re2013` still runs, so the net is the
+    whole **+2.338 cpu-s per window**, and stored BPM keeps its current meaning.
+  - **Swap the BPM source** to a tempo derived from Beat This!'s beats: Beat This! then replaces `re2013`, and the net is
+    2.338 − 0.239 = **+2.099, about +2.1 cpu-s per window**. That is a **semantics change to stored BPM**, not only a
+    cost line: the derived value is a different estimator (at 20 ms frames, 127.3 BPM reads as 125.0 from the median
+    IBI, §2), so the bead that makes this swap owes a blast-radius statement (rule 4 of the verification-fidelity rules
+    in `CLAUDE.md`) with a measured population of affected files, which this spike does not have.
+
+  On the 4,761.835 s file `phaze-zaf2l` measured end to end (7,119.473 s at `cap = 4`), that is 4,761.835 / 30 = 158.7
+  windows, so about **+371 cpu-s** keeping `re2013` (158.7 × 2.338) or **+333 cpu-s** swapping it (158.7 × 2.099): about
+  **5.2%** (371 / 7,119.473) or **4.7%** (333 / 7,119.473) of that file's wall clock if the extra work ran serially on
+  one core. That is a rough framing, not a measured end-to-end figure, and the cpu-s were taken on a loaded machine.
 - **RSS does not grow with window count** (the D-09 shape): slopes are at or below zero across 100 windows for all three
   configurations, so neither tracker retains per-window state in this loop. This says nothing about a **single call on a
   multi-hour signal**: `Audio2Beats` takes the whole signal and builds the whole spectrogram, which at 50 frames/s ×
@@ -208,32 +236,42 @@ ______________________________________________________________________
 
 ## Verdict
 
-1. **Quality:** on the data measured, Beat This! (`final0`) produces a better beat grid than phaze's current
-   `RhythmExtractor2013` call: beat F1 **0.779 vs 0.591** on 39 CC BY 4.0 GuitarSet clips and **0.997 vs 0.644** on nine
-   synthetic drum fixtures, with equal tempo Acc1 and better Acc2 on GuitarSet. `re2013` showed half-beat phase errors,
-   half-tempo errors, and a grid that **flips phase between independent 30 s windows**; Beat This! did not.
-2. **Cost:** about **9.8× the cpu-s** of `re2013` per 30 s window (2.338 vs 0.239, one thread, loaded machine), a net
-   **≈ +2.1 cpu-s per window**, with **no RSS growth across 100 windows**. It is not a CPU saving; it is a modest CPU price
-   for a materially better grid.
+1. **Quality:** Beat This! (`final0`) produced a better beat grid than phaze's current `RhythmExtractor2013` call **on
+   synthetic fixtures**: beat F1 **0.997 vs 0.644** on nine synthetic drum fixtures, where `re2013` showed half-beat
+   phase errors, half-tempo errors, and bad window boundaries (8 or 9 of 9 on the 300 s fixtures, from ticks dropped or
+   added at window edges, §2); Beat This! showed none. **The GuitarSet gap (F1 0.779 vs 0.591) is training-set
+   contaminated** (GuitarSet is one of Beat This!'s training datasets, §1) and is not fair evidence of better tracking on
+   unseen audio.
+2. **Cost:** about **9.8× the cpu-s** of `re2013` per 30 s window (2.338 vs 0.239, one thread, loaded machine): a net of
+   **+2.338 cpu-s per window if `re2013` stays the BPM source**, or **+2.099 (≈ +2.1) if Beat This!'s beats replace it**,
+   the second being a change to what stored BPM means (§3). **No RSS growth across 100 windows.** It is not a CPU saving;
+   it is a modest CPU price for a grid that is better on the fixtures and unproven on real music.
 3. **Adoption cost:** a torch dependency in both images (arm64 agent on 3.13 indicated by wheel availability, untested),
    a vendored 78 MB checkpoint, and about 20 lines of tempo derivation. No upstream change and no fork is required.
-4. **Not established:** that these numbers hold on the archive's music (full concert sets, electronic and band
-   recordings), whether GuitarSet overlaps Beat This!'s training data, how `small0` compares, and whether the ONNX route
-   is numerically faithful.
+4. **Not established:** any accuracy advantage on real, unseen music (no clean real-music comparison was run; the archive's
+   full concert sets, electronic and band recordings are untested), why exactly `re2013` loses ticks at window edges, how
+   `small0` compares, and whether the ONNX route is numerically faithful.
 
 ______________________________________________________________________
 
 ## Recommendation
 
-1. **Take Beat This! (`final0`, torch, `dbn=False`) as the working choice for `phaze-7hcgn`'s beat grid**, called once per
-   30 s fine window, storing beat (and optionally downbeat) times rather than frame probabilities, with tempo derived in
-   phaze by a robust fit. **Do not fork. Do not wait on upstream.**
-2. **Before committing the grid format, run one operator-side check that this spike could not:** F1 and phase agreement of
-   `re2013` vs `final0` on a small, **operator-chosen and operator-annotated** sample of real archive music. This spike
-   was barred from archive audio, and a result on guitar solos and synthetic drums does not transfer to concert sets.
-   Record the result as a comment on `phaze-7hcgn`.
+1. **Take Beat This! (`final0`, torch, `dbn=False`) as the provisional working choice for `phaze-7hcgn`'s beat grid**,
+   called once per 30 s fine window, storing beat (and optionally downbeat) times rather than frame probabilities, with
+   tempo derived in phaze by a robust fit. **Provisional** because its accuracy edge is shown only on synthetic fixtures;
+   the GuitarSet result is training-set contaminated (§1), so recommendation 2 is what confirms or overturns it.
+   **Do not fork. Do not wait on upstream.**
+2. **Before committing the grid format, run one operator-side check that this spike could not:** F1, phase agreement and
+   window-boundary behaviour of `re2013` vs `final0` on a small, **operator-chosen and operator-annotated** sample of real
+   archive music. This spike was barred from archive audio, its one real-music set (GuitarSet) turned out to be in Beat
+   This!'s training data, and synthetic drums do not transfer to concert sets, so this check is the **only** clean
+   real-music evidence the decision will have. Record the result as a comment on `phaze-7hcgn`.
 3. **Treat the stitched grid as per-window, not metrically continuous**: store each window's beats with their window
-   index so a later pass can reconcile phase at boundaries; Beat This!'s continuity is below its F1.
+   index so a later pass can reconcile each boundary, **chiefly ticks dropped or doubled at window edges** (the cause of
+   `re2013`'s bad boundaries in §2) and secondarily a phase step between windows (seen once in `re2013`). Beat This!
+   showed neither on the fixtures, but its continuity is below its F1 and its 0.12 s edge margin is untested on real
+   material. If `re2013`'s edge losses matter to the comparison, record the gap and its sign at each boundary next
+   time; this spike kept only the count.
 4. **File follow-ups, not part of this bead:** (a) re-measure `small0` (8.1 MB) once the checkpoint host serves it, or
    from a vendored copy, because a model one-tenth the size could change the adoption cost; (b) verify `beat-this` and
    torch on Linux arm64 / Python 3.13 in the real agent base image; (c) evaluate the ONNX route only if (b) shows torch is
@@ -269,3 +307,6 @@ ______________________________________________________________________
 - `CPJKU/beat_this` README, LICENSE (MIT) and `beat_this/inference.py` (chunking, `border_size=6`, `soxr`), GitHub API
   repository, issue and pull-request listings; `beat-this` 1.1.0 and `torch` 2.15.0 on PyPI
 - GuitarSet, Xi, Bittner, Pauwels, Ye, Bello, ISMIR 2018; Zenodo record 3371780 (CC BY 4.0)
+- Training-set check (2026-11-14, bead `phaze-0toy3.7`): `gh api repos/CPJKU/beat_this_annotations/contents` at commit
+  `fd9fcc08` (16 dataset directories, `guitarset` among them, `gtzan` the test set); `CPJKU/beat_this` `README.md`
+  line 105 at commit `b95c8ab0` ("results may be unfairly good …")

@@ -112,8 +112,9 @@ decode is what moves.
 ### Decode is the variable stage
 
 Fine-tier decode, cpu-s per audio-hour of the file: `set-01` 35, `set-02` 96, `set-03` 92, `set-04` 92,
-`set-05` **352**, `set-06` 123. Coarse decode: 34, 36, 35, 36, 72, 87. `set-05` costs about 3.8 times
-the median file in fine decode, and it is not the longest file, nor the highest bitrate (226 kbps against
+`set-05` **352**, `set-06` 123. Coarse decode: 34, 36, 35, 36, 72, 87. Fine decode spans **about 10 times**
+across the six files (352 / 35 = 10.1). `set-05` costs about 3.7 times the median file in fine decode
+(352 / 94, the median of the six being (92 + 96) / 2 = 94), and it is not the longest file, nor the highest bitrate (226 kbps against
 `set-01`'s 320 kbps, which was cheapest). Within `set-05` the per-chunk fine decode fell from 228 s to
 107 s across its four chunks, so the cost is not simply duration or chunk position. The cause was not
 isolated in this spike. On `set-02` to `set-06`, fine decode is about 2.3 to 8.6 times the rhythm and key
@@ -136,7 +137,7 @@ can emit both outputs was not measured.
 | `set-05` | 38 + 226 | 127 KiB | 81 ms |
 | `set-06` | 53 + 318 | 179 KiB | 108 ms |
 
-Against 282 to 6 106 cpu-s of analysis per file, the write is 0.002% to 0.007% of the file's CPU,. Production adds a network round trip that was not measured.
+Against 282 to 6 106 cpu-s of analysis per file, the write is 0.002% to 0.007% of the file's CPU. Production adds a network round trip that was not measured.
 
 ### Archive-scale projection (an extrapolation)
 
@@ -151,11 +152,12 @@ different sample; this run does not reconcile the two.
 
 - The 11 `musicnn_msd` graphs are **84.5%** of analysis CPU (about 97 cpu-s of a coarse window's 100),
   the genre EffNet 3.2%. Together 87.7%.
-- Everything else, decode, rhythm, key, assembly, graph build and the DB write, is **12.3%** in total.
-  An optimisation that left the mood sweep untouched could recover at most that, and rhythm, key,
-  assembly and the DB write are under 2% between them.
-- Decode is the only secondary stage with real weight (10.5%), and it is file-dependent by a factor of
-  about 3.8 per audio-hour for a cause not found here.
+- Everything else, decode, rhythm, key, assembly, graph build and the DB write, is **12.3%** in total
+  (7.6 + 1.7 + 0.1 + 2.9). An optimisation that left the mood sweep untouched could recover at most
+  **15.5%** (100 − 84.5: that 12.3% plus the genre EffNet's 3.2%), and rhythm, key, assembly and the DB
+  write are under 2% between them.
+- Decode is the only secondary stage with real weight (10.5%), and fine decode is file-dependent by a
+  factor of **about 10** per audio-hour (35 to 352 cpu-s, 352 / 35 = 10.1) for a cause not found here.
 - The instrumented run reproduces production's stored values (748/748 fine windows exact, 48/49 coarse
   windows within 1e-6, one trailing-window genre difference of 2.4e-3), so these proportions describe the
   deployed code.
@@ -170,7 +172,7 @@ these numbers); DB write is a local-seat lower bound.
 1. Aim the performance plan at the mood sweep. Options to weigh in `phaze-uv8s3`: fewer or shared-trunk
    graphs, the EffNet heads (which `phaze-8y6l8` found are not a drop-in replacement and would need to be
    a new, separately calibrated feature set), TF thread settings (`phaze-phjwi`) and the alternatives
-   survey (`phaze-8ghbw`). Anything that does not reduce those 11 graphs is capped at about 12% of total.
+   survey (`phaze-8ghbw`). Anything that does not reduce those 11 graphs is capped at about 15.5% of total (100 − 84.5).
 2. Do not spend effort on the rhythm extractor, key extractor, result assembly or the DB write.
 3. Treat decode as a follow-up, not a target for this plan: find why fine decode costs 35 to 352
    cpu-s per audio-hour across these files before deciding anything; a 44.1 kHz decode that feeds a 1.8%

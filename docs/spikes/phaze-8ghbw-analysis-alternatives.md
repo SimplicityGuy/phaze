@@ -130,7 +130,8 @@ ______________________________________________________________________
 | EffNet embedding output (`PartitionedCall:1`) as a separate pass | **3.71** cpu-s per coarse window, the same as the genre pass; whether one run can emit both outputs was **not measured** there | `phaze-fzubr` "EffNet embedding output" |
 | tap of the embedding off the existing effnet pass | **+1.6%** wall clock | `phaze-ytgo.2` |
 | 12-graph sweep, control | **104.8** cpu-s per window, consistent with fzubr's 100.5 (96.8 + 3.67) | `phaze-phjwi` control note |
-| 2 TF threads in one pod | **1.81×–1.86×** windows per wall-hour on a 2-CPU budget, at **5.5%–6.7%** more CPU per window | `phaze-phjwi` |
+| 2 TF threads in one process, 2-CPU budget | **1.79×–1.84×** windows per wall-hour (61.3–63.2 / 34.3), at **5.7%–7.2%** more cpu-s per window (443–449 / 419 cpu-s; windows per cpu-hour fall 5.5%–6.7%, 32.1–32.5 vs 34.4) | `phaze-phjwi` settings matrix |
+| 2 single-thread workers, 2-CPU budget | **1.86×** windows per wall-hour (63.7 / 34.3), at **7.2%** more cpu-s per window (449 / 419) | `phaze-phjwi` settings matrix |
 | 33 → 11 characteristic heads (34 → 12 graphs), 8-file sample, 4-vCPU evaluation host | 195.3 / 209.0 min → 96.4 / 92.7 min, **2.025× / 2.108× faster**; **65 of 208** coarse mood labels changed; mean scores moved by up to **±0.117** (Party) | `docs/essentia-analysis.md` |
 | production per-file wall at `cap = 4` | **1.4951×** file duration (7,119.473 s for a 4,761.835 s file) | `phaze-zaf2l` verdict |
 | tier split of a 36,182.359 s file | fine **49.3%**, coarse + model sweep **50.7%**; within the fine tier **97.7%** is decode (10 h file) | `phaze-zaf2l` §3b forward note |
@@ -231,9 +232,12 @@ ______________________________________________________________________
   The operator answered that question "Leave it to phaze-uv8s3" (see "Decisions recorded"), so the
   target belongs to `phaze-uv8s3`.
 - **Second embedding to fit on (from `phaze-0toy3.4`):** the `msd-musicnn-1` embedding, the backbone
-  all eleven deployed graphs were fine-tuned from, so its features are plausibly closer to the
-  deployed models' than EffNet's. It costs one musicnn pass (≈ 9 cpu-s) per window instead of eleven
-  (≈ 97). That agreement is unmeasured. It could be fitted in the same measurement as the EffNet head.
+  all eleven deployed graphs were fine-tuned from. That shared starting point is a reason to try it,
+  not evidence that its features sit closer to the deployed models' than EffNet's: fine-tuning moved
+  most graphs far from it (8 of 11 have a layer at relative L2 above 1, up to 2.79 for `gender`;
+  only `tonal_atonal` stays near it, `phaze-0toy3.4` per-layer table). It costs one musicnn pass
+  (≈ 9 cpu-s) per window instead of eleven (≈ 97). That agreement is unmeasured. It could be fitted in
+  the same measurement as the EffNet head.
 - **Licence gate:** whether a head fitted on these models' outputs or embeddings is Adapted Material
   under the ND reading is open (see A2, "Licence"); it is a question for the operator and UPF.
   `docs/spikes/phaze-0toy3.5-clean-room-mood.md` goes further: it lists training on the stored
@@ -388,15 +392,19 @@ tracker replaces it.)
 - **Fit:** input is 22.05 kHz while the fine tier decodes at 44.1 kHz, so a second decode or a
   resample is needed. 30 s excerpts match the 30 s fine window. BPM would have to be derived from
   inter-beat intervals and its semantics re-validated against `RhythmExtractor2013`. A flat-RSS test
-  across chunks would be required (D-09). **Rank: accuracy upgrade with real dependency cost; no
-  CPU case.**
+  across chunks would be required (D-09). **Rank: accuracy candidate (on the paper's numbers) with real
+  dependency cost; no CPU case.**
 - **Measured since (`docs/spikes/phaze-0toy3.6-beat-this-beat-grids.md`, `final0`, `dbn=False`,
-  GuitarSet CC BY 4.0 clips and synthetic fixtures, loaded machine):** beat F1 **0.779 vs 0.591**
-  against `RhythmExtractor2013` on 39 GuitarSet clips and **0.997 vs 0.644** on 9 synthetic
-  fixtures; **2.338 vs 0.239 cpu-s per 30 s window** (about 9.8×), a net of about **+2.1** because
-  it replaces the rhythm half of the fine window; **no RSS growth** across 100 windows. It is
-  better for a stored beat grid and still **not a CPU lever**. Not shown: archive music, `small0`,
-  Linux arm64.
+  GuitarSet CC BY 4.0 clips and synthetic fixtures, loaded machine):** beat F1 **0.997 vs 0.644**
+  against `RhythmExtractor2013` on 9 synthetic fixtures, the only clean accuracy evidence. On 39
+  GuitarSet clips it scored **0.779 vs 0.591**, but **GuitarSet is one of Beat This!'s training
+  datasets** (`CPJKU/beat_this_annotations` has a `guitarset` directory; the README warns results
+  "may be unfairly good" on training files), so that gap is contaminated in its favour and is not
+  fair evidence. Cost **2.338 vs 0.239 cpu-s per 30 s window** (about 9.8×): a net of **+2.338** if
+  `RhythmExtractor2013` stays the BPM source, or **+2.099 (≈ +2.1)** if a tempo derived from Beat
+  This!'s beats replaces it, which changes what stored BPM means and owes a blast-radius statement;
+  **no RSS growth** across 100 windows. Better on synthetic fixtures, still **not a CPU lever**. Not
+  shown: real unseen music (the archive check is still owed), `small0`, Linux arm64.
 
 #### B3. madmom (RNN/DBN beat tracking, CNN key) and the Beat Transformer
 
@@ -502,9 +510,10 @@ timing for any of the published ONNX files was found. No source on int8 or other
 quantisation of musicnn, Discogs-EffNet or the heads was found; only format conversions (ONNX,
 Core ML, MLX).
 
-**Threads are a separate, measured lever** (`phaze-phjwi`, table above): 2 TF threads per pod give
-1.81×–1.86× throughput on a 2-CPU budget at 5.5%–6.7% more CPU per window. It is independent of
-every row below and is decided in `phaze-uv8s3`.
+**Threads and workers are a separate, measured lever** (`phaze-phjwi`, table above): on a 2-CPU
+budget, 2 TF threads in one process give 1.79×–1.84× windows per wall-hour at 5.7%–7.2% more cpu-s
+per window, and 2 single-thread workers give 1.86× at 7.2% more. It is independent of every row
+below and is decided in `phaze-uv8s3`.
 
 **OpenVINO:** Lacuna had nothing audio-specific, and no source reached reports OpenVINO on these
 graphs. **No claim is made.**
@@ -553,11 +562,11 @@ the candidate**; the "anchor" column names the nearest phaze measurement it lean
 | ---: | --- | --- | --- | --- | --- | --- |
 | **1** | **A1 — effnet embedding + 11 `*-discogs-effnet-1` heads** | **highest**: 11 musicnn passes (≈ 97 of ≈ 100 cpu-s) → 0; +1 embedding tap, +11 small head evals (unmeasured) | **high, a meaning change**: different artefacts and label space; `phaze-8y6l8` found stock heads not a drop-in | same | two outputs from the effnet graph; heads swept per chunk; `positive_class_vector` adapter | `phaze-fzubr`; `phaze-ytgo.2` +1.6% |
 | **2** | **A1b — a head fitted on the effnet or `msd-musicnn-1` embedding to reproduce musicnn mood scores** | as A1 for effnet; one musicnn pass (≈ 9 cpu-s) for the `msd-musicnn-1` variant | medium, **unproven**; fitting target left to `phaze-uv8s3` | same, but whether a fitted head is Adapted Material under ND is **open** (UPF) | small TF or NumPy/ONNX head over embedding rows | `phaze-fzubr`; `phaze-0toy3.4` |
-| 3 | A1 variant — `msd-musicnn-1` + 11 `*-msd-musicnn-1` heads | high: 11 → 1 musicnn pass | medium: same MSD/musicnn family, still new artefacts (the deployed graphs are fine-tunes of this backbone) | same | as A1 with one extra graph | `phaze-fzubr`; `phaze-0toy3.4` |
+| 3 | A1 variant — `msd-musicnn-1` + 11 `*-msd-musicnn-1` heads | high: 11 → 1 musicnn pass | medium, **unproven**: same MSD/musicnn family, still new artefacts; the deployed graphs are fine-tunes of this backbone, but 8 of 11 moved a layer by relative L2 above 1 (up to 2.79), so family membership does not predict small drift (`phaze-0toy3.4`) | same | as A1 with one extra graph | `phaze-fzubr`; `phaze-0toy3.4` |
 | 4 | Share the mel input (`TensorflowInputMusiCNN`) across the eleven graphs | **0.89 cpu-s per window, 0.9% of the sweep** (`phaze-0toy3.4`, measured) | none with centred framing; `startFromZero=True` is off by 3.9 × 10⁻³ per patch | same | patching done in phaze; needs an equivalence check against the `phaze-28883` pin | `phaze-0toy3.4` |
 | 5 | C — ONNX Runtime with MTG's `discogs-effnet-bsdynamic-1.onnx` | **none on x86** (`phaze-mqq5`: 2× wall) | none (1.15 × 10⁻⁵) | same weights | new runtime; drops the TF aarch64 / Python 3.13 pin | `phaze-mqq5` §5, §6 |
 | 6 | B6 — key profile `bgate` / `braw` vs `edma` | ≈ 0 (key 0.1% of CPU) | unknown, both directions | same (essentia) | one keyword | `phaze-fzubr` |
-| 7 | B2 — Beat This! (`final0`) | **negative, measured**: 2.338 vs 0.239 cpu-s per 30 s window, net about +2.1; no RSS growth (`phaze-0toy3.6`) | better grid on the data measured: beat F1 0.779 vs 0.591 on 39 GuitarSet clips, 0.997 vs 0.644 on 9 synthetic fixtures; not shown on archive music | **MIT**, training-data caveat accepted | adds PyTorch; derive BPM; vendor the checkpoint | `phaze-0toy3.6`; `phaze-fzubr` |
+| 7 | B2 — Beat This! (`final0`) | **negative, measured**: 2.338 vs 0.239 cpu-s per 30 s window; net +2.338 keeping `RhythmExtractor2013` for BPM, or +2.099 swapping the BPM source (a semantics change); no RSS growth (`phaze-0toy3.6`) | better on synthetic fixtures: beat F1 0.997 vs 0.644 on 9; the GuitarSet gap (0.779 vs 0.591) is training-set contaminated; archive check still owed | **MIT**, training-data caveat accepted | adds PyTorch; derive BPM; vendor the checkpoint | `phaze-0toy3.6`; `phaze-fzubr` |
 | 8 | A3 — MAEST (30 s) for style | none or negative (~87 M parameters, batch 1) | MTG-Jamendo mood ROC-AUC 78.1 vs 75.6, a different label space | weights CC BY-NC-SA; code AGPL | swap genre graph; style label set changes (400 → 519 for `-519l`) | none |
 | 9 | B7 — TempoCNN | ≈ 0 to negative | unknown | same | essentia TF graph; BPM only | none |
 | 10 | A4 / A5 — EfficientAT, DyMN, MERT, MuQ, CLAP, PaSST (ranked differently for a licence-clean route in `phaze-0toy3.5`; see "Recommendation") | n/a without new heads | n/a: no heads for phaze's 11 outputs | MIT / CC BY-NC / CC0 / Apache | needs training data phaze does not have | none |
@@ -569,7 +578,10 @@ that change. The one precedent, the 33 → 11 change, shipped with its label dif
 (**65** changed coarse mood labels, `docs/essentia-analysis.md`), and that change dropped heads of
 the same family, whereas A1 swaps the family. A1 leads because it uses published artefacts under
 the licence phaze already holds; A1b ranks next because it targets the meaning problem directly but
-is unproven and carries the open fitted-head licence question. Rank 4 is an exact but negligible saving (0.9%). Rank 5
+is unproven and carries the open fitted-head licence question. Neither the `msd-musicnn-1` variant
+of A1b nor rank 3 can claim lower drift than the effnet routes from shared ancestry alone: only
+`tonal_atonal` stayed close to the backbone, and most graphs moved a long way from it
+(`phaze-0toy3.4`). Rank 4 is an exact but negligible saving (0.9%). Rank 5
 is a deployment win and nothing more on CPU. Everything below rank 5 offers accuracy or nothing, and a
 CPU-cut epic should not take them on that basis.
 
@@ -585,11 +597,13 @@ ______________________________________________________________________
    open licence question (is a fitted head Adapted Material under ND). **Every one of them
    changes what the stored scores mean**.
 1. **No beat or key tracker is a CPU lever.** Rhythm is 1.7% and key 0.1% of CPU. Beat This! is the
-   one credible accuracy upgrade (MIT, caveat accepted), and `phaze-0toy3.6` confirmed it is not a
-   CPU lever: it costs about 9.8× `RhythmExtractor2013` per 30 s window (2.338 vs 0.239 cpu-s, a net
-   of about +2.1) with no RSS growth, and adds a PyTorch dependency; madmom,
+   one credible accuracy candidate (MIT, caveat accepted): `phaze-0toy3.6` found it better on
+   synthetic fixtures, while its GuitarSet gap is training-set contaminated and the archive check is
+   still owed. It is not a CPU lever: it costs about 9.8× `RhythmExtractor2013` per 30 s window
+   (2.338 vs 0.239 cpu-s; a net of +2.338 keeping `RhythmExtractor2013` for BPM, or +2.099 swapping
+   the BPM source) with no RSS growth, and adds a PyTorch dependency; madmom,
    BeatNet and All-In-One cannot be installed or run cheaply on phaze's Pythons, and the Beat
-   Transformer and All-In-One need source separation. `phaze-0toy3.6` has since measured it.
+   Transformer and All-In-One need source separation.
 1. **Runtime acceleration was settled by `phaze-mqq5`** and nothing found here overturns it. MTG's
    official ONNX effnet makes the arm64 migration cheaper. It does not make x86 faster.
 1. **Bigger embeddings are not cheaper**, and none ships heads for phaze's eleven outputs.
@@ -627,9 +641,10 @@ harness of `phaze-fzubr` before any swap.**
    re-analysis in `phaze-uv8s3` is where that cost is paid once.
 1. **Do not spend effort on rhythm or key** under this epic (`phaze-fzubr`: 1.8% together). If
    beat-grid work is wanted, it belongs to `phaze-7hcgn` and is already assessed in
-   `docs/spikes/phaze-0toy3.6-beat-this-beat-grids.md` (F1 0.779 vs 0.591 on 39 GuitarSet clips and 0.997 vs 0.644 on 9 synthetic fixtures; 2.338
-   vs 0.239 cpu-s per 30 s window; no RSS growth). That document recommends an operator-annotated
-   check on real archive music before the grid format is fixed. A key-profile A/B is the only
+   `docs/spikes/phaze-0toy3.6-beat-this-beat-grids.md` (better on synthetic fixtures, F1 0.997 vs
+   0.644 on 9; the GuitarSet gap, 0.779 vs 0.591, is training-set contaminated; 2.338 vs 0.239 cpu-s
+   per 30 s window; no RSS growth). That document recommends an operator-annotated check on real
+   archive music before the grid format is fixed, and it is now the only clean real-music evidence. A key-profile A/B is the only
    remaining fine-tier experiment.
 1. **Keep the arm64 / ONNX question separate.** If it is taken up, start from MTG's
    `discogs-effnet-bsdynamic-1.onnx` rather than a phaze-owned conversion. It is a deployment
@@ -671,9 +686,11 @@ for each:
 - `docs/spikes/phaze-0toy3.5-clean-room-mood.md`: **a licence-clean route exists**: an ISC musicnn
   backbone plus eleven heads on operator-owned labels, with the proprietary-licence request to UPF
   as route 0. Accuracy and head cost are unmeasured. Training on stored scores is not clean.
-- `docs/spikes/phaze-0toy3.6-beat-this-beat-grids.md`: **Beat This! gives a better beat grid
-  (F1 0.779 vs 0.591 on 39 GuitarSet clips) at about +2.1 cpu-s per 30 s window**, with no RSS
-  growth. It is not a CPU lever, and the archive-music check is still owed.
+- `docs/spikes/phaze-0toy3.6-beat-this-beat-grids.md`: **Beat This! is better on synthetic
+  fixtures (F1 0.997 vs 0.644 on 9); the GuitarSet gap (0.779 vs 0.591) is training-set
+  contaminated; the archive check is still owed.** It costs +2.338 cpu-s per 30 s window keeping
+  `RhythmExtractor2013` for BPM, or +2.099 swapping the BPM source (a semantics change), with no RSS
+  growth. It is not a CPU lever.
 
 ## Decisions recorded
 

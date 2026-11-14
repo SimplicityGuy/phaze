@@ -210,9 +210,13 @@ algorithms. A fork or upstream change cannot make eleven different networks cost
    The survey's rank-1 path (a mood head on the already-deployed Discogs-EffNet embedding, fitted to
    reproduce the stored musicnn scores) is unchanged by this result. A second candidate surfaced here and
    is worth fitting **in the same measurement**: heads on the **`msd-musicnn-1` embedding**. It is the
-   backbone all eleven deployed graphs were fine-tuned from (identical batch-norm statistics, smallest
-   per-layer distance for `tonal_atonal`), so its features are plausibly closer to the deployed models'
-   than EffNet's. It costs one musicnn pass (about 9 cpu-s) per window instead of 11 (about 97). Essentia
+   backbone all eleven deployed graphs were fine-tuned from (identical batch-norm statistics). That
+   shared starting point is a reason to try it, **not evidence that its features sit closer to the
+   deployed models' than EffNet's**: only `tonal_atonal` stays near it (largest per-layer relative L2
+   0.502), while 8 of the 11 graphs have at least one layer above 1.0 in the per-layer table above
+   (`acoustic`, `aggressive`, `relaxed`, `sad`, `party`, `danceability`, `gender`, `voice_instrumental`;
+   up to 2.79 for `gender`'s `conv2d_1`), and `electronic` and `happy` peak at 0.83. How close any
+   embedding gets to the stored scores is what the head-fit measurement would show. It costs one musicnn pass (about 9 cpu-s) per window instead of 11 (about 97). Essentia
    also hosts its own heads on that embedding: `classification-heads/danceability/danceability-msd-musicnn-1.pb`
    answered `200` with 82,458 bytes to a HEAD request. Requests for two other characteristics timed out, so
    coverage of all eleven is unverified. Like the EffNet heads, these are different models and would shift
