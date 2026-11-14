@@ -151,10 +151,12 @@ is drained or accept the loss of the running analyses (nothing resumes mid-file)
 1. **Local analyze lane (8-core host, 4 workers x 1 thread, no CPU cap).** Keep intra/inter/OMP at
    1/1/1. If the operator will give analysis more of the host, raise
    `PHAZE_LANE_ANALYZE_CONCURRENCY` (4 to 5 or 6), not the thread count: each added single-thread worker
-   keeps one more core busy and so adds about **34 windows per wall-hour** (the control: one worker at 1
-   thread, 4 / 419 × 3600 = 34.4), while windows per **cpu**-hour stay at about 34 whatever the worker
-   count, since that is the efficient setting's cost per window. Expected gain: **+25% to +50% windows
-   per wall-hour** (5 / 4 = 1.25; 6 / 4 = 1.50) if the cores are free (**projected** from this matrix, not measured at 8 cores; the host
+   keeps one more core busy, and the control (one worker at 1 thread, 4 / 419 × 3600 = 34.4 windows per
+   wall-hour) is what each added worker would add at best. Measured scaling is lower: the second worker added
+   63.7 − 34.3 = 29.4 windows per wall-hour (conc 2 row: 1.85x for 2x the workers, 1.85 / 2 = 0.93 of linear),
+   and windows per **cpu**-hour fell from 34.4 to 32.1 (6.7%), so they do not stay flat as workers are added.
+   Linear **ceiling** on the gain: **+25% to +50% windows per wall-hour** (5 / 4 = 1.25; 6 / 4 = 1.50) if the
+   cores are free. That is an upper bound, not a projection from the matrix, and not measured at 8 cores (the host
    showed a load of about 5 with 4 workers, so 6 workers would leave under 1 core for everything else,
    which is the operator's call). Memory is not the limit (62 GiB host, about 1 GiB per worker).
    Rollback: set the variable back to 4 and recreate the container.
