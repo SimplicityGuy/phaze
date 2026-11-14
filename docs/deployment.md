@@ -691,14 +691,23 @@ The same pattern works for the agent's bearer token on a file server — mount t
 Upgrade the **application server first**, then the file-server agents and any burst (Kueue / cloud) images.
 Never the other way round.
 
-The analysis completion callback (`PUT /api/internal/agent/analysis/{file_id}`) gained two optional fields,
-`subwindows` and `beat_grid` (`docs/design/0026-subwindow-mood-and-beat-grid.md` section 5).
+The analysis completion callback (`PUT /api/internal/agent/analysis/{file_id}`) gained optional fields:
+`subwindows` and `beat_grid` (`docs/design/0026-subwindow-mood-and-beat-grid.md` section 5), and `embeddings`, the
+per-window Discogs-EffNet embeddings (base64 little-endian float16, 1280 values per coarse window).
 
 - **Older agent, newer server:** works. The fields are optional, the analysis persists as before, and any grids
-  stored for that file are deleted, because they belonged to a previous run.
-- **Newer agent, older server:** fails. The previous server rejects the unknown fields with a 422, and
-  `FAILURE_IS_TERMINAL[ANALYZE]` makes that permanent, so a finished multi-hour analysis is discarded and the
-  file does not come back around.
+  and embeddings stored for that file are deleted, because they belonged to a previous run.
+- **Newer agent, older server:** the agent asks `whoami` first and sends `subwindows`, `beat_grid` and `embeddings`
+  only to a server that lists `analysis_grids` / `analysis_embeddings`, so the analysis completes without them.
+  Do not rely on that: the supported order is still server first. A server that predates a field rejects it with
+  a 422, and `FAILURE_IS_TERMINAL[ANALYZE]` makes that permanent, so a finished multi-hour analysis is discarded and
+  the file does not come back around.
+- **Body size:** embeddings cost about 3.4 kB per coarse window (3,416 base64 characters), so a 12 h file at 180 s
+  coarse windows (240 windows) adds about 0.8 MB to the PUT. The application sets no request-body limit on this
+  route (uvicorn and FastAPI have none by default); the schema caps `embeddings` at 5,000 windows (about 17 MB).
+  If you put a reverse proxy in front of the app server, its body limit (for example nginx's
+  `client_max_body_size`, whose default is 1 MB and which a 12 h file's embeddings already approach) must be raised to
+  at least 20 MB.
 
 So before pulling a new `PHAZE_IMAGE_TAG` on any file server, or dispatching a burst image built from the new
 tag, confirm the app server is already running it. A rollback runs the other way: agents first, then the server.
