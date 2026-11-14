@@ -71,10 +71,29 @@ spread 98.0 to 101.6 cpu-s for the 11 graphs).
   windows = **258.9** for the 33-graph ensemble (M-real, load 5.2 to 6.7; the ensemble ran at 2 threads, cpu
   inflated slightly by thread overhead, see table C). `phaze-phjwi`: 104.8 cpu-s for the 12-graph sweep (M-real,
   4 windows, load 5.0 to 6.7). `phaze-tx202`: 86.1 (11 graphs) and 243.8 (33 graphs) per window (M-synth, Apple
-  Silicon, load 7.6 to **22.9**, so less comparable). The first three agree within about 5%.
-- **Unreconciled:** `phaze-tx202` extrapolates the default to about 58,160 cpu-hours (synthetic audio, loaded Mac,
-  1,722 cpu-s per audio-hour); `phaze-fzubr`'s mood arm extrapolates to about 66,100 (real audio, deployed image).
-  `phaze-fzubr` states it does not reconcile the two. This document uses the real-audio, deployed-image figure.
+  Silicon, load 7.6 to **22.9**, so less comparable). The first three agree within about 5%; the gap to
+  `phaze-tx202` is explained below.
+- **The two archive figures, reconciled to what each counts.** Both are the **11 mood graphs alone** at one TF
+  thread, scaled to the same 121,572.3 audio-hours; neither includes the genre EffNet, decode, rhythm or key.
+
+  | | `phaze-tx202` | `phaze-fzubr` |
+  |---|---|---|
+  | what is counted | the 11 graphs only: arm A-msd11 total minus its genre pass (2,125.8 minus 59.2 cpu-s, over 24 windows) | the 11 `musicnn_msd` graphs only (the stage row; genre, decode and the rest are separate rows) |
+  | audio | synthetic, 24 seeded 180 s clips (M-synth) | real archive mp3, 49 sampled coarse windows, the rest extrapolated from the same files (M-real) |
+  | host | Apple Silicon Mac, load 7.6 to 22.9 | deployed image on the 8-core analysis host, load 4.57 to 6.36 |
+  | cpu-s per 180 s window | **86.1** | **96.8** |
+  | windows per audio-hour | 20 (assumed) | 20.2 (135 windows over 6.675 h, so its per-hour figure 1,957 is not 96.8 x 20 = 1,936) |
+  | cpu-s per audio-hour | 1,722 | 1,957 |
+  | archive cpu-hours (X, x 121,572.3 h) | about **58,160** | about **66,100** |
+
+  The 13.6% gap is **per-window cost** (96.8 vs 86.1, 12.4%) plus about 1% from the window density. It is not a
+  difference in scope or scale. Two real-audio measurements on the deployed image agree with `phaze-fzubr`
+  (102.2 in `phaze-8y6l8`, 104.8 in `phaze-phjwi`), so the synthetic Apple Silicon figure is the outlier. **Why
+  it is lower is not established**: graph cost should not depend on content (fixed-shape graphs, as `phaze-tx202`
+  states), and a loaded host would inflate cpu rather than shrink it, so hardware and architecture are the
+  candidates, untested. For planning, use the real-audio figure. The **all-stage** total (decode, genre,
+  rhythm, key included) is the separate **78,000** cpu-hours above, from `phaze-fzubr`; `phaze-tx202` has no
+  all-stage figure to compare it with.
 
 ### Thread and worker settings per lane
 
@@ -207,7 +226,7 @@ rhythm and key entirely would recover at most about 2%.
   integration notes; it cites the survey at the figures above. It was written against the version on
   `wt/bead/epic/phaze-0toy3` (the local run). The survey's other version, the cloud run (commit `816b2ff4`), which
   carries the `phaze-mqq5` ONNX/int8 measurements and the `phaze-zaf2l` fine-tier decode share, was **not read for
-  this document**. Once `phaze-0toy3.3` lands, re-check the table A and D rows that cite `phaze-8ghbw` against the
+  this document**. **Pending `phaze-0toy3.3`.** Once it lands, re-check the table A and D rows that cite `phaze-8ghbw` against the
   reconciled text, and replace its "phaze-measured" 102 and 259 cpu-s figures with this document's sources where they
   differ. `phaze-8ghbw`'s statement that the stage share of a window is "not yet measured" is superseded by
   `phaze-fzubr`.
@@ -221,8 +240,9 @@ rhythm and key entirely would recover at most about 2%.
 1. No real-audio agreement figure exists for any route except the stock heads (7 files, 91 windows).
 2. The fused embedding figures (`phaze-l5mzm`) are synthetic-audio, Apple Silicon, load 9 to 14, and are not on any
    bead comment; they should be recorded there.
-3. The archive-scale cost of the default differs by about 14% between two sources (58,160 vs 66,100 cpu-hours) and is
-   not reconciled.
+3. The two archive-scale costs of the 11 graphs (58,160 vs 66,100 cpu-hours) are the same scope and scale and differ
+   by per-window cost only (86.1 synthetic Apple Silicon vs 96.8 real, deployed image); why is untested (see the
+   baseline).
 4. No throughput measurement above a 2-CPU budget, none repeated, and the burst-pod gain is carried across to a
    different scheduler regime.
 5. `phaze-cmsr0`'s storage free-space reference is stale (2026-07-26).
