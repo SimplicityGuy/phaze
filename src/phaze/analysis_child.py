@@ -176,6 +176,7 @@ def run(args: argparse.Namespace, protocol: IO[str]) -> int:
             # phaze-ek9zf: the REAL analyze_file also returns the sub-window mood and beat grid. Gated to the real
             # target so stub targets (the test seam) keep receiving exactly the kwargs they always did.
             kwargs["include_grids"] = True
+            kwargs["include_embeddings"] = True  # phaze-qijoh: the per-window embeddings, carried to the server by the PUT
         result = target(args.file_path, args.models_dir, **kwargs)
         _emit(protocol, {"type": "result", "result": result})
     except Exception as exc:

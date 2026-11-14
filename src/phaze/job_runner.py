@@ -71,6 +71,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWritePayload,
     PresignDownloadMetadata,
     StyleScore,
+    embedding_payload_fields,
     grid_payload_fields,
 )
 from phaze.services.agent_client import AgentApiServerError
@@ -473,6 +474,7 @@ def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
         coarse_windows_total=result.get("coarse_windows_total"),
         windows=windows,
         **grid_payload_fields(result),
+        **embedding_payload_fields(result),
     )
 
 
