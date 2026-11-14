@@ -83,9 +83,9 @@ labels:
 
 > **Do not set `PHAZE_TELEMETRY_INSTANCE` per pod.** `service.instance.id` becomes the
 > Prometheus `instance` label and it multiplies **every** series the service emits. The
-> analysis role's catalogue block is **2,295** series and it runs as a k8s Job whose pod name
-> is unique per analyzed file, so a per-pod instance id would mint a fresh 2,295-series block
-> for each of the archive's **11,428** files — **26,227,260** series. Set it to the stable
+> analysis role's catalogue block is **2,298** series and it runs as a k8s Job whose pod name
+> is unique per analyzed file, so a per-pod instance id would mint a fresh 2,298-series block
+> for each of the archive's **11,428** files — **26,261,544** series. Set it to the stable
 > **HOST ROLE** (`host-prod`, `host-compute`) or leave it alone.
 
 ### The worker slot, and why the id is not one value per role
@@ -105,10 +105,10 @@ the host is also pinned. A burst pod reports `phaze-analysis-burst-<n>` (see bel
 
 | | series |
 | --- | ---: |
-| analysis-role block × (4 host-lane + 4 burst-lane slots), one agent host | 18,360 |
-| whole-catalogue ceiling, one agent host | 8,617 → **24,682** |
+| analysis-role block × (4 host-lane + 4 burst-lane slots), one agent host | 18,384 |
+| whole-catalogue ceiling, one agent host | 8,620 → **24,706** |
 
-Each additional agent host that runs analysis adds its own pool: another 2,295 × its
+Each additional agent host that runs analysis adds its own pool: another 2,298 × its
 `worker_process_pool_size`.
 
 The multiplier is the CONCURRENCY, and slots are reused by the next child, so the figure does
@@ -123,7 +123,7 @@ neither:
 **Raising `worker_process_pool_size` is all an operator does.** The worker sizes its slot
 pool from that knob and sends the pool's own size to each child alongside the slot, so the
 bound the child enforces is always the bound its slot was drawn from. Expect another
-2,295-series block per slot, and nothing else to set.
+2,298-series block per slot, and nothing else to set.
 
 > **This used to be two numbers, and that was a defect.** The child enforces the bound from
 > its own environment, where it defaults to 4, so a pool of 6 issued slots 4 and 5 and the
