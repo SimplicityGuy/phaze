@@ -55,9 +55,9 @@ cost split by.
 ## 2. Two things that are NOT labels but behave like them
 
 **`service.instance.id` multiplies every series a service emits.** It becomes the Prometheus
-`instance` label. The analysis role's block is **2,290** series and it runs as a k8s Job whose
+`instance` label. The analysis role's block is **2,295** series and it runs as a k8s Job whose
 pod name is unique per analyzed file, so defaulting this to the hostname would mint a fresh
-2,290-series block for each of 11,428 files — 26,170,120 series. phaze defaults the base to
+2,295-series block for each of 11,428 files — 26,227,260 series. phaze defaults the base to
 the **service name** and `exporter.md` §3 tells operators to set it to a HOST ROLE, never a
 pod.
 
@@ -93,6 +93,7 @@ not what the naming rules suggest on paper.
 | `phaze_analysis_model_graph_release_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 510 |
 | `phaze_analysis_model_sweep_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 544 |
 | `phaze_analysis_windows_total` | counter | `tier` (2), `outcome` (2) | 4 | 4 |
+| `phaze_analysis_grids_dropped_total` | counter | `grid_stage` (5) | 5 | 5 |
 | `phaze_analysis_chunks_total` | counter | `tier` (2) | 2 | 2 |
 | `phaze_analysis_audio_duration_seconds_total` | counter | `outcome` (2) | 2 | 2 |
 | `phaze_http_server_request_duration_seconds` | histogram | `http_method` (8), `http_route` (160), `http_status_class` (6) | 320 *(not 7,680)* | 4,800 |
@@ -110,9 +111,9 @@ not what the naming rules suggest on paper.
 | `phaze_config_reloads_total` | counter | `source` (5), `outcome` (4) | 20 | 20 |
 | `phaze_config_last_reload_successful` | gauge | *none* | 1 | 1 |
 | `phaze_config_last_reload_success_timestamp_seconds` | gauge | *none* | 1 | 1 |
-| | | | **total** | **8,612** |
+| | | | **total** | **8,617** |
 
-### The instance multiplier: 8,612 becomes 24,642, and the reason it stops there
+### The instance multiplier: 8,617 becomes 24,682, and the reason it stops there
 
 **The table above is per INSTANCE.** `service.instance.id` becomes the Prometheus `instance`
 label, so the real ceiling is the table multiplied by the number of distinct identities phaze
@@ -128,15 +129,15 @@ truth ([the record](concurrent-identity.md),
 
 | | series |
 | --- | ---: |
-| analysis-role block (the `phaze_analysis_*` rows above) | 2,290 |
-| × (4 host-lane slots + 4 burst-lane slots) | 18,320 |
+| analysis-role block (the `phaze_analysis_*` rows above) | 2,295 |
+| × (4 host-lane slots + 4 burst-lane slots) | 18,360 |
 | everything else, one instance | 6,322 |
-| **ceiling** | **24,642** |
+| **ceiling** | **24,682** |
 
 **The multiplier is the CONCURRENCY, never the corpus.** A slot is reused by the next child,
 so this figure does not move as the archive grows. The rejected alternative shows what that
-buys: a per-pod instance id, unique per analyzed file, would be 2,290 × 11,428 =
-**26,170,120** series. Raising either lane's bound costs another 2,290 per slot, and nothing
+buys: a per-pod instance id, unique per analyzed file, would be 2,295 × 11,428 =
+**26,227,260** series. Raising either lane's bound costs another 2,295 per slot, and nothing
 else here changes.
 
 #### The burst lane's slots come off a different knob, and cost the same shape
@@ -162,20 +163,22 @@ to the same base. So a host-lane child and a burst pod on the same index both re
 `phaze-analysis-<n>` and merged at the collector, whenever `PHAZE_TELEMETRY_INSTANCE` was unset. Every
 burst Job now carries a code-injected `PHAZE_TELEMETRY_LANE=burst`, which puts the lane between the
 base and the slot (`phaze-analysis-burst-<n>`). The analysis block is therefore
-`2,290 × (worker_process_pool_size + Σ kueue cap)` = `2,290 × 8` = **18,320**, and the ceiling is
-**24,642** (24,617 when this was decided; the runtime-config reload family, config snapshots, added
-22 per-instance series to reach 24,639, and the controller reload fix adds three controller gauges). Before this change the lanes shared one slot space, and the block was
+`2,295 × (worker_process_pool_size + Σ kueue cap)` = `2,295 × 8` = **18,360**, and the ceiling is
+**24,682** (24,617 when this was decided; the runtime-config reload family, config snapshots, added
+22 per-instance series to reach 24,639, the controller reload fix added three controller gauges to reach
+24,642, and the grid-drop counter `phaze_analysis_grids_dropped_total` adds 5 analysis-role
+series per identity, 40 at 8 identities). Before this change the lanes shared one slot space, and the block was
 `2,290 × max(worker_process_pool_size, Σ kueue cap)` = 9,160, with a ceiling of 15,457. That lower
 figure came from the merge itself: 9,160 more series is the price of not merging. **No
 collision-free design costs less, because 8 concurrent producers need 8 identities.** Two producers
-under one identity merge, so the 8 that can run at once need 8 identities, which is 2,290 × 8
+under one identity merge, so the 8 that can run at once need 8 identities, which is 2,295 × 8
 whichever way the space is split. A deployment that already set `PHAZE_TELEMETRY_INSTANCE` on the
-agent host was already paying 18,320. **These figures are for ONE agent host running analysis.**
-Each further one adds 2,290 × its own `worker_process_pool_size`. A distinct `PHAZE_TELEMETRY_INSTANCE`
+agent host was already paying 18,360. **These figures are for ONE agent host running analysis.**
+Each further one adds 2,295 × its own `worker_process_pool_size`. A distinct `PHAZE_TELEMETRY_INSTANCE`
 per host is what keeps those hosts apart; the lane only separates host from burst
 ([exporter.md §3](exporter.md)). The decision, with its cost stated to the operator:
 [ADR-0017 §8d](../design/0017-telemetry-export-topology.md). **No term here is
-the corpus**, which is what makes it affordable. Raising either term costs 2,290 series per index
+the corpus**, which is what makes it affordable. Raising either term costs 2,295 series per index
 and **reintroduces no per-file series block**.
 
 ### The arithmetic, where the budget is not the cartesian product

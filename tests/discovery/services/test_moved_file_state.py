@@ -19,7 +19,7 @@ import pytest
 from sqlalchemy import func, select
 
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
@@ -160,6 +160,8 @@ async def test_invalidate_content_state_drops_exactly_the_state_derived_from_the
             FileMetadata(file_id=file_id, artist="truncated"),
             AnalysisResult(file_id=file_id, failed_at=datetime.now(UTC)),
             AnalysisWindow(file_id=file_id, tier="fine", window_index=0, start_sec=0.0, end_sec=30.0),
+            AnalysisSubwindow(file_id=file_id, window_index=0, sub_index=0, start_sec=0.0, end_sec=15.0, mood_scores=[0.5] * 11),
+            AnalysisBeatGrid(file_id=file_id, beats=[0.5, 1.0], beat_count=2),
             SetProfile(file_id=file_id),
             pending,
             CloudJob(file_id=file_id, status=CloudJobStatus.SUCCEEDED.value),
@@ -180,7 +182,17 @@ async def test_invalidate_content_state_drops_exactly_the_state_derived_from_the
     counts = await invalidate_content_state(session, file_id)
     session.expire_all()
 
-    for model in (FileMetadata, AnalysisResult, AnalysisWindow, SetProfile, RenameProposal, CloudJob, CloudBudget):
+    for model in (
+        FileMetadata,
+        AnalysisResult,
+        AnalysisWindow,
+        AnalysisSubwindow,
+        AnalysisBeatGrid,
+        SetProfile,
+        RenameProposal,
+        CloudJob,
+        CloudBudget,
+    ):
         assert await _count(session, model, file_id) == 0, f"{model.__name__} survived a content change"
     assert counts["proposals"] == 1
     assert counts["scheduling_ledger"] == 1

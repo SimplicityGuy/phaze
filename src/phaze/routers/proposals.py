@@ -26,7 +26,7 @@ from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_frag
 # module -- so there is no cycle.
 from phaze.routers.shell import build_changes_review_context
 from phaze.routers.view_state import ListViewState
-from phaze.services.analysis_timeline import build_analysis_timeline_context
+from phaze.services.analysis_timeline import build_analysis_timeline_context, load_timeline_grids
 from phaze.services.collision import get_review_collision_ids
 from phaze.services.proposal_queries import (
     ProposalEditRefusedError,
@@ -451,6 +451,10 @@ async def proposal_timeline(
     # `None` for a file never analyzed to completion or predating the projection backfill.
     set_profile = await session.get(SetProfile, file_id)
 
+    # phaze-jvo7i / phaze-7hcgn.4: the same sub-window and beat-grid read as routers/record.py (one helper), so a
+    # proposal row's river and ruler agree with the record page's for the same file.
+    subwindows, beat_grid = await load_timeline_grids(session, file_id)
+
     return templates.TemplateResponse(
         request=request,
         name="proposals/partials/analysis_timeline.html",
@@ -458,7 +462,7 @@ async def proposal_timeline(
             "request": request,
             "proposal": proposal,
             "file_id": file_id,
-            **build_analysis_timeline_context(windows, analysis=analysis, set_profile=set_profile),
+            **build_analysis_timeline_context(windows, analysis=analysis, set_profile=set_profile, subwindows=subwindows, beat_grid=beat_grid),
         },
     )
 

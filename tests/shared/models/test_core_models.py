@@ -27,6 +27,8 @@ def test_all_tables_defined() -> None:
         "files",
         "metadata",
         "analysis",
+        "analysis_beat_grid",
+        "analysis_subwindow",
         "analysis_window",
         "proposals",
         "execution_log",
