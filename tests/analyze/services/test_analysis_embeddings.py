@@ -121,7 +121,7 @@ def test_decode_refuses_bad_base64_and_a_wrong_length() -> None:
 def test_payload_names_the_model_and_lists_windows_in_index_order() -> None:
     vectors = {4: _vector(4), 0: _vector(0), 2: _vector(2)}
 
-    payload = embeddings_payload(vectors)
+    payload = embeddings_payload({idx: encode_embedding(vector) for idx, vector in vectors.items()})
 
     assert payload["model"] == EMBEDDING_MODEL == "discogs-effnet-bs64-1"
     assert payload["output"] == EMBEDDING_OUTPUT == "PartitionedCall:1"

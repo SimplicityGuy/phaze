@@ -61,13 +61,18 @@ from phaze.services.analysis_embeddings import (
     LOGITS_OUTPUT,
     MEL_BANDS,
     count_patches,
+    embedding_of,
+    embeddings_payload,
+    encode_embedding,
     patch_batches,
+    record_embedding_drop,
     with_embedding,
 )
 from phaze.services.analysis_models import (
     _DEFAULT_TF_BATCH_SIZE,  # re-export only; see the note above  # noqa: F401
     _FIXED_BATCH_SIZE,  # re-export only; see the note above  # noqa: F401
     _TF_BATCH_SIZE_ENV,  # re-export only; see the note above  # noqa: F401
+    GENRE_EMBEDDING_MODEL,
     GENRE_MODEL,
     MODEL_SETS,
     ModelConfig,
@@ -953,6 +958,7 @@ def _run_model_sets_over_windows(
     *,
     slices_by_window: dict[int, int] | None = None,
     pooled_out: dict[int, dict[str, list[tuple[list[float], list[int]]]]] | None = None,
+    embeddings_out: dict[int, str] | None = None,
 ) -> tuple[dict[int, dict[str, Any]], set[int]]:
     """Run all 11 characteristic model sets + the genre model over EVERY coarse buffer of a chunk.
 
@@ -980,6 +986,11 @@ def _run_model_sets_over_windows(
     appended to ``pooled_out[window_index][set_name]``, one entry per variant. The matrices are never
     stored: what is kept is a few floats per slice, so nothing outlives the chunk. The return value
     and the feature dicts are untouched.
+
+    **Embeddings (phaze-l5mzm).** When ``embeddings_out`` is given, the genre sweep reads each window's
+    pooled 1280-d Discogs-EffNet embedding from the same TensorFlow session as its genre logits and
+    stores it, encoded, in ``embeddings_out[window_index]``; see :func:`_sweep_genre`. The genre
+    predictions are bit-identical either way. ``None`` (the default) runs the genre model exactly as before.
 
     Returns ``({window_index: features}, {failed window_index})``. Feature-dict key
     insertion order is pinned to ``MODEL_SETS`` order (pre-seeded) with ``"genre"`` last,
@@ -1024,7 +1035,7 @@ def _run_model_sets_over_windows(
                         pooled_out.setdefault(key, {}).setdefault(model_set.name, []).append(pooled)
             on_model_done()
 
-    for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, audible_buffers, models_dir, failed, on_failure).items():
+    for key, (genre_predictions, genre_labels) in _sweep_genre(audible_buffers, models_dir, failed, on_failure, embeddings_out).items():
         genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
         genre_pairs.sort(key=lambda pair: float(pair[1]), reverse=True)
         features[key]["genre"] = {
@@ -1033,6 +1044,51 @@ def _run_model_sets_over_windows(
     on_model_done()
 
     return features, failed
+
+
+def _sweep_genre(
+    buffers: list[tuple[int, Any]],
+    models_dir: str,
+    failed: set[int],
+    on_failure: Callable[[int], None],
+    embeddings_out: dict[int, str] | None,
+) -> dict[int, tuple[Any, list[str]]]:
+    """The genre sweep, reading each window's embedding alongside its logits when ``embeddings_out`` is given.
+
+    ``None``: exactly :func:`_sweep_one_model` over :data:`GENRE_MODEL`, the path phaze has always run.
+
+    Otherwise the sweep runs :data:`GENRE_EMBEDDING_MODEL` (the fused classifier, same graph, same logits)
+    and an embedding failure is never an analysis failure:
+
+    - a window whose fused call raises is NOT killed. It goes on a private kill list, its embedding is
+      dropped (``inference``), and once the fused graph is released it is re-swept on the plain wrapper
+      under the real kill list and reporter, so its genre is what it would have been without the option
+      and only a failure THERE kills it. The re-sweep builds its graph after the fused one is released,
+      so one graph is resident at a time;
+    - a pooled vector float16 cannot hold drops that window's embedding (``encode``) and nothing else;
+    - a window with no embedding at all (under one patch, where the graph yields no patch) is absent,
+      not dropped.
+    """
+    if embeddings_out is None:
+        return _sweep_one_model(GENRE_MODEL, buffers, models_dir, failed, on_failure)
+
+    def _drop_and_retry(window_index: int) -> None:
+        record_embedding_drop("inference", f"coarse window {window_index}; its genre is re-run without the embedding", exc_info=True)
+
+    fused_failed = set(failed)  # private: a fused failure must not reach the shared kill list
+    swept = _sweep_one_model(GENRE_EMBEDDING_MODEL, buffers, models_dir, fused_failed, _drop_and_retry)
+    for key, (predictions, _labels) in swept.items():
+        embedding = embedding_of(getattr(predictions, "patches", None))
+        if embedding is None:
+            continue  # under one patch: there is no embedding to drop
+        try:
+            embeddings_out[key] = encode_embedding(embedding)
+        except Exception:
+            record_embedding_drop("encode", f"coarse window {key}", exc_info=True)
+    retry = [(key, buf) for key, buf in buffers if key in fused_failed and key not in failed]
+    if retry:
+        swept.update(_sweep_one_model(GENRE_MODEL, retry, models_dir, failed, on_failure))
+    return swept
 
 
 def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
@@ -1337,6 +1393,7 @@ def _derive_coarse_window(
     failed: set[int],
     on_skip: Callable[[int, float, float, bool], None],
     pooled: dict[str, list[tuple[list[float], list[int]]]] | None = None,
+    embedding: str | None = None,
 ) -> CoarseWindow | None:
     """Derive mood / style / danceability for ONE swept window and assemble its record.
 
@@ -1374,6 +1431,7 @@ def _derive_coarse_window(
             danceability=derive_danceability(features),
             features=features,
             subwindow_moods=subwindow_moods,
+            embedding=embedding,
         )
     except Exception:  # per-window failure isolation: skip, never fail the file
         on_skip(idx, start, end, True)
@@ -1389,6 +1447,7 @@ def _analyze_coarse_windows(
     signals: AnalysisSignals = NO_SIGNALS,
     fine_analyzed: int = 0,
     fine_total: int = 0,
+    include_embeddings: bool = False,
 ) -> tuple[list[CoarseWindow], int]:
     """COARSE pass: mood/style/danceability for EVERY ``win_sec`` window (no length floor).
 
@@ -1505,6 +1564,8 @@ def _analyze_coarse_windows(
                     signals.beat("coarse_work", _chunk_start + models_done, work_total)
 
                 pooled_by_window: dict[int, dict[str, list[tuple[list[float], list[int]]]]] = {}
+                # One encoded vector per window, ~3.4 kB: like the pooled mood, nothing larger outlives the sweep.
+                embeddings_by_window: dict[int, str] | None = {} if include_embeddings else None
                 features_by_window, failed = _run_model_sets_over_windows(
                     buffers,
                     models_dir,
@@ -1512,6 +1573,7 @@ def _analyze_coarse_windows(
                     _model_done,
                     slices_by_window={idx: n_slices_for(start, end) for idx, start, end in spans},
                     pooled_out=pooled_by_window,
+                    embeddings_out=embeddings_by_window,
                 )
                 buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
                 _malloc_trim()
@@ -1524,7 +1586,14 @@ def _analyze_coarse_windows(
                     tier="coarse",
                 ):
                     for span in spans:
-                        derived = _derive_coarse_window(span, features_by_window, failed, _skip, pooled_by_window.get(span[0]))
+                        derived = _derive_coarse_window(
+                            span,
+                            features_by_window,
+                            failed,
+                            _skip,
+                            pooled_by_window.get(span[0]),
+                            embedding=embeddings_by_window.get(span[0]) if embeddings_by_window is not None else None,
+                        )
                         if derived is None:
                             continue  # killed by the sweep, or a failed derivation -- either way already reported in-handler
                         coarse_windows.append(derived)
@@ -1550,6 +1619,7 @@ def analyze_file(
     progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     include_grids: bool = False,
+    include_embeddings: bool = False,
 ) -> dict[str, Any]:
     """Analyze a single audio file via essentia as a two-tier time-series.
 
@@ -1643,6 +1713,14 @@ def analyze_file(
     existed -- the contract the completion PUT and the recorded equivalence tests pin. The data is
     computed either way (it is a few floats per slice and per beat); the flag only decides whether it
     travels, so the wire bead can switch it on once the control plane accepts it.
+
+    ``include_embeddings`` (default ``False``) adds one key, ``embeddings``: the model identity plus one
+    pooled 1280-d Discogs-EffNet vector per coarse window, as base64 of little-endian float16
+    (:func:`~phaze.services.analysis_embeddings.embeddings_payload`). Unlike the grids it also changes
+    what RUNS: the genre sweep reads both graph outputs from one session instead of the logits alone,
+    which is measured to cost nothing (``analysis_embeddings``' docstring) and leaves the genre output
+    bit-identical. Off, neither the path nor the returned dict changes. An embedding failure drops that
+    window's embedding, or at assembly the key, and never fails the analysis.
     """
     _suppress_essentia_logging()
 
@@ -1660,6 +1738,7 @@ def analyze_file(
             coarse_window_sec=coarse_window_sec,
             fine_min_sec=fine_min_sec,
             include_grids=include_grids,
+            include_embeddings=include_embeddings,
         )
 
 
@@ -1673,6 +1752,7 @@ def _analyze_file_traced(
     coarse_window_sec: int,
     fine_min_sec: int,
     include_grids: bool = False,
+    include_embeddings: bool = False,
 ) -> dict[str, Any]:
     """:func:`analyze_file`'s body, inside its root span (phaze-m1drf.1).
 
@@ -1701,9 +1781,18 @@ def _analyze_file_traced(
             file_path, total_sec, fine_window_sec, fine_min_sec, signals=signals, coarse_total=coarse_total_natural, beats=include_grids
         )
         coarse_windows, coarse_total = _analyze_coarse_windows(
-            file_path, total_sec, coarse_window_sec, models_dir, signals=signals, fine_analyzed=len(fine_windows), fine_total=fine_total
+            file_path,
+            total_sec,
+            coarse_window_sec,
+            models_dir,
+            signals=signals,
+            fine_analyzed=len(fine_windows),
+            fine_total=fine_total,
+            include_embeddings=include_embeddings,
         )
-        result = _assemble_analysis_result(file_path, fine_windows, fine_total, coarse_windows, coarse_total, include_grids=include_grids)
+        result = _assemble_analysis_result(
+            file_path, fine_windows, fine_total, coarse_windows, coarse_total, include_grids=include_grids, include_embeddings=include_embeddings
+        )
         outcome = "ok"
     finally:
         telemetry.record("phaze.analysis.run.duration", time.perf_counter() - started, outcome=outcome)
@@ -1770,6 +1859,7 @@ def _assemble_analysis_result(
     coarse_total: int,
     *,
     include_grids: bool = False,
+    include_embeddings: bool = False,
 ) -> dict[str, Any]:
     """The zibn floor plus the returned aggregate dict, unchanged. See :func:`analyze_file`."""
 
@@ -1812,4 +1902,10 @@ def _assemble_analysis_result(
                 result[key] = build()
             except Exception:
                 record_grid_drop("assembly", f"the file's {key}", exc_info=True)
+    if include_embeddings:
+        # Its own scope, like each grid: an embeddings key that cannot be built is left OUT, and everything above stands.
+        try:
+            result["embeddings"] = embeddings_payload({w.window_index: w.embedding for w in coarse_windows if w.embedding is not None})
+        except Exception:
+            record_embedding_drop("assembly", "the file's embeddings", exc_info=True)
     return result

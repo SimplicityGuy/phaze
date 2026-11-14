@@ -380,3 +380,47 @@ is refused on the wire, as every other wire float already was).
 primary output's success, never around it. A `try` shared by primary and secondary work lets the secondary
 failure take down the primary. This is now written down here; every call site reports through `services/grid_drops.py`, whose docstring
 points at this section.
+
+## 11. An embedding failure never fails an analysis either (phaze-l5mzm)
+
+Written by the implementing seat of phaze-l5mzm; open to review.
+
+The per-window Discogs-EffNet embedding (`analyze_file(include_embeddings=True)`, off by default) is secondary output
+too, and §10's rule applies to it unchanged. One difference makes it more than a reporting change: with the option on,
+the genre sweep runs a different classifier (`FusedEffnetDiscogs`, which reads the logits and the embedding from one
+TensorFlow session). So a failure on the embedding path could otherwise cost a window its genre, or the window itself.
+Each stage reports through `analysis_embeddings.record_embedding_drop` and is counted on
+`phaze.analysis.embeddings.dropped{embedding_stage}`:
+
+| `embedding_stage` | what fails | what is dropped | what is kept |
+| --- | --- | --- | --- |
+| `inference` | the fused genre call on a window | that window's embedding | the window and its genre: it is re-swept on the plain genre classifier once the fused graph is released, so one graph is resident at a time, and only a failure there kills it |
+| `encode` | a pooled vector float16 cannot hold | that window's embedding | everything else, with no second genre pass |
+| `assembly` | building the file's `embeddings` key | the key for the file | the whole rest of the result |
+
+A window with no patch (2.0 s or less) has no embedding, and that is an absence, not a drop. With the option off, the
+genre sweep is the plain wrapper it always was and the result has no `embeddings` key.
+
+**The counter and the isolation design are the dispatcher's decision, not the operator's.** Question as put (to the
+dispatcher, 2026-11-13, excerpt): "'Counted' the way 7hcgn.5 counts means a catalogued metric. That forces an edit to
+docs/telemetry/metric-catalogue.md and SERIES_CEILING ... My recommendation: a separate counter
+phaze.analysis.embeddings.dropped with label embedding_stage = {inference, encode, assembly} ... OK to add the metric +
+doc row + ceiling bump?" Answer as given (dispatcher, verbatim excerpt): "approved, all of it (my decision as
+dispatcher; record it as such): a separate counter phaze.analysis.embeddings.dropped{embedding_stage=inference|encode|assembly},
+plus the catalogue row and the SERIES_CEILING bump ... The isolation design is approved too: on a fused-call failure,
+re-sweep that window with the plain wrapper after releasing the fused graph (one graph at a time, genre unchanged);
+drop per window on an encode failure; drop the file key on an assembly failure; and with the option off, the exact
+current path." Durable record: bead phaze-l5mzm. The ceilings moved with it: per instance 8,617 → 8,620, analysis
+block 2,295 → 2,298, ceiling 24,682 → 24,706 (`docs/telemetry/metric-catalogue.md` §3, `docs/telemetry/exporter.md`,
+`docs/design/0017-telemetry-export-topology.md` §8b).
+
+**Tests.** `tests/analyze/services/pipeline/test_embedding_failure_isolation.py`: one test per stage, the re-sweep's
+one-graph residency, the option-off path, and the end-to-end acceptance test through `analyze_file`. Each was seen to
+fail against a hand-planted version of the defect it guards: no private kill list, the retry built while the fused
+graph was still resident, an unguarded encode, an unguarded assembly, and the option off running the fused classifier.
+`tests/analyze/services/pipeline/test_embeddings_real_models.py`: real graphs, per-window equality with a direct graph
+call, and flat peak RSS across repeated multi-chunk runs with the option on.
+
+**The general form** is §10's, with one addition. When turning secondary output on changes the code that produces
+primary output, the fallback for a secondary failure must be the primary path as it was without the option, not a
+skipped window.

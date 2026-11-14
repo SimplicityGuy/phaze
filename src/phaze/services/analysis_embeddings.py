@@ -42,13 +42,24 @@ from __future__ import annotations
 
 import base64
 import binascii
-from typing import TYPE_CHECKING, Any
+import logging
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import numpy as np
+
+from phaze.telemetry import instruments as telemetry
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+
+log = logging.getLogger(__name__)
+
+EmbeddingStage = Literal["inference", "encode", "assembly"]
+
+#: Where an embedding can be dropped, in pipeline order -- the ``embedding_stage`` label's whole domain.
+EMBEDDING_STAGES: Final[tuple[EmbeddingStage, ...]] = ("inference", "encode", "assembly")
 
 
 # The graph's contract, from its own JSON sidecar (phaze-webi9 E1).
@@ -160,16 +171,31 @@ def decode_embedding(encoded: str) -> np.ndarray:
     return np.frombuffer(raw, dtype=EMBEDDING_WIRE_DTYPE).copy()
 
 
-def embeddings_payload(embeddings_by_window: dict[int, Any]) -> dict[str, Any]:
+def embeddings_payload(encoded_by_window: dict[int, str]) -> dict[str, Any]:
     """The ``embeddings`` value of an analysis result: model identity plus one vector per coarse window.
 
-    Windows are listed in index order. A window with no embedding (silent, killed by a model sweep, or
-    under one patch long) is absent, never a zero vector.
+    ``encoded_by_window`` maps a coarse window index to that window's :func:`encode_embedding` string,
+    encoded (and so validated) once, per window, when the genre sweep produced it. Windows are listed in
+    index order. A window with no embedding (silent, killed by a model sweep, under one patch long, or
+    dropped) is absent, never a zero vector.
     """
     return {
         "model": EMBEDDING_MODEL,
         "output": EMBEDDING_OUTPUT,
         "dim": EMBEDDING_DIM,
         "format": EMBEDDING_WIRE_FORMAT,
-        "windows": [{"window_index": idx, "vector": encode_embedding(embeddings_by_window[idx])} for idx in sorted(embeddings_by_window)],
+        "windows": [{"window_index": idx, "vector": encoded_by_window[idx]} for idx in sorted(encoded_by_window)],
     }
+
+
+def record_embedding_drop(stage: EmbeddingStage, what: str, *, exc_info: bool = False) -> None:
+    """Log and count one embedding dropped at ``stage``, where it was dropped instead of failing the analysis.
+
+    An embedding is secondary data: a failure on its path costs that window (or, at assembly, that file)
+    its embedding and nothing else. ``inference`` is a window whose fused genre call raised, so the window
+    was re-swept on the plain genre classifier and keeps its genre; ``encode`` is a pooled vector float16
+    cannot hold; ``assembly`` is the file's whole ``embeddings`` key. Call it from INSIDE the ``except``
+    block, so ``exc_info`` renders the live traceback and the exception is never retained.
+    """
+    log.warning("embedding dropped at %s: %s; the core analysis is unaffected", stage, what, exc_info=exc_info)
+    telemetry.add("phaze.analysis.embeddings.dropped", 1, embedding_stage=stage)
