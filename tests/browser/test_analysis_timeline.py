@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -237,6 +238,10 @@ async def test_drawer_swap_initializes_once_and_escape_still_closes_from_timelin
             window.PhazeAnalysisTimeline.initialize(root);
         }"""
     )
+    # The record host moves focus to the record heading once the swapped body becomes visible
+    # (shell/partials/record_host.html, `focusHeadingWhenShown`). Focus the inspector only after that
+    # heading focus has landed, so the keypress reaches the slider.
+    await page.wait_for_function("() => document.activeElement && document.activeElement.tagName === 'H2'")
     await inspector.focus()
     await page.keyboard.press("ArrowRight")
     assert await inspector.get_attribute("aria-valuenow") == "15"
@@ -244,6 +249,106 @@ async def test_drawer_swap_initializes_once_and_escape_still_closes_from_timelin
     await page.keyboard.press("Escape")
     await page.wait_for_function("() => !document.getElementById('record-body').checkVisibility()")
     assert await settled_focus(page, "aria-label") == f"Open details for {file.original_filename}"
+
+
+@pytest.mark.usefixtures("modal_width")
+async def test_a_swap_inside_the_record_body_does_not_take_focus_from_the_timeline(page: Any, seed: Seeder) -> None:
+    """A real section swap inside the open record must not move focus off the timeline (a keyboard a11y defect).
+
+    ``htmx:afterSwap`` bubbles, and ``record_host.html``'s ``#record-body`` after-swap handler used to
+    focus the record heading on EVERY such event. The tracklist lookup section loads on ``load`` inside
+    the body, so its swap could land while an operator was using the timeline and pull focus to the
+    heading. The handler now focuses the heading only for the body's own swap.
+
+    Deterministic on purpose: the lookup response is held by a route until focus is on the inspector, then
+    released, so the body receives a REAL htmx swap of the lookup section at a known moment. Focus must stay
+    on the inspector, and ArrowRight must still reach it. Before the fix this fails: the bubbling swap event
+    runs the heading focus synchronously.
+    """
+    file = await seed.file(filename="<set-01>.mp3")
+    await seed.metadata(file, duration=720.0)
+    await seed.analysis_windows(file, fine_count=24, coarse_count=6)
+    release = asyncio.Event()
+
+    async def _held_lookup(route: Any) -> None:
+        await release.wait()
+        await route.continue_()
+
+    await page.route("**/remote-lookup", _held_lookup)
+    await open_shell(page, "/s/files")
+    await settled(page)
+
+    opener = page.locator(f'#files-table-view .md\\:block button[hx-get="/record/{file.id}"]')
+    await opener.click()
+    timeline = page.locator("#record-body [data-analysis-timeline]")
+    await timeline.wait_for(state="visible")
+    await page.wait_for_function("() => document.querySelector('#record-body [data-analysis-timeline]').dataset.timelineReady === 'true'")
+    # The record's own heading focus is deferred until the body is visible, so wait for it to land first.
+    await page.wait_for_function("() => document.activeElement && document.activeElement.tagName === 'H2'")
+    inspector = timeline.locator("[data-timeline-inspector]")
+    await inspector.focus()
+    assert await inspector.evaluate("el => el === document.activeElement")
+
+    await page.evaluate(
+        """() => {
+            window.__lookupSwaps = [];
+            document.getElementById('record-body').addEventListener('htmx:afterSwap', (e) => {
+                if (e.target && e.target.id && e.target.id.startsWith('remote-lookup-')) window.__lookupSwaps.push(e.target.id);
+            });
+        }"""
+    )
+    release.set()
+    await page.wait_for_function("() => window.__lookupSwaps.length > 0")
+    assert await inspector.evaluate("el => el === document.activeElement"), (
+        "the tracklist lookup's swap inside the record body moved focus off the timeline inspector"
+    )
+    await page.keyboard.press("ArrowRight")
+    assert await inspector.get_attribute("aria-valuenow") == "15"
+
+
+@pytest.mark.usefixtures("modal_width")
+async def test_a_swap_inside_the_record_body_does_not_re_run_the_body_handler(page: Any, seed: Seeder) -> None:
+    """A section swap inside the open record must not re-initialise the body or rename the dialog (phaze-7hcgn.4).
+
+    The guard used to cover only the heading focus: a bubbling ``htmx:afterSwap`` from the tracklist lookup still
+    ran ``Alpine.initTree`` over the WHOLE body (re-initialising components that are already live) and rewrote
+    the dialog's ``aria-label``. The whole handler now runs only for the body's own swap. Same held-route
+    technique as the focus test above, so the nested swap lands at a known moment.
+    """
+    file = await seed.file(filename="<set-01>.mp3")
+    await seed.metadata(file, duration=720.0)
+    await seed.analysis_windows(file, fine_count=24, coarse_count=6)
+    release = asyncio.Event()
+
+    async def _held_lookup(route: Any) -> None:
+        await release.wait()
+        await route.continue_()
+
+    await page.route("**/remote-lookup", _held_lookup)
+    await open_shell(page, "/s/files")
+    await settled(page)
+
+    await page.locator(f'#files-table-view .md\\:block button[hx-get="/record/{file.id}"]').click()
+    await page.locator("#record-body [data-analysis-timeline]").wait_for(state="visible")
+    await page.wait_for_function("() => document.activeElement && document.activeElement.tagName === 'H2'")
+    await page.evaluate(
+        """() => {
+            const body = document.getElementById('record-body');
+            window.__bodyInits = 0;
+            window.__lookupSwaps = [];
+            const initTree = Alpine.initTree;
+            Alpine.initTree = (el, ...rest) => { if (el === body) window.__bodyInits += 1; return initTree(el, ...rest); };
+            body.closest('[role=dialog]').setAttribute('aria-label', 'sentinel');
+            body.addEventListener('htmx:afterSwap', (e) => {
+                if (e.target && e.target.id && e.target.id.startsWith('remote-lookup-')) window.__lookupSwaps.push(e.target.id);
+            });
+        }"""
+    )
+    release.set()
+    await page.wait_for_function("() => window.__lookupSwaps.length > 0")
+    assert await page.evaluate("() => window.__bodyInits") == 0, "a nested swap re-ran Alpine.initTree over the whole record body"
+    label = await page.evaluate("() => document.getElementById('record-body').closest('[role=dialog]').getAttribute('aria-label')")
+    assert label == "sentinel", "a nested swap rewrote the record dialog's aria-label"
 
 
 _INSPECTION_DURATION_SEC = 720.0

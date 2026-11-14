@@ -14,15 +14,16 @@ from __future__ import annotations
 
 from dataclasses import fields
 from fractions import Fraction
+import math
 import uuid
 
 import pytest
 
-from phaze.models.analysis import AnalysisWindow
+from phaze.models.analysis import AnalysisSubwindow, AnalysisWindow
 from phaze.models.tracklist import TracklistTrack
 from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, ribbons
 from phaze.services.set_glyph_colors import camelot_hue
-from phaze.services.set_projection import camelot_number, key_name_for_camelot
+from phaze.services.set_projection import MOOD_ORDER, camelot_number, key_name_for_camelot
 from phaze.services.track_segments import TrackSegment, build_track_segments
 from phaze.tracklist_providers.domain import ProviderTrack, RationalOffset, Timestamp
 from tests._timing import qualified_timing
@@ -266,6 +267,160 @@ def test_a_coarse_window_with_no_mood_scores_contributes_nothing_rather_than_zer
 
     assert segment.mood == "mood_relaxed"
     assert segment.energy == 0.5
+
+
+# -- phaze-bxp3m: mood from sub-window slices (docs/design/0026-subwindow-mood-and-beat-grid.md section 3) -------------------------------
+#
+# A slice's mood is a POSITIONAL vector in MOOD_ORDER. The vectors below are built from the
+# name-keyed scores, so a test that reads the wrong slot fails rather than agreeing by accident.
+
+
+def _slice(window_index: int, sub_index: int, start: float, end: float, scores: dict[str, float] | None) -> AnalysisSubwindow:
+    vector: list[float | None] | None = None if scores is None else [scores.get(name, 0.0) for name in MOOD_ORDER]
+    return AnalysisSubwindow(file_id=uuid.uuid4(), window_index=window_index, sub_index=sub_index, start_sec=start, end_sec=end, mood_scores=vector)
+
+
+def test_a_track_shorter_than_180_seconds_gets_a_mood_from_subwindows() -> None:
+    """Acceptance: a 60 s track with no coarse window midpoint inside it still gets a mood.
+
+    The only coarse window is [0, 180), midpoint 90, which lies in track 2, not track 1. Without
+    sub-windows track 1 has no mood at all. With four 15 s slices inside it, the mood is the argmax of
+    the slices' own means, worked out by hand: mood_happy is 0.8 in three of four slices (mean 0.6),
+    mood_sad is 0.9 in one of four (mean 0.225). Happy wins.
+    """
+    tracks = [_track(1, "0:00"), _track(2, "1:00")]
+    coarse = [_coarse(0, 0.0, 180.0, energy=0.5, moods={"mood_relaxed": 0.3})]
+    slices = [
+        _slice(0, 0, 0.0, 15.0, {"mood_happy": 0.8}),
+        _slice(0, 1, 15.0, 30.0, {"mood_happy": 0.8}),
+        _slice(0, 2, 30.0, 45.0, {"mood_sad": 0.9}),
+        _slice(0, 3, 45.0, 60.0, {"mood_happy": 0.8}),
+        _slice(0, 4, 60.0, 75.0, {"mood_sad": 0.9}),
+    ]
+
+    without = build_track_segments(tracks, coarse, 120.0)
+    with_slices = build_track_segments(tracks, coarse, 120.0, subwindows=slices)
+
+    assert without[0].mood is None  # the coarse midpoint (90) is in track 2
+    assert with_slices[0].mood == "mood_happy"
+    assert (with_slices[0].start_sec, with_slices[0].end_sec) == (0.0, 60.0)
+
+
+def test_subwindow_assignment_is_half_open_on_the_midpoint_like_coarse_windows() -> None:
+    """Acceptance: a slice belongs to the track holding its midpoint, and a midpoint on a boundary
+    belongs to the LATER track (``[start, end)``).
+
+    Track A is [0, 40), track B is [40, 100). Slice [30, 45) has midpoint 37.5 so it is A's (sad).
+    Slice [35, 45) has midpoint exactly 40.0, so it is B's (happy). Slice [40, 55) is B's (happy).
+    An overlap rule would give A both of the first two slices, and mood_happy and mood_sad would
+    then tie at 0.45 and the earlier name in MOOD_NAMES, mood_happy, would win A, which is wrong.
+    """
+    tracks = [_track(1, "0:00"), _track(2, "0:40")]
+    slices = [
+        _slice(0, 0, 30.0, 45.0, {"mood_sad": 0.9}),
+        _slice(0, 1, 35.0, 45.0, {"mood_happy": 0.9}),
+        _slice(0, 2, 40.0, 55.0, {"mood_happy": 0.9}),
+    ]
+
+    first, second = build_track_segments(tracks, [], 100.0, subwindows=slices)
+
+    assert first.mood == "mood_sad"
+    assert second.mood == "mood_happy"
+
+
+def test_a_segment_whose_slices_carry_no_mood_falls_back_to_the_coarse_answer() -> None:
+    """Acceptance: a NULL slice (no patch centre, or a silent window) is an absence, not a vector.
+
+    Track 1 has only NULL slices, so it takes the coarse argmax (mood_relaxed) exactly as before.
+    Track 2 has slices favouring mood_happy over a coarse window that says mood_relaxed, and the slices
+    win: the finer source is preferred wherever it has a mood at all.
+    """
+    tracks = [_track(1, "0:00"), _track(2, "5:00")]
+    # Midpoints 100 (track 1) and 300 (track 2): both coarse windows say mood_relaxed.
+    coarse = [
+        _coarse(0, 0.0, 200.0, energy=0.5, moods={"mood_relaxed": 0.3}),
+        _coarse(1, 200.0, 400.0, energy=0.5, moods={"mood_relaxed": 0.3}),
+    ]
+    slices = [
+        _slice(0, 0, 0.0, 15.0, None),
+        _slice(0, 1, 15.0, 30.0, None),
+        _slice(0, 20, 300.0, 315.0, {"mood_happy": 0.9}),
+    ]
+
+    first, second = build_track_segments(tracks, coarse, 600.0, subwindows=slices)
+
+    assert first.mood == "mood_relaxed"
+    assert second.mood == "mood_happy"
+
+
+def test_with_partial_sub_window_coverage_the_uncovered_coarse_windows_still_count() -> None:
+    """phaze-7hcgn.5 finding F: one track over three coarse windows, only the first of which has slices.
+
+    Window 0 [0, 180) has 12 slices, all mood_happy 0.6. Windows 1 and 2 [180, 540) have no slices (their sub-window
+    mood was dropped, or never stored) and both say mood_sad 0.9. Two thirds of the track is measured sad; the slices
+    alone would say happy. Each uncovered window stands in for its 12 slices: happy 0.6 over 12, sad 0.9 over 24 -> sad.
+    """
+    tracks = [_track(1, "0:00")]
+    coarse = [
+        _coarse(0, 0.0, 180.0, moods={"mood_sad": 0.1}),
+        _coarse(1, 180.0, 360.0, moods={"mood_sad": 0.9}),
+        _coarse(2, 360.0, 540.0, moods={"mood_sad": 0.9}),
+    ]
+    slices = [_slice(0, i, i * 15.0, (i + 1) * 15.0, {"mood_happy": 0.6}) for i in range(12)]
+
+    (segment,) = build_track_segments(tracks, coarse, 540.0, subwindows=slices)
+
+    assert segment.mood == "mood_sad"
+
+
+def test_with_full_sub_window_coverage_the_coarse_windows_add_nothing() -> None:
+    """The finer source still wins wherever it covers the window: a covered coarse window is not counted twice."""
+    tracks = [_track(1, "0:00")]
+    coarse = [_coarse(0, 0.0, 180.0, moods={"mood_sad": 0.9})]
+    slices = [_slice(0, i, i * 15.0, (i + 1) * 15.0, {"mood_happy": 0.6}) for i in range(12)]
+
+    (segment,) = build_track_segments(tracks, coarse, 180.0, subwindows=slices)
+
+    assert segment.mood == "mood_happy"
+
+
+def test_partial_coverage_skips_null_slots_unscored_windows_and_unplaceable_windows() -> None:
+    """The mixed mean reads only finite scores: a slice's NULL slot, an uncovered coarse window with no mood scores,
+    and a coarse window with a non-finite bound (which no segment can place) all contribute nothing."""
+    tracks = [_track(1, "0:00")]
+    coarse = [
+        _coarse(0, 0.0, 180.0, moods={"mood_sad": 0.1}),
+        _coarse(1, 180.0, 360.0, moods=None),
+        _coarse(2, 360.0, math.inf, moods={"mood_sad": 1.0}),
+    ]
+    slices = [_slice(0, 0, 0.0, 15.0, {"mood_happy": 0.6})]
+    slices[0].mood_scores = [None if name == "mood_sad" else score for name, score in zip(MOOD_ORDER, slices[0].mood_scores or [], strict=True)]
+
+    (segment,) = build_track_segments(tracks, coarse, 540.0, subwindows=slices)
+
+    assert segment.mood == "mood_happy"
+
+
+def test_a_file_without_subwindows_produces_exactly_todays_segments() -> None:
+    """Acceptance: no sub-window rows, or an empty list, is the coarse path with nothing changed.
+
+    Compares the full dataclass lists, not one field, so any drift in any reading shows up.
+    """
+    tracks = [_track(1, "0:00"), _track(2, "4:00"), _track(3, "9:30")]
+    windows = [
+        _fine(0, 0.0, 30.0, bpm=128.0, camelot="8A"),
+        _fine(1, 30.0, 60.0, bpm=126.0, camelot="8A"),
+        _coarse(0, 0.0, 180.0, energy=0.4, moods={"mood_relaxed": 0.3, "mood_happy": 0.2}),
+        _coarse(1, 180.0, 360.0, energy=0.6, moods={"mood_happy": 0.7}),
+        _coarse(2, 360.0, 540.0, energy=0.5, moods={"mood_sad": 0.6}),
+    ]
+
+    coarse_path = build_track_segments(tracks, windows, 900.0)
+
+    assert build_track_segments(tracks, windows, 900.0, subwindows=None) == coarse_path
+    assert build_track_segments(tracks, windows, 900.0, subwindows=[]) == coarse_path
+    # Track 3 is [570, 900): no coarse midpoint lies in it (the last is 450), so it stays None.
+    assert [segment.mood for segment in coarse_path] == ["mood_relaxed", "mood_happy", None]
 
 
 # Read off the segment by the render path (`_tracklist_review_body.html`, `services/poster.py`)

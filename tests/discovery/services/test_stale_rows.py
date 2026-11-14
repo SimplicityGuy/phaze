@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from phaze.agent_watcher.locate import locate_stale
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
@@ -223,6 +223,8 @@ async def test_a_completed_analysis_on_the_duplicate_replaces_a_failed_one_on_th
     agent_id = await _agent(session, root)
     stale_id = (await _row(session, agent_id, old)).id
     session.add(AnalysisResult(file_id=stale_id, failed_at=datetime.now(UTC), error_message="FileNotFoundError"))
+    # A beat grid left on the kept row by an earlier run: it describes the analysis being replaced.
+    session.add(AnalysisBeatGrid(file_id=stale_id, beats=[9.0], beat_count=1))
     new = root / "b" / "t.m4a"
     new.parent.mkdir(parents=True)
     old.rename(new)
@@ -231,6 +233,8 @@ async def test_a_completed_analysis_on_the_duplicate_replaces_a_failed_one_on_th
         [
             AnalysisResult(file_id=duplicate_id, bpm=90.0, analysis_completed_at=datetime.now(UTC)),
             AnalysisWindow(file_id=duplicate_id, tier="fine", window_index=0, start_sec=0.0, end_sec=5.0),
+            AnalysisSubwindow(file_id=duplicate_id, window_index=0, sub_index=0, start_sec=0.0, end_sec=5.0, mood_scores=[0.25] * 11),
+            AnalysisBeatGrid(file_id=duplicate_id, beats=[0.5, 1.0], beat_count=2),
         ]
     )
     await session.flush()
@@ -240,6 +244,13 @@ async def test_a_completed_analysis_on_the_duplicate_replaces_a_failed_one_on_th
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == stale_id))).scalar_one()
     assert (analysis.bpm, analysis.failed_at) == (90.0, None)
     assert await session.scalar(select(func.count()).select_from(AnalysisWindow).where(AnalysisWindow.file_id == stale_id)) == 1
+    # The sub-windows and the beat grid move WITH the completed analysis they came from; the kept
+    # row's own grid belonged to the analysis that lost. expire_all: the grid's key IS file_id, so the
+    # kept row's pre-merge object would otherwise answer from the identity map.
+    session.expire_all()
+    assert await session.scalar(select(func.count()).select_from(AnalysisSubwindow).where(AnalysisSubwindow.file_id == stale_id)) == 1
+    grid = (await session.execute(select(AnalysisBeatGrid).where(AnalysisBeatGrid.file_id == stale_id))).scalar_one()
+    assert grid.beats == [0.5, 1.0]
     assert await session.get(FileRecord, duplicate_id) is None
 
 

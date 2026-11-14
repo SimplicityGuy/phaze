@@ -11,10 +11,30 @@ module's globals, and ``patch.object(analysis, "derive_mood", ...)`` still reach
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 # Mood / style derivation
+
+# essentia's negation prefixes on a binary classifier's labels. Spelled HERE ONLY (phaze-7hcgn.4): every reader that
+# needs the positive class -- the coarse derivation below, the sub-window pooling, the agent wire converter -- goes
+# through :func:`is_positive_label`, so the rule cannot drift between copies.
+_NEGATION_PREFIXES = ("non_", "not_")
+
+
+def is_positive_label(label: object) -> bool:
+    """True unless ``label`` carries essentia's negation prefix (``non_`` / ``not_``)."""
+    return not str(label).startswith(_NEGATION_PREFIXES)
+
+
+def positive_class_index(labels: Sequence[object]) -> int:
+    """Index of the POSITIVE class among a binary classifier's ``labels``: the first positive label, else 0."""
+    return next((index for index, label in enumerate(labels) if is_positive_label(label)), 0)
+
 
 _MOOD_SET_NAMES = frozenset(
     {
@@ -43,13 +63,7 @@ def _positive_class_prediction(predictions: list[dict[str, Any]]) -> float:
     no label qualifies (defensive — preserves behavior for unexpected label shapes).
     Callers guard ``if predictions`` so the list is non-empty here.
     """
-    positive: dict[str, Any] | None = None
-    for entry in predictions:
-        if not str(entry.get("label", "")).startswith(("non_", "not_")):
-            positive = entry
-            break
-    if positive is None:
-        positive = predictions[0]
+    positive = predictions[positive_class_index([entry.get("label", "") for entry in predictions])]
     return float(positive["prediction"])
 
 

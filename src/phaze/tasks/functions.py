@@ -35,7 +35,14 @@ import structlog
 from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.runtime_config import RuntimeConfig, current as current_runtime_config, effective_settings
-from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, StyleScore
+from phaze.schemas.agent_analysis import (
+    AnalysisFailurePayload,
+    AnalysisProgressPayload,
+    AnalysisWindowPayload,
+    AnalysisWritePayload,
+    StyleScore,
+    grid_payload_fields,
+)
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_exec import AnalysisSubprocessError, format_failure_detail, run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict, aggregate_style_scores
@@ -609,6 +616,7 @@ def _build_analysis_write_payload(analysis: object) -> AnalysisWritePayload:
         coarse_windows_analyzed=result.get("coarse_windows_analyzed"),
         coarse_windows_total=result.get("coarse_windows_total"),
         windows=windows,
+        **grid_payload_fields(result),
     )
 
 

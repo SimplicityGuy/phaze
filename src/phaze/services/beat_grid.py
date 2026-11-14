@@ -1,0 +1,160 @@
+"""The stored precision of a file's beat grid (phaze-f6eeb; docs/design/0026-subwindow-mood-and-beat-grid.md).
+
+``analysis_beat_grid.beats`` is a ``real[]`` (float4): file-relative seconds, strictly ascending. This
+module is the one place the writer turns computed positions into that form, so the beat an agent
+sends and the beat a read returns are the same float, bit for bit. No essentia, no numpy, no I/O --
+the agent, the control plane and the tests all import it.
+
+Why float32 is enough, measured rather than assumed (essentia 2.1-beta6-dev, macOS arm64):
+``RhythmExtractor2013(method="multifeature")`` returns its ticks as float32, quantized to its
+512-sample hop at 44.1 kHz (11.61 ms). The float32 spacing at the longest analyzed file (12.07 h) is
+3.9 ms, so rounding a file-relative position to float32 moves it by at most 1.95 ms -- under a sixth
+of the resolution the ticks carry in the first place.
+"""
+
+from __future__ import annotations
+
+from array import array
+from dataclasses import dataclass, field
+from itertools import islice, pairwise
+import math
+import operator
+from statistics import median
+import struct
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+
+_FLOAT32 = struct.Struct("<f")
+
+
+def to_stored_precision(seconds: float) -> float:
+    """Round ``seconds`` to the float32 value a ``real`` column stores, as a Python float."""
+    return float(_FLOAT32.unpack(_FLOAT32.pack(seconds))[0])
+
+
+def stored_beat_grid(beats: Iterable[float]) -> list[float]:
+    """Round every beat to stored precision and refuse a grid that is not strictly ascending.
+
+    A duplicate or a backwards step -- including two beats that only collapse onto one float32 value
+    after rounding -- is a stitching defect upstream, and storing it would hand every reader a grid
+    it has to re-validate.
+
+    The whole grid is rounded in ONE C-level pass (``array("f")`` holds IEEE float32, the same rounding
+    as :func:`to_stored_precision`) and checked in another: ``BeatGridPayload`` runs this synchronously in
+    the request path on up to 600,000 beats, where a per-beat ``struct`` round trip cost about 0.1 s
+    (measured, phaze-7hcgn.4). A value beyond float32 range becomes ``inf`` there, and is refused.
+    """
+    stored = array("f", beats).tolist()
+    if not all(map(math.isfinite, stored)):
+        msg = "beat grid holds a value beyond float32 range"
+        raise ValueError(msg)
+    if not all(map(operator.lt, stored, islice(stored, 1, None))):
+        previous, current = next((a, b) for a, b in pairwise(stored) if b <= a)
+        msg = f"beat grid must be strictly ascending at float32 precision: {previous!r} then {current!r}"
+        raise ValueError(msg)
+    return stored
+
+
+# Stitching: one file-relative grid out of per-fine-window beat ticks (phaze-0296l)
+
+# RhythmExtractor2013's own scale (essentia docs): confidence in [0, 5.32], below 1 is "low". A window
+# below it still reports a tempo (bpm is unchanged) but its ticks are not trusted: measured on a window
+# holding only a few edge clicks the extractor returned 39 confident-looking beats at confidence 0.19,
+# against 3.94 on the clean windows of the same file. Such a window contributes no beats and so leaves a
+# recorded gap, exactly as a silent one does. The implementer's choice (phaze-0296l), open to review.
+MIN_BEAT_CONFIDENCE = 1.0
+# PRE-ROLL (operator decision 2026-11-11, bead phaze-0296l; the question as put and the answer as given are in
+# docs/design/0026-subwindow-mood-and-beat-grid.md section 8). RhythmExtractor2013 never ticks a beat in its buffer's first
+# samples, so a window decoded from exactly its own start loses the beat that sits on the seam. MEASURED
+# (essentia 2.1-beta6-dev, macOS arm64, 120 BPM click track, windows starting at 30 s and 60 s, ticks kept
+# in [start, start + 2)): with 0, 1 or 2 s of pre-roll the seam beat is absent from at least one window;
+# with 3, 4, 6 and 8 s it is present in both, at 29.99x / 59.99x. The fine pass therefore decodes each window
+# BEAT_PREROLL_SEC earlier, runs the tracker on that longer buffer for ticks only (bpm and key still come
+# from the window's own samples, byte-identical to before), and keeps the ticks from the window's start on.
+# 4 s is one second over the smallest length that worked, about 8 beats at 120 BPM and 4 at 60.
+BEAT_PREROLL_SEC = 4.0
+# The seam beat is ticked just BEFORE the seam (29.994 for a beat at 30.0: the tick quantum is 11.61 ms), so
+# a window owns ticks from this far before its start. A beat seen from both sides is dropped by the
+# duplicate rule below. 0.1 s is under half a beat up to 300 BPM.
+SEAM_TOLERANCE_SEC = 0.1
+# A beat closer than this fraction of the local median interval to the previous accepted beat is the
+# SAME beat seen from two windows (or a spurious double tick), and is dropped.
+DUPLICATE_FRACTION = 0.5
+# A stretch between two accepted beats wider than this multiple of the local median interval is a gap:
+# recorded, never filled.
+GAP_FACTOR = 1.5
+# How many trailing intervals define the "local" median at a seam.
+_LOCAL_INTERVALS = 16
+
+
+@dataclass(frozen=True)
+class StitchedBeatGrid:
+    """The stitched grid: strictly ascending file-relative ``beats``, and the ``gaps`` left unfilled."""
+
+    beats: list[float] = field(default_factory=list)
+    gaps: list[tuple[float, float]] = field(default_factory=list)
+
+
+def _median_interval(beats: Sequence[float]) -> float | None:
+    """Median of the strictly positive intervals of ``beats``, or ``None`` when there are none."""
+    intervals = [b - a for a, b in pairwise(beats) if b > a]
+    return float(median(intervals)) if intervals else None
+
+
+def stitch_beat_grid(windows: Iterable[Sequence[float]]) -> StitchedBeatGrid:
+    """Stitch per-window beat positions (ALREADY file-relative seconds) into one continuous grid.
+
+    ``windows`` yields each analyzed fine window's beats in window order. A silent or failed window
+    contributes an empty sequence, or is simply absent: either way it adds no beats, and the span it
+    leaves between two accepted beats is what the gap rule below records.
+
+    Each candidate beat is compared with the last ACCEPTED beat, against a reference interval:
+
+    - closer than :data:`DUPLICATE_FRACTION` x reference (or not strictly later): a duplicate -- dropped;
+    - wider than :data:`GAP_FACTOR` x reference: a gap -- ``(last, candidate)`` is RECORDED and the
+      candidate is kept. Nothing is interpolated: a gap holds no invented beats.
+
+    **The reference is the window's OWN spacing** (phaze-7hcgn.4). A window's ticks come from one tracker
+    run, so their median interval is that run's tempo. When the tempo changes by more than 2x between
+    windows -- a real change, or a ``RhythmExtractor2013`` octave error -- judging the new window against
+    the beats already accepted would drop every other beat of a faster window (and keep dropping them,
+    because the thinned grid then confirms its own median), or record each step of a slower window as a
+    gap. Inside a window, the window's own median is therefore the reference, and a window with fewer
+    than two beats falls back to the accepted tail's.
+
+    **At a seam** (the last accepted beat came from an earlier window) both tempos are legitimate, so a
+    step is a duplicate only if it is a duplicate under BOTH (``min``), and a gap only if it is a gap under
+    BOTH (``max``). The tail is the last :data:`_LOCAL_INTERVALS` accepted intervals.
+
+    Where no reference can be formed (fewer than two beats on either side) no gap can be judged, so none
+    is recorded; the beats are simply concatenated. Silence before the first beat or after the last is
+    not a gap between beats and is not recorded either.
+    """
+    beats: list[float] = []
+    gaps: list[tuple[float, float]] = []
+    for window_beats in windows:
+        own = _median_interval(window_beats)
+        tail = _median_interval(beats[-(_LOCAL_INTERVALS + 1) :])
+        seam = True  # until this window's first beat is accepted, ``beats[-1]`` belongs to an earlier window
+        for beat in window_beats:
+            if not beats:
+                beats.append(beat)
+                seam = False
+                continue
+            last = beats[-1]
+            if beat <= last:
+                continue
+            delta = beat - last
+            references = [r for r in ((own, tail) if seam else (own if own is not None else tail,)) if r is not None]
+            if references:
+                if delta < DUPLICATE_FRACTION * min(references):
+                    continue
+                if delta > GAP_FACTOR * max(references):
+                    gaps.append((last, beat))
+            beats.append(beat)
+            seam = False
+    return StitchedBeatGrid(beats=beats, gaps=gaps)

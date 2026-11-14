@@ -156,3 +156,38 @@ async def test_the_execute_confirmation_dialog_is_accessible(page: Any, seed: Se
 
     violations = await run_axe(page, include="#apply-confirm")
     assert violations == [], f"the Execute confirmation dialog has automated accessibility violations:\n{describe(violations)}"
+
+
+async def _open_timeline_with_sub_window_river_and_beat_ruler(open_page: Any, seed: Seeder, theme: str) -> Any:
+    """The record page's timeline, seeded with sub-window mood (one NULL slice) and a beat grid (one gap).
+
+    phaze-jvo7i: the mood river and beat ruler are drawn from these rows, so this is the real consumer
+    the markup tests cannot stand in for. Scoped to the timeline by `run_axe(include=...)`.
+    """
+    file = await seed.file(filename="<set-01>.mp3")
+    await seed.metadata(file, duration=720.0)
+    await seed.analysis_windows(file, fine_count=24, coarse_count=6, projected=True)
+    page = await open_page("desktop", theme=theme)
+    await page.goto(f"/files/{file.id}", wait_until="domcontentloaded")
+    await page.locator("[data-analysis-timeline]").wait_for(state="visible")
+    await page.wait_for_function("() => document.querySelector('[data-analysis-timeline]').dataset.timelineReady === 'true'")
+    await page.wait_for_function("t => document.documentElement.classList.contains('dark') === (t === 'dark')", arg=theme)
+    return page
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_the_timeline_with_sub_window_river_and_beat_ruler_has_no_accessibility_violations(open_page: Any, seed: Seeder, theme: str) -> None:
+    page = await _open_timeline_with_sub_window_river_and_beat_ruler(open_page, seed, theme)
+    assert await page.locator("[data-timeline-lane='beat']").count() == 1, "the beat ruler did not render from the seeded grid"
+    assert await page.locator("[data-timeline-lane='mood-river'] polygon").count() > 0, "the mood river did not render"
+
+    violations = await run_axe(page, include="[data-analysis-timeline]")
+    assert violations == [], f"the record timeline ({theme} theme) has accessibility violations:\n{describe(violations)}"
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_the_timeline_with_sub_window_river_and_beat_ruler_meets_wcag_aa_contrast(open_page: Any, seed: Seeder, theme: str) -> None:
+    page = await _open_timeline_with_sub_window_river_and_beat_ruler(open_page, seed, theme)
+
+    violations = await run_axe(page, rules=("color-contrast",), include="[data-analysis-timeline]")
+    assert violations == [], f"the record timeline ({theme} theme) has contrast violations:\n{describe(violations)}"
