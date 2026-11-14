@@ -94,8 +94,11 @@ ______________________________________________________________________
   musicnn characteristic graph at **3,239,548 bytes** (`voice_instrumental-musicnn-msd-1`:
   3,239,625), and `phaze-ytgo.2` found the 200-d `model/dense/BiasAdd` embedding layer *inside*
   each `*-musicnn-msd-2.pb`. Each characteristic therefore re-runs the musicnn front end over
-  the same 180 s of audio. The effnet graph is **18,366,619 bytes**, and the 12-graph set totals
-  **54,048,897 bytes** (`phaze-28883` §1a).
+  the same 180 s of audio. The effnet graph is **18,366,619 bytes**. The twelve `.pb` graphs total
+  **54,001,724 bytes** (10 × 3,239,548 + 3,239,625 + 18,366,619); `phaze-28883` §1a's **54,048,897
+  bytes** for the 12-graph default also counts the twelve `.json` sidecars, 47,173 bytes by the
+  manifest's `_JSON_SIZES` (`src/phaze/scripts/download_models.py`; 54,001,724 + 47,173 =
+  54,048,897).
 - **Patch rates per 180 s coarse window** (`phaze-ytgo.2`): effnet **180 patches** (1.00 Hz),
   musicnn **119 patches** (0.66 Hz).
 - **Chunking (D-07):** 60 fine / 30 coarse windows per chunk (`_FINE_CHUNK_WINDOWS`,
@@ -127,12 +130,12 @@ ______________________________________________________________________
 | measurement | figure | source |
 | --- | --- | --- |
 | per-stage CPU, six real files (6.675 audio-hours), deployed image, one TF thread | 11 mood graphs **96.8** cpu-s per coarse window (**84.5%** of total, ≈ **9.0** per graph); genre EffNet **3.67** (3.2%); fine decode **7.6%**; rhythm **1.7%**; key **0.1%**; coarse decode **2.9%**; **2,316** cpu-s per audio-hour | `phaze-fzubr` per-stage table |
-| EffNet embedding output (`PartitionedCall:1`) as a separate pass | **3.71** cpu-s per coarse window, the same as the genre pass; whether one run can emit both outputs was **not measured** there | `phaze-fzubr` "EffNet embedding output" |
-| tap of the embedding off the existing effnet pass | **+1.6%** wall clock | `phaze-ytgo.2` |
+| EffNet embedding output (`PartitionedCall:1`) as a separate, second pass, against the deployed 12-graph sweep | **3.71** cpu-s per coarse window, the same as the genre pass: **3.7%** of the window's ≈ 100.5 cpu-s of inference (3.71 / (96.8 + 3.67) = 3.71 / 100.47 = 0.037); whether one run can emit both outputs was **not measured** there | `phaze-fzubr` "EffNet embedding output" |
+| the same kind of separate, second pass (a second `TensorflowPredictEffnetDiscogs(output="PartitionedCall:1")` on the same buffer), against the old 34-graph sweep | **+1.6%** wall clock (medians 0.77 s / 47.86 s = 0.0161); a smaller share than fzubr's 3.7% partly because its denominator is the larger 34-graph sweep (the two runs also differ in host and in wall versus cpu seconds, so the two percentages are not directly comparable); it is not a tap. Its "fused" arm, both outputs from one session, read **−0.004 s** (zero within noise), but through a reimplemented front end that is **not byte-identical** to the wrapper (max abs element difference 0.15–0.34), and the spike itself says to plan against the second-pass figure | `phaze-ytgo.2` E2 |
 | 12-graph sweep, control | **104.8** cpu-s per window, consistent with fzubr's 100.5 (96.8 + 3.67) | `phaze-phjwi` control note |
-| 2 TF threads in one process, 2-CPU budget | **1.79×–1.84×** windows per wall-hour (61.3–63.2 / 34.3), at **5.7%–7.2%** more cpu-s per window (443–449 / 419 cpu-s; windows per cpu-hour fall 5.5%–6.7%, 32.1–32.5 vs 34.4) | `phaze-phjwi` settings matrix |
-| 2 single-thread workers, 2-CPU budget | **1.86×** windows per wall-hour (63.7 / 34.3), at **7.2%** more cpu-s per window (449 / 419) | `phaze-phjwi` settings matrix |
-| 33 → 11 characteristic heads (34 → 12 graphs), 8-file sample, 4-vCPU evaluation host | 195.3 / 209.0 min → 96.4 / 92.7 min, **2.025× / 2.108× faster**; **65 of 208** coarse mood labels changed; mean scores moved by up to **±0.117** (Party) | `docs/essentia-analysis.md` |
+| 2 TF threads in one process, 2-CPU budget | **1.78×–1.84×** windows per wall-hour (wall seconds, 4 windows each: 419 / 235 = 1.783 to 419 / 228 = 1.838; see `phaze-phjwi` on the control's 34.3), at **5.7%–7.2%** more cpu-s per window (443–449 / 419 cpu-s; windows per cpu-hour fall 5.5%–6.7%, 32.1–32.5 vs 34.4) | `phaze-phjwi` settings matrix |
+| 2 single-thread workers, 2-CPU budget | **1.85×** windows per wall-hour (419 / 226 = 1.854), at **7.2%** more cpu-s per window (449 / 419) | `phaze-phjwi` settings matrix |
+| 33 → 11 characteristic heads (34 → 12 graphs), 8-file sample, 4-vCPU evaluation host | 195.3 / 209.0 min → 96.4 / 92.7 min, **2.025× / 2.108× faster than the faster incumbent pass** (both speedups divide the 195.3 min pass, as the source states; from the rounded minutes 195.3 / 96.4 = 2.026 and 195.3 / 92.7 = 2.107; against the slower 209.0 min pass they would be 209.0 / 96.4 = 2.17 and 209.0 / 92.7 = 2.25); **65 of 208** coarse mood labels changed; mean scores moved by up to **±0.117** (Party) | `docs/essentia-analysis.md` |
 | production per-file wall at `cap = 4` | **1.4951×** file duration (7,119.473 s for a 4,761.835 s file) | `phaze-zaf2l` verdict |
 | tier split of a 36,182.359 s file | fine **49.3%**, coarse + model sweep **50.7%**; within the fine tier **97.7%** is decode (10 h file) | `phaze-zaf2l` §3b forward note |
 | 34-graph sweep, one 180 s window, TF batch 32 | **86.35 s** wall | `phaze-mqq5` §3 |
@@ -183,14 +186,20 @@ ______________________________________________________________________
   accuracy figure is claimed here.
 - **Cost.** The backbone runs once per coarse window instead of eleven times. *phaze-measured
   anchors:* one musicnn graph is ≈ 9.0 cpu-s and the whole effnet pass 3.67 cpu-s per coarse window
-  (`phaze-fzubr`). phaze **already** runs `discogs-effnet-bs64-1` for genre, and `phaze-ytgo.2`
-  measured reading the `PartitionedCall:1` embedding off that existing pass at **+1.6%** wall
-  clock, whereas `phaze-fzubr` priced a *separate* embedding pass at 3.71 cpu-s. Which of those two
-  numbers a one-pass implementation pays is the open item (the extra 3.7 cpu-s is 3.7% of a
-  window). The cost of the eleven small `TensorflowPredict2D` heads is **unmeasured**. So the
-  effnet route removes eleven backbone passes (≈ 97 cpu-s of ≈ 100) at the price of one embedding
-  tap plus eleven small head evaluations, and the net is an inference from those anchors, not a
-  measurement.
+  (`phaze-fzubr`). phaze **already** runs `discogs-effnet-bs64-1` for genre, but **both** phaze
+  measurements of the embedding price a *separate, second* effnet pass, not a tap off that existing
+  one. `phaze-ytgo.2` constructed a second `TensorflowPredictEffnetDiscogs(output="PartitionedCall:1")`
+  on the same buffer and measured **+1.6%** wall clock against the old 34-graph sweep (medians
+  0.77 s / 47.86 s); `phaze-fzubr` priced the same kind of pass at **3.71** cpu-s against the deployed
+  12-graph sweep, **3.7%** of a window (3.71 / 100.47). On the deployed set, then, the embedding
+  costs about 3.7% of a window. Whether one graph run can emit both outputs more cheaply is open:
+  `phaze-ytgo.2`'s fused arm (both output nodes, one session) read zero within noise, but used a
+  reimplemented front end that is not byte-identical to the wrapper's, so there is **no
+  single-run measurement through the wrapper phaze calls**. The cost of the eleven small
+  `TensorflowPredict2D` heads is **unmeasured**. So the effnet route removes eleven backbone passes
+  (≈ 97 cpu-s of ≈ 100) at the price of one embedding pass (≈ 3.7 cpu-s; less only if a validated
+  single-run path holds) plus eleven small head evaluations, and the net is an inference from those
+  anchors, not a measurement.
 - **Per-window fit:** a direct fit for the coarse model-major loop. Under this option the effnet
   graph emits two outputs (`PartitionedCall:0` for genre, `PartitionedCall:1` for the embedding).
   The per-window embeddings, about **180 × 1280 float32 ≈ 0.92 MB** per window (arithmetic), are
@@ -511,8 +520,8 @@ quantisation of musicnn, Discogs-EffNet or the heads was found; only format conv
 Core ML, MLX).
 
 **Threads and workers are a separate, measured lever** (`phaze-phjwi`, table above): on a 2-CPU
-budget, 2 TF threads in one process give 1.79×–1.84× windows per wall-hour at 5.7%–7.2% more cpu-s
-per window, and 2 single-thread workers give 1.86× at 7.2% more. It is independent of every row
+budget, 2 TF threads in one process give 1.78×–1.84× windows per wall-hour at 5.7%–7.2% more cpu-s
+per window, and 2 single-thread workers give 1.85× at 7.2% more. It is independent of every row
 below and is decided in `phaze-uv8s3`.
 
 **OpenVINO:** Lacuna had nothing audio-specific, and no source reached reports OpenVINO on these
@@ -560,7 +569,7 @@ the candidate**; the "anchor" column names the nearest phaze measurement it lean
 
 | # | candidate | CPU saving (inferred) | accuracy / meaning risk | licence vs today | integration | anchor |
 | ---: | --- | --- | --- | --- | --- | --- |
-| **1** | **A1 — effnet embedding + 11 `*-discogs-effnet-1` heads** | **highest**: 11 musicnn passes (≈ 97 of ≈ 100 cpu-s) → 0; +1 embedding tap, +11 small head evals (unmeasured) | **high, a meaning change**: different artefacts and label space; `phaze-8y6l8` found stock heads not a drop-in | same | two outputs from the effnet graph; heads swept per chunk; `positive_class_vector` adapter | `phaze-fzubr`; `phaze-ytgo.2` +1.6% |
+| **1** | **A1 — effnet embedding + 11 `*-discogs-effnet-1` heads** | **highest**: 11 musicnn passes (≈ 97 of ≈ 100 cpu-s) → 0; +1 separate embedding pass (≈ 3.7 cpu-s, measured; a single-run path through the wrapper is unmeasured), +11 small head evals (unmeasured) | **high, a meaning change**: different artefacts and label space; `phaze-8y6l8` found stock heads not a drop-in | same | two outputs from the effnet graph; heads swept per chunk; `positive_class_vector` adapter | `phaze-fzubr` 3.71 cpu-s (separate pass, 12-graph sweep); `phaze-ytgo.2` +1.6% (separate pass, 34-graph sweep) |
 | **2** | **A1b — a head fitted on the effnet or `msd-musicnn-1` embedding to reproduce musicnn mood scores** | as A1 for effnet; one musicnn pass (≈ 9 cpu-s) for the `msd-musicnn-1` variant | medium, **unproven**; fitting target left to `phaze-uv8s3` | same, but whether a fitted head is Adapted Material under ND is **open** (UPF) | small TF or NumPy/ONNX head over embedding rows | `phaze-fzubr`; `phaze-0toy3.4` |
 | 3 | A1 variant — `msd-musicnn-1` + 11 `*-msd-musicnn-1` heads | high: 11 → 1 musicnn pass | medium, **unproven**: same MSD/musicnn family, still new artefacts; the deployed graphs are fine-tunes of this backbone, but 8 of 11 moved a layer by relative L2 above 1 (up to 2.79), so family membership does not predict small drift (`phaze-0toy3.4`) | same | as A1 with one extra graph | `phaze-fzubr`; `phaze-0toy3.4` |
 | 4 | Share the mel input (`TensorflowInputMusiCNN`) across the eleven graphs | **0.89 cpu-s per window, 0.9% of the sweep** (`phaze-0toy3.4`, measured) | none with centred framing; `startFromZero=True` is off by 3.9 × 10⁻³ per patch | same | patching done in phaze; needs an equivalence check against the `phaze-28883` pin | `phaze-0toy3.4` |
@@ -622,9 +631,12 @@ harness of `phaze-fzubr` before any swap.**
    lever.
 1. **Take the embedding route as a semantic decision, not an optimisation.** Candidates: A1 (stock
    MTG heads on the effnet embedding) and A1b (a head fitted on the effnet or `msd-musicnn-1`
-   embedding), measured in one pass. Pricing: whether one effnet graph run can emit both outputs
-   (`phaze-fzubr` left this unmeasured; `phaze-ytgo.2` measured +1.6%) and what the eleven heads
-   cost. Behaviour: the stock heads are not a drop-in (`phaze-8y6l8`), so either use them and ask the
+   embedding), measured in one pass. Pricing: plan against one separate embedding pass, **3.71
+   cpu-s per coarse window, 3.7% of a window on the deployed 12-graph set** (`phaze-fzubr`;
+   `phaze-ytgo.2`'s +1.6% is the same kind of second pass, measured against the old 34-graph
+   sweep). Still to measure: whether one effnet graph run can emit both outputs through the
+   wrapper (`phaze-ytgo.2`'s fused arm read zero cost, but on a front end not byte-identical to the
+   wrapper's), and what the eleven heads cost. Behaviour: the stock heads are not a drop-in (`phaze-8y6l8`), so either use them and ask the
    operator whether the different mood definition is acceptable, with a published label diff in the
    protocol that `docs/essentia-analysis.md` used for 33 → 11, or fit a head. **This document does
    not recommend a fitting target**: the operator left that to `phaze-uv8s3`. Check class order and
@@ -751,8 +763,11 @@ resolved it:
   measured there: `small0`, Linux arm64, and any real archive music.
 - **An agreement figure for any fitted head** (EffNet or `msd-musicnn-1` embedding) against the
   stored scores. The mel-input cost is measured by `phaze-0toy3.4` (0.089 cpu-s), and A2 is refuted.
-- **Whether one EffNet graph run can emit both outputs**, and the CPU cost of the eleven
-  `TensorflowPredict2D` heads.
+- **Whether one EffNet graph run can emit both outputs through the wrapper phaze calls**
+  (`phaze-ytgo.2`'s fused arm did it in one session at zero measured cost, but on a front end
+  that is not byte-identical to the wrapper's; both measured embedding prices, +1.6% and 3.71
+  cpu-s, are for a separate second pass), and the CPU cost of the eleven `TensorflowPredict2D`
+  heads.
 - **A comparison of any neural key model against `KeyExtractor(edma)`.**
 - **Any OpenVINO figure**, any CPU timing for the published ONNX models, any int8 result for musicnn
   or the heads, and whether the musicnn graphs have ONNX or distilled equivalents.

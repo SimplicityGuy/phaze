@@ -6,8 +6,10 @@ operator's planned question to UPF decides the rest.
 
 ## Question
 
-phaze's eleven mood and characteristic scores come from MTG Essentia `*-musicnn-msd-2` graphs. MTG licenses all its
-models CC BY-NC-SA 4.0, and the licence file those models ship with is internally inconsistent (below). The operator
+phaze's eleven mood and characteristic scores come from MTG Essentia `*-musicnn-msd-2` graphs. MTG's model catalogue
+states CC BY-NC-SA 4.0 for all its models, but the licence file those models ship with is headed NoDerivatives and is
+internally inconsistent (E1), so whether NC-SA or NC-ND governs is **unsettled**; NonCommercial is common to both, and UPF
+has to settle the rest. The operator
 asked, 2026-11-13, quoted: "is there a way to clean room a model that produces similar results?", and added, quoted:
 "For any of the above, if theree are missing features, evaluate what the contribution guidelines are (or forking
 guidelines) and evaluate whether we can address the gaps" (durable record: bead phaze-0toy3.5, epic phaze-0toy3).
@@ -127,10 +129,12 @@ the UPF question; the shortlist below is ranked on **what each route does not to
 
 ## Verdict
 
-**Yes, there is a route with no Essentia model and no NC dataset anywhere in it: a frozen permissively-licensed
-backbone plus heads trained on labels the operator owns.** Its open risks are (a) the training-data licences *behind*
-the backbone's weights (MSD tags and MTT audio were not verified), and (b) accuracy against today's scores is
-**unmeasured**; nothing found bounds it. It also happens to be the CPU-cheapest shape (E3).
+**Yes, conditionally: there is a route with no Essentia model in it, a frozen permissively-licensed (ISC) backbone
+plus heads trained on labels the operator owns, and it is free of NC datasets *if* the data behind the backbone's
+weights is.** That condition is not verified: the licences of the training data behind the `MSD_musicnn` weights (MSD's
+tags and audio) and of MTT audio were not established (E6; the MagnaTagATune page did not load), so "no NC dataset
+anywhere in it" is a hypothesis, not a finding. The data phaze would add itself, the operator's labels, carries no NC
+term. Its other open risk is that accuracy against today's scores is **unmeasured**; nothing found bounds it. It also happens to be the CPU-cheapest shape (E3).
 
 ## Recommendation: ranked shortlist
 
