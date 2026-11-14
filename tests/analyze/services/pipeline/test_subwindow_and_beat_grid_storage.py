@@ -112,6 +112,27 @@ def test_a_grid_that_is_not_strictly_ascending_at_stored_precision_is_refused(be
         stored_beat_grid(beats)
 
 
+def test_a_whole_grid_is_rounded_in_one_pass_not_beat_by_beat(monkeypatch: pytest.MonkeyPatch) -> None:
+    # phaze-7hcgn.4 finding 10: BeatGridPayload validates up to 600,000 beats synchronously in the request path. The
+    # grid is rounded in one C-level pass, with exactly the values the per-beat struct round trip gives.
+    import phaze.services.beat_grid as module
+
+    raw = [0.3715 + i * 0.46875 for i in range(600_000)]
+    expected = [struct.unpack("<f", struct.pack("<f", beat))[0] for beat in raw]
+
+    def per_beat(_seconds: float) -> float:
+        raise AssertionError("rounded beat by beat")
+
+    monkeypatch.setattr(module, "to_stored_precision", per_beat)
+    assert stored_beat_grid(raw) == expected
+
+
+def test_a_beat_beyond_float32_range_is_refused_as_a_value_error() -> None:
+    # struct.pack raised OverflowError here, which a pydantic validator does not turn into a 422.
+    with pytest.raises(ValueError, match="float32"):
+        stored_beat_grid([1.0, 1e39])
+
+
 def test_float32_moves_a_position_by_at_most_two_milliseconds_up_to_the_longest_file() -> None:
     # The spacing of float32 values below 2**16 s is 2**-8 s, so rounding is at most half of that.
     worst = max(abs(to_stored_precision(t) - t) for t in (_LONGEST_FILE_SEC * k / 997 + 0.0001234 for k in range(998)))

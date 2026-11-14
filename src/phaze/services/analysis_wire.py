@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from phaze.services.analysis_derive import is_positive_label
+
 
 class StyleScoreRow(TypedDict):
     """One file-level genre score before Pydantic validates the callback wire."""
@@ -45,7 +47,7 @@ _MOOD_SET_NAMES = frozenset(
 
 def _is_positive_label(entry: dict[str, Any]) -> bool:
     """True unless ``entry``'s label carries essentia's negation prefix (``non_``/``not_``)."""
-    return not str(entry.get("label", "")).startswith(("non_", "not_"))
+    return is_positive_label(entry.get("label", ""))
 
 
 def _positive_class_prediction(predictions: list[Any]) -> float | None:

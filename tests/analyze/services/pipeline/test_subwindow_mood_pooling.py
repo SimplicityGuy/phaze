@@ -38,7 +38,7 @@ from phaze.services.analysis_subwindows import (
     n_slices_for,
     patch_centres,
     pool_positive_class,
-    positive_index,
+    positive_class_index,
     with_patches,
 )
 from phaze.services.analysis_windows import SUBWINDOW_SEC
@@ -191,9 +191,9 @@ def test_each_coarse_window_yields_ceil_length_over_15_vectors(length: float) ->
 
 def test_vectors_are_positional_in_mood_order_with_the_positive_class_chosen_by_label() -> None:
     # mood_relaxed's classes are ['non_relaxed', 'relaxed']: the positive class is column 1, not 0.
-    assert positive_index(["non_relaxed", "relaxed"]) == 1
-    assert positive_index(["happy", "non_happy"]) == 0
-    assert positive_index(["not_a", "not_b"]) == 0  # nothing qualifies: the first column, like the coarse path
+    assert positive_class_index(["non_relaxed", "relaxed"]) == 1
+    assert positive_class_index(["happy", "non_happy"]) == 0
+    assert positive_class_index(["not_a", "not_b"]) == 0  # nothing qualifies: the first column, like the coarse path
     matrix = np.array([[0.9, 0.1], [0.7, 0.3]], dtype=np.float32)
     sums, counts = pool_positive_class(matrix, ["non_relaxed", "relaxed"], "vggish", 1)
     assert sums[0] / counts[0] == pytest.approx(0.2)  # mean of the 'relaxed' column, not of 'non_relaxed'
@@ -318,3 +318,18 @@ def test_the_result_dict_is_unchanged_unless_grids_are_requested() -> None:
     assert [(r["sub_index"], r["start_sec"], r["end_sec"]) for r in grids["subwindows"]] == [(0, 0.0, 15.0), (1, 15.0, 30.0)]
     assert grids["subwindows"][0]["mood_scores"] == [pytest.approx(0.1)] * len(MOOD_ORDER)
     assert grids["beat_grid"]["beats"] == [0.5, 1.0, 1.5]
+
+
+def test_the_positive_class_rule_has_one_definition() -> None:
+    # phaze-7hcgn.4 finding 5: the by-LABEL positive-class rule exists because indexing [0] once inverted
+    # relaxed/sad/party (analysis_derive._positive_class_prediction). A second copy can drift from it, so the
+    # negation prefixes are spelled in exactly one module, and the sub-window pooling uses that module's helper.
+    from pathlib import Path
+
+    import phaze
+    from phaze.services import analysis_derive, analysis_subwindows
+
+    root = Path(phaze.__file__).parent
+    spelled = sorted(str(p.relative_to(root)) for p in root.rglob("*.py") if '"non_"' in p.read_text(encoding="utf-8"))
+    assert spelled == ["services/analysis_derive.py"]
+    assert analysis_subwindows.positive_class_index is analysis_derive.positive_class_index

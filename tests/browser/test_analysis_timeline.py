@@ -306,6 +306,51 @@ async def test_a_swap_inside_the_record_body_does_not_take_focus_from_the_timeli
     assert await inspector.get_attribute("aria-valuenow") == "15"
 
 
+@pytest.mark.usefixtures("modal_width")
+async def test_a_swap_inside_the_record_body_does_not_re_run_the_body_handler(page: Any, seed: Seeder) -> None:
+    """A section swap inside the open record must not re-initialise the body or rename the dialog (phaze-7hcgn.4).
+
+    The guard used to cover only the heading focus: a bubbling ``htmx:afterSwap`` from the tracklist lookup still
+    ran ``Alpine.initTree`` over the WHOLE body (re-initialising components that are already live) and rewrote
+    the dialog's ``aria-label``. The whole handler now runs only for the body's own swap. Same held-route
+    technique as the focus test above, so the nested swap lands at a known moment.
+    """
+    file = await seed.file(filename="<set-01>.mp3")
+    await seed.metadata(file, duration=720.0)
+    await seed.analysis_windows(file, fine_count=24, coarse_count=6)
+    release = asyncio.Event()
+
+    async def _held_lookup(route: Any) -> None:
+        await release.wait()
+        await route.continue_()
+
+    await page.route("**/remote-lookup", _held_lookup)
+    await open_shell(page, "/s/files")
+    await settled(page)
+
+    await page.locator(f'#files-table-view .md\\:block button[hx-get="/record/{file.id}"]').click()
+    await page.locator("#record-body [data-analysis-timeline]").wait_for(state="visible")
+    await page.wait_for_function("() => document.activeElement && document.activeElement.tagName === 'H2'")
+    await page.evaluate(
+        """() => {
+            const body = document.getElementById('record-body');
+            window.__bodyInits = 0;
+            window.__lookupSwaps = [];
+            const initTree = Alpine.initTree;
+            Alpine.initTree = (el, ...rest) => { if (el === body) window.__bodyInits += 1; return initTree(el, ...rest); };
+            body.closest('[role=dialog]').setAttribute('aria-label', 'sentinel');
+            body.addEventListener('htmx:afterSwap', (e) => {
+                if (e.target && e.target.id && e.target.id.startsWith('remote-lookup-')) window.__lookupSwaps.push(e.target.id);
+            });
+        }"""
+    )
+    release.set()
+    await page.wait_for_function("() => window.__lookupSwaps.length > 0")
+    assert await page.evaluate("() => window.__bodyInits") == 0, "a nested swap re-ran Alpine.initTree over the whole record body"
+    label = await page.evaluate("() => document.getElementById('record-body').closest('[role=dialog]').getAttribute('aria-label')")
+    assert label == "sentinel", "a nested swap rewrote the record dialog's aria-label"
+
+
 _INSPECTION_DURATION_SEC = 720.0
 # `analysis_windows(projected=True)` puts the unique energy maximum on coarse window 4 of 6,
 # i.e. [480, 600), whose midpoint is 540 s. That is the RAW-window argmax -- what `energy_peak`

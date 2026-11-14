@@ -148,3 +148,62 @@ def test_fine_window_bpm_and_key_are_unchanged_by_keeping_the_ticks(click_track:
     # The ticks are an extra output of the SAME extractor call: the window's bpm is that call's bpm.
     assert all(w.bpm == pytest.approx(120.0, abs=3.0) for w in windows)
     assert windows[0].start_sec == 0.0 and windows[1].start_sec == 30.0
+
+
+# phaze-7hcgn.4 finding 1, on REAL ticks: a tempo change of more than 2x at a seam. Measured with the pre-fix stitcher on
+# these exact fixtures: the 70 -> 150 BPM jump lost 15 beats (169 of 185 stitched) and the 150 -> 70 BPM drop recorded
+# 9 gaps that are not there. The fixed stitcher keeps 184 (only the beat at t=0, before any pre-roll, is lost) and 0 gaps.
+_TEMPO_CHANGE_SECONDS = 95  # three fine windows plus a 5 s remainder the fine pass drops
+
+
+def _write_tempo_change(path: Path, before_bpm: float, after_bpm: float) -> list[float]:
+    """Clicks at ``before_bpm`` until 30 s (the first seam), then at ``after_bpm``. Returns the click times."""
+    clicks: list[float] = []
+    elapsed = 0.0
+    while elapsed < _TEMPO_CHANGE_SECONDS:
+        clicks.append(elapsed)
+        elapsed += 60.0 / (before_bpm if elapsed < 30.0 else after_bpm)
+    onsets = {round(click * _RATE) for click in clicks}
+    frames = bytearray()
+    last_onset = -(10**9)
+    for index in range(_TEMPO_CHANGE_SECONDS * _RATE):
+        if index in onsets:
+            last_onset = index
+        value = 0.25 * math.sin(2.0 * math.pi * 220.0 * index / _RATE)
+        phase = index - last_onset
+        if phase < 64:
+            value += 0.6 * math.exp(-phase / 12.0)
+        frames += struct.pack("<h", int(max(-1.0, min(1.0, value)) * 32767))
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(_RATE)
+        handle.writeframes(bytes(frames))
+    return clicks
+
+
+def _tempo_change_grid(path: Path) -> dict:
+    windows, total = _analyze_fine_windows(str(path), float(_TEMPO_CHANGE_SECONDS), _FINE_WINDOW, _FINE_MIN)
+    assert total == len(windows) == 3
+    return _beat_grid_payload(windows)
+
+
+@pytest.mark.integration
+def test_a_tempo_jump_of_more_than_2x_at_a_seam_does_not_thin_the_grid(tmp_path: Path) -> None:
+    clicks = _write_tempo_change(tmp_path / "jump_70_150.wav", 70.0, 150.0)
+    payload = _tempo_change_grid(tmp_path / "jump_70_150.wav")
+    fast = 60.0 / 150.0
+    after = [b for b in payload["beats"] if b >= 30.5]
+    assert payload["gaps"] == []
+    assert min(b - a for a, b in pairwise(after)) >= _MIN_FRACTION * fast, "a fast beat was doubled"
+    assert max(b - a for a, b in pairwise(after)) <= _MAX_FRACTION * fast, "the grid was thinned after the jump"
+    assert len(payload["beats"]) >= sum(1 for c in clicks if c < 90.0) - 1  # only the beat at t=0 may be lost
+
+
+@pytest.mark.integration
+def test_a_tempo_drop_of_more_than_2x_at_a_seam_records_no_fake_gaps(tmp_path: Path) -> None:
+    clicks = _write_tempo_change(tmp_path / "drop_150_70.wav", 150.0, 70.0)
+    payload = _tempo_change_grid(tmp_path / "drop_150_70.wav")
+    assert payload["gaps"] == [], "the slower window's own spacing was recorded as gaps"
+    assert max(b - a for a, b in pairwise(payload["beats"])) <= _MAX_FRACTION * (60.0 / 70.0)
+    assert len(payload["beats"]) >= sum(1 for c in clicks if c < 90.0) - 2

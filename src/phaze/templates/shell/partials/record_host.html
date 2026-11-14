@@ -286,10 +286,17 @@
                whose body has since been swapped out from under it, so a slow first open cannot
                steal focus into a stale heading; and because a dismissed panel is never visible
                again, an Esc during the wait simply runs the poll out rather than yanking focus
-               back off whatever hide() restored it to. #}
+               back off whatever hide() restored it to.
+
+               The handler runs ONLY for this body's own swap: its first line returns otherwise.
+               htmx:afterSwap bubbles, so a swap of a section inside the body (the tracklist lookup
+               loads on `load`) also reaches it. Guarding only the focus call (f5b41df1) still let such
+               a swap re-run Alpine.initTree over the whole body, re-initialising live components, and
+               rewrite the dialog's aria-label (phaze-7hcgn.4). #}
             <div id="record-body"
                  x-show="loaded"
-                 hx-on::after-swap="if (window.Alpine) Alpine.initTree(this);
+                 hx-on::after-swap="if (event.target !== this) return;
+                                    if (window.Alpine) Alpine.initTree(this);
                                     const h = this.querySelector('h2');
                                     const dialog = this.closest('[role=dialog]');
                                     if (h && dialog) { dialog.setAttribute('aria-label', 'File record: ' + h.textContent.trim()); }
@@ -315,11 +322,7 @@
                                         }
                                         if (framesLeft-- > 0) requestAnimationFrame(focusHeadingWhenShown);
                                     };
-                                    // Focus the heading only for THIS body's own swap. htmx:afterSwap bubbles, so a
-                                    // swap of a section inside the body (the tracklist lookup loads on `load`) also
-                                    // runs this handler; without the guard it pulled focus off whatever the operator
-                                    // was using. That is a keyboard a11y defect that predates phaze-jvo7i.
-                                    if (event.target === this) focusHeadingWhenShown();"></div>
+                                    focusHeadingWhenShown();"></div>
         </div>
     </div>
 </div>

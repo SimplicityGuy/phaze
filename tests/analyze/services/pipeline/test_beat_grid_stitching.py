@@ -243,3 +243,131 @@ def test_the_first_window_has_no_pre_roll_and_one_tracker_call() -> None:
     assert measured is not None
     assert calls.call_count == 1
     assert measured.beats == pytest.approx((0.5,))
+
+
+# phaze-7hcgn.4 finding 1: an octave jump or drop between windows (RhythmExtractor2013 octave errors, or a real
+# tempo change of more than 2x) must neither thin the grid nor record fake gaps. Each window's ticks come from one
+# tracker run, so the window's OWN spacing is the reference inside it; the accepted tail matters only at the seam.
+
+
+def test_an_octave_jump_up_keeps_every_beat_of_the_faster_window() -> None:
+    # 120 BPM, then the tracker reports 260 BPM (a jump of more than 2x): every fast beat is a beat the tracker gave.
+    slow = _train(0.0, 30.0, interval=0.5)
+    fast = _train(30.0, 60.0, interval=60.0 / 260.0, origin=30.0)
+    later = _train(60.0, 90.0, interval=60.0 / 260.0, origin=60.0)
+    stitched = stitch_beat_grid([slow, fast, later])
+    assert stitched.beats == slow + fast + later, "the grid was thinned after the jump"
+    assert stitched.gaps == []
+
+
+def test_an_octave_drop_records_no_fake_gaps() -> None:
+    # 128 BPM, then the tracker halves to 60 BPM: the 1.0 s steps are the new tempo, not missing beats.
+    fast = _train(0.0, 30.0, interval=60.0 / 128.0)
+    slow = _train(30.0, 60.0, interval=1.0, origin=30.0)
+    stitched = stitch_beat_grid([fast, slow])
+    assert stitched.beats == fast + slow
+    assert stitched.gaps == [], "a slower window's own spacing was recorded as gaps"
+
+
+def test_a_real_gap_inside_a_window_after_an_octave_drop_is_still_recorded() -> None:
+    # The window's own spacing is the reference, so a hole in the slow window is a gap against 1.0 s, not 0.47 s.
+    fast = _train(0.0, 30.0, interval=60.0 / 128.0)
+    slow = [b for b in _train(30.0, 60.0, interval=1.0, origin=30.0) if not 40.5 < b < 44.5]
+    stitched = stitch_beat_grid([fast, slow])
+    assert stitched.gaps == [(40.0, 45.0)]
+
+
+def test_a_beat_seen_from_both_sides_of_an_octave_seam_is_kept_once() -> None:
+    slow = [*_train(0.0, 30.0, interval=0.5), 30.0]
+    fast = [30.004, *_train(30.2, 60.0, interval=0.2, origin=30.0)]
+    stitched = stitch_beat_grid([slow, fast])
+    assert stitched.beats.count(30.0) == 1
+    assert 30.004 not in stitched.beats
+    assert stitched.gaps == []
+
+
+def test_a_window_the_pre_rolled_decode_skips_is_reported_with_its_own_span(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # phaze-7hcgn.4 finding 6: the decode is handed spans that start BEAT_PREROLL_SEC early, and reports a skipped
+    # window with the span it was given. The log line and the skip must still name the window's own [start, end).
+    seen: list[tuple[int, float, float]] = []
+
+    def decode(_path: str, _rate: int, spans: list[tuple[int, float, float]], on_skip: object, **_kwargs: object) -> dict[int, object]:
+        seen.extend(spans)
+        for idx, start, end in spans:
+            on_skip(idx, start, end, False)  # type: ignore[operator]
+        return {}
+
+    monkeypatch.setattr(analysis_mod, "_decode_windows", decode)
+    with caplog.at_level("WARNING", logger=analysis_mod.log.name):
+        windows, total = analysis_mod._analyze_fine_windows("unused.wav", 90.0, 30, 15)
+    assert (windows, total) == ([], 3)
+    assert seen[1] == (1, 30.0 - BEAT_PREROLL_SEC, 60.0)  # the decode really is pre-rolled
+    messages = [r.getMessage() for r in caplog.records if "failed; skipping" in r.getMessage()]
+    assert messages == [
+        "fine window 0 [0.0, 30.0) failed; skipping",
+        "fine window 1 [30.0, 60.0) failed; skipping",
+        "fine window 2 [60.0, 90.0) failed; skipping",
+    ]
+
+
+# phaze-7hcgn.4 finding 2 (dispatcher decision, option A): bpm stays byte-identical, so a window that wants ticks still
+# pays a second tracker call on its pre-rolled buffer -- but only when the run asked for grids.
+
+
+def _counting_fine_pass(monkeypatch: pytest.MonkeyPatch, *, beats: bool) -> tuple[list[tuple[int, float, float]], list[int]]:
+    rate = analysis_mod._FINE_SAMPLE_RATE
+    spans: list[tuple[int, float, float]] = []
+    calls: list[int] = []
+
+    def decode(_path: str, _rate: int, chunk_spans: list[tuple[int, float, float]], _on_skip: object, **_kwargs: object) -> dict[int, object]:
+        spans.extend(chunk_spans)
+        return {idx: np.full(round((end - start) * rate), 0.1, dtype=np.float32) for idx, start, end in chunk_spans}
+
+    def rhythm(buf: np.ndarray) -> tuple[float, np.ndarray, float, None, None]:
+        calls.append(len(buf))
+        return (120.0, np.array([0.5, 1.0], dtype=np.float32), 3.0, None, None)
+
+    monkeypatch.setattr(analysis_mod, "_decode_windows", decode)
+    monkeypatch.setattr(analysis_mod.es, "RhythmExtractor2013", lambda **_kw: rhythm)
+    monkeypatch.setattr(analysis_mod.es, "KeyExtractor", lambda **_kw: MagicMock(return_value=("A", "minor", 0.9)))
+    windows, _ = analysis_mod._analyze_fine_windows("unused.wav", 90.0, 30, 15, beats=beats)
+    assert [w.bpm for w in windows] == [120.0, 120.0, 120.0]
+    return spans, calls
+
+
+def test_without_grids_the_fine_pass_decodes_no_pre_roll_and_calls_the_tracker_once_per_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans, calls = _counting_fine_pass(monkeypatch, beats=False)
+    assert spans == [(0, 0.0, 30.0), (1, 30.0, 60.0), (2, 60.0, 90.0)]
+    assert len(calls) == 3
+
+
+def test_with_grids_every_window_but_the_first_pays_one_tick_call_on_its_pre_rolled_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans, calls = _counting_fine_pass(monkeypatch, beats=True)
+    assert spans == [(0, 0.0, 30.0), (1, 30.0 - BEAT_PREROLL_SEC, 60.0), (2, 60.0 - BEAT_PREROLL_SEC, 90.0)]
+    assert len(calls) == 5
+
+
+@pytest.mark.parametrize("include_grids", [False, True])
+def test_analyze_file_asks_the_fine_pass_for_beats_only_when_it_returns_grids(monkeypatch: pytest.MonkeyPatch, include_grids: bool) -> None:
+    seen: dict[str, object] = {}
+
+    def fine(*_args: object, **kwargs: object) -> tuple[list[FineWindow], int]:
+        seen.update(kwargs)
+        return [], 0
+
+    monkeypatch.setattr(analysis_mod, "_probe_duration_sec", lambda _path: 60.0)
+    monkeypatch.setattr(analysis_mod, "_analyze_fine_windows", fine)
+    monkeypatch.setattr(analysis_mod, "_analyze_coarse_windows", lambda *_a, **_k: ([], 0))
+    monkeypatch.setattr(analysis_mod, "_assemble_analysis_result", lambda *_a, **_k: {})
+    analysis_mod.analyze_file("unused.wav", "unused-models", include_grids=include_grids)
+    assert seen["beats"] is include_grids
+
+
+def test_single_beat_windows_on_both_sides_of_a_seam_are_concatenated_without_judgement() -> None:
+    # Neither the accepted tail (one beat) nor the incoming window (one beat) yields an interval, so no duplicate or
+    # gap can be judged: the beats are kept as they are and no gap is recorded.
+    stitched = stitch_beat_grid([[1.0], [9.0]])
+    assert stitched.beats == [1.0, 9.0]
+    assert stitched.gaps == []

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from phaze.services.analysis_derive import positive_class_index
 from phaze.services.analysis_windows import SUBWINDOW_SEC, iter_subwindows
 from phaze.services.set_projection import MOOD_ORDER
 
@@ -63,18 +64,6 @@ def with_patches(mean: Any, patches: Any) -> PatchMean:
     return out
 
 
-def positive_index(labels: Sequence[str]) -> int:
-    """Column of the positive class, chosen by LABEL.
-
-    The same rule as ``analysis_derive._positive_class_prediction``: the first label that does not
-    carry the ``non_``/``not_`` negation prefix, falling back to the first column.
-    """
-    for i, label in enumerate(labels):
-        if not str(label).startswith(("non_", "not_")):
-            return i
-    return 0
-
-
 def patch_centres(n_patches: int, classifier_type: str) -> list[float]:
     """Centre of each patch, in seconds from the start of the buffer it was computed on."""
     length, hop = PATCH_GEOMETRY[classifier_type]
@@ -95,7 +84,7 @@ def pool_positive_class(
     ``_predict_single`` does.
     """
     matrix = np.atleast_2d(np.asarray(patches))
-    column = matrix[:, positive_index(labels)].astype(np.float64)
+    column = matrix[:, positive_class_index(labels)].astype(np.float64)
     sums = [0.0] * n_slices
     counts = [0] * n_slices
     for centre, value in zip(patch_centres(len(column), classifier_type), column, strict=True):

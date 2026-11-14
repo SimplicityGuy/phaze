@@ -5,9 +5,12 @@ numeric SVG geometry, elapsed-time ticks, and an inspection payload. It must nev
 stride, or otherwise reinterpret coverage.
 """
 
+from bisect import bisect_left
 from collections.abc import Callable, Sequence
 import math
 from typing import TYPE_CHECKING, Final, NamedTuple, Protocol, cast
+
+from sqlalchemy import select
 
 from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.services.set_glyph_colors import camelot_hue
@@ -22,6 +25,10 @@ from phaze.utils.humanize import format_duration
 
 
 if TYPE_CHECKING:
+    import uuid
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from phaze.models.set_profile import SetProfile
 
 
@@ -617,6 +624,27 @@ def mood_river(coarse_windows: Sequence[AnalysisWindow], total_sec: float, width
 BEAT_TICK_SPACING_PX: Final[float] = 4.0
 
 
+class TimelineGrids(NamedTuple):
+    """A file's stored sub-window rows (in time order) and its beat grid row, as the timeline reads them."""
+
+    subwindows: list[AnalysisSubwindow]
+    beat_grid: AnalysisBeatGrid | None
+
+
+async def load_timeline_grids(session: "AsyncSession", file_id: "uuid.UUID") -> TimelineGrids:
+    """Load what the sub-window river and the beat ruler draw from: one read for every page that draws them.
+
+    The record page and the proposal row both call this (phaze-7hcgn.4), so their river and ruler agree for
+    the same file. Sub-windows are ordered by ``(window_index, sub_index)``, i.e. in time order. The beat
+    grid is ``None`` for a file analyzed before it was stored: the timeline then draws no ruler.
+    """
+    statement = (
+        select(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id).order_by(AnalysisSubwindow.window_index, AnalysisSubwindow.sub_index)
+    )
+    subwindows = list((await session.execute(statement)).scalars().all())
+    return TimelineGrids(subwindows=subwindows, beat_grid=await session.get(AnalysisBeatGrid, file_id))
+
+
 def beat_tick_budget(width: float) -> int:
     """The most ticks :func:`beat_ruler` may draw on a canvas ``width`` px wide."""
     return int(width // BEAT_TICK_SPACING_PX) + 1
@@ -680,7 +708,11 @@ def subwindow_mood_river(subwindows: Sequence[AnalysisSubwindow], total_sec: flo
     where the mood was measured to change and holds still across each slice. Like :func:`mood_river`,
     a gap yields a second polygon rather than geometry across the hole. Hues come from :data:`MOOD_HUES`.
     """
-    runs = subwindow_mood_river_runs(subwindows, total_sec, width, height)
+    return _stepped_river(subwindow_mood_river_runs(subwindows, total_sec, width, height))
+
+
+def _stepped_river(runs: Sequence[Sequence[dict[str, float | list[float]]]]) -> list[dict[str, object]]:
+    """The sub-window river's series from runs :func:`subwindow_mood_river_runs` already built."""
     series: list[dict[str, object]] = []
     for index, name in enumerate(MOOD_NAMES):
         polygons: list[str] = []
@@ -710,9 +742,73 @@ def resolved_mood_river(
     exactly as it was before sub-window rows existed. A file analyzed before they were stored, or one
     with no usable slice, therefore reads identically to today.
     """
-    if subwindow_mood_river_runs(subwindows, total_sec, width, height):
-        return subwindow_mood_river(subwindows, total_sec, width, height), "subwindow"
+    runs = subwindow_mood_river_runs(subwindows, total_sec, width, height)  # built once (phaze-7hcgn.4)
+    if runs:
+        return _stepped_river(runs), "subwindow"
     return mood_river(coarse_windows, total_sec, width, height), "coarse"
+
+
+def _thinned_beat_ticks(beats: Sequence[float], total_sec: float, width: float) -> list[dict[str, object]]:
+    """Ticks at least :data:`BEAT_TICK_SPACING_PX` apart, earliest first, found by binary search.
+
+    ``beats`` is strictly ascending, finite and non-negative: the writer refuses anything else
+    (``BeatGridPayload``). So the next tick is the first beat at least one spacing after the last drawn
+    one, and a ruler reads O(ticks x log beats) values instead of walking a grid of up to ~90,000 beats on
+    every record or proposal render (phaze-7hcgn.4).
+    """
+    spacing_sec = BEAT_TICK_SPACING_PX * total_sec / width
+    ticks: list[dict[str, object]] = []
+    count = len(beats)
+    index = bisect_left(beats, 0.0)
+    while index < count:
+        sec = float(beats[index])
+        if not sec <= total_sec:  # past the analyzed extent (or NaN): nothing later can be drawn either
+            break
+        ticks.append({"sec": sec, "left_pct": round(sec / total_sec * 100, 4)})
+        index = bisect_left(beats, sec + spacing_sec, index + 1)
+    return ticks
+
+
+def _gap_label(start: float, end: float, count: int) -> str:
+    if count == 1:
+        return f"No beats recorded {format_elapsed_time(start)} to {format_elapsed_time(end)}"
+    return f"{count} recorded gaps with no beats between {format_elapsed_time(start)} and {format_elapsed_time(end)}"
+
+
+def _drawn_beat_gaps(pairs: Sequence[Sequence[float]], total_sec: float, width: float) -> tuple[list[dict[str, object]], int]:
+    """The recorded gaps as drawn spans, and how many recorded gaps there are in all.
+
+    Gaps closer than :data:`BEAT_TICK_SPACING_PX` on the canvas are drawn as ONE span that says how many
+    recorded gaps it holds, so the markup holds at most ``floor(width / spacing) + 1`` spans whatever the
+    gap count (up to 50,000 on the wire). No recorded gap is dropped: each is in exactly one span, and
+    the summary counts them all (phaze-7hcgn.4).
+    """
+    spans: list[list[float]] = []  # [start, end, count]
+    recorded = 0
+    gap_px = BEAT_TICK_SPACING_PX * total_sec / width
+    for pair in sorted((p for p in pairs if len(p) == 2), key=lambda p: (float(p[0]), float(p[1]))):
+        start = min(max(float(pair[0]), 0.0), total_sec)
+        end = min(max(float(pair[1]), 0.0), total_sec)
+        if not end > start:
+            continue
+        recorded += 1
+        if spans and start - spans[-1][1] < gap_px:
+            spans[-1][1] = max(spans[-1][1], end)
+            spans[-1][2] += 1
+        else:
+            spans.append([start, end, 1])
+    drawn = [
+        {
+            "start_sec": start,
+            "end_sec": end,
+            "gap_count": int(count),
+            "left_pct": round(start / total_sec * 100, 4),
+            "width_pct": round((end - start) / total_sec * 100, 4),
+            "label": _gap_label(start, end, int(count)),
+        }
+        for start, end, count in spans
+    ]
+    return drawn, recorded
 
 
 def beat_ruler(beat_grid: AnalysisBeatGrid | None, total_sec: float, width: float) -> dict[str, object] | None:
@@ -726,36 +822,10 @@ def beat_ruler(beat_grid: AnalysisBeatGrid | None, total_sec: float, width: floa
     """
     if beat_grid is None or not math.isfinite(total_sec) or total_sec <= 0 or width <= 0:
         return None
-    ticks: list[dict[str, object]] = []
-    last_x: float | None = None
-    for beat in beat_grid.beats or []:
-        sec = float(beat)
-        if not math.isfinite(sec) or sec < 0 or sec > total_sec:
-            continue
-        x = sec / total_sec * width
-        if last_x is not None and x - last_x < BEAT_TICK_SPACING_PX:
-            continue
-        ticks.append({"sec": sec, "left_pct": round(sec / total_sec * 100, 4)})
-        last_x = x
-    gaps: list[dict[str, object]] = []
-    for pair in beat_grid.gaps or []:
-        if len(pair) != 2:
-            continue
-        start = min(max(float(pair[0]), 0.0), total_sec)
-        end = min(max(float(pair[1]), 0.0), total_sec)
-        if not end > start:
-            continue
-        gaps.append(
-            {
-                "start_sec": start,
-                "end_sec": end,
-                "left_pct": round(start / total_sec * 100, 4),
-                "width_pct": round((end - start) / total_sec * 100, 4),
-                "label": f"No beats recorded {format_elapsed_time(start)} to {format_elapsed_time(end)}",
-            }
-        )
+    ticks = _thinned_beat_ticks(beat_grid.beats or [], total_sec, width)
+    gaps, recorded = _drawn_beat_gaps(beat_grid.gaps or [], total_sec, width)
     beat_count = int(beat_grid.beat_count)
-    summary = f"Beat ruler: {beat_count} beats" + (f", {len(gaps)} recorded gap{'s' if len(gaps) != 1 else ''} with no beats" if gaps else "")
+    summary = f"Beat ruler: {beat_count} beats" + (f", {recorded} recorded gap{'s' if recorded != 1 else ''} with no beats" if recorded else "")
     return {
         "beat_count": beat_count,
         "ticks": ticks,

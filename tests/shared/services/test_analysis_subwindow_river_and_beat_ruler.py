@@ -292,3 +292,98 @@ def test_a_rendered_ruler_draws_ticks_and_gap_spans_with_a_text_alternative() ->
     assert html.count("analysis-timeline-beat-gap") == 1
     assert 'aria-label="Beat ruler: 60 beats, 1 recorded gap with no beats"' in html
     assert html.count("analysis-timeline-beat-tick") <= beat_tick_budget(640.0)
+
+
+# --- phaze-7hcgn.4: bounded work per render (findings 3 and 9) ------------------------------------
+
+
+def test_the_resolved_river_builds_the_sub_window_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from phaze.services import analysis_timeline
+
+    coarse = [_coarse(0, 0.0, 60.0, _even())]
+    expected = subwindow_mood_river(_four_slices(), 60.0, 600.0, LANE_H)
+    real = analysis_timeline.subwindow_mood_river_runs
+    calls: list[int] = []
+
+    def counting(*args: object, **kwargs: object) -> object:
+        calls.append(1)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(analysis_timeline, "subwindow_mood_river_runs", counting)
+    river, resolution = resolved_mood_river(coarse, _four_slices(), 60.0, 600.0, LANE_H)
+    assert (river, resolution) == (expected, "subwindow")
+    assert len(calls) == 1
+
+
+class _CountingBeats:
+    """A sorted beat sequence that counts element reads and refuses a full walk."""
+
+    def __init__(self, beats: list[float]) -> None:
+        self._beats = beats
+        self.reads = 0
+
+    def __len__(self) -> int:
+        return len(self._beats)
+
+    def __getitem__(self, index: int) -> float:
+        self.reads += 1
+        return self._beats[index]
+
+    def __iter__(self) -> object:
+        raise AssertionError("the ruler walked every beat")
+
+
+def test_the_beat_ruler_reads_a_bounded_number_of_beats_not_all_of_them() -> None:
+    total = 12 * 3600.0
+    beats = [i * 0.5 for i in range(int(total / 0.5))]  # 86,400 beats: a 12 h set at 120 BPM
+    counting = _CountingBeats(beats)
+    grid = _grid([])
+    grid.beats = counting  # type: ignore[assignment]
+    grid.beat_count = len(beats)
+
+    ruler = beat_ruler(grid, total, 640.0)
+
+    assert ruler is not None
+    reference = beat_ruler(_grid(beats), total, 640.0)
+    assert reference is not None
+    assert ruler["ticks"] == reference["ticks"]
+    budget = beat_tick_budget(640.0)
+    assert len(ruler["ticks"]) <= budget  # type: ignore[arg-type]
+    assert counting.reads <= budget * 20  # a binary search per tick (log2 86,400 < 17), never all 86,400
+
+
+def test_recorded_gaps_are_bounded_by_the_canvas_and_none_is_lost_from_the_count() -> None:
+    # 50,000 recorded gaps (the wire cap) on a 3 h file: drawing each would be 50,000 spans on 640 px.
+    total = 3 * 3600.0
+    gaps = [[i * 0.2, i * 0.2 + 0.1] for i in range(50_000)]
+    ruler = beat_ruler(_grid([0.0, total - 1.0], gaps=gaps), total, 640.0)
+
+    assert ruler is not None
+    drawn = ruler["gaps"]
+    assert isinstance(drawn, list)
+    assert len(drawn) <= beat_tick_budget(640.0)
+    assert sum(int(span["gap_count"]) for span in drawn) == 50_000  # every recorded gap is in exactly one span
+    assert "50000 recorded gaps" in str(ruler["label"])
+    assert all("recorded gaps" in str(span["label"]) for span in drawn if span["gap_count"] > 1)  # type: ignore[operator]
+
+
+def test_gaps_far_apart_on_the_canvas_stay_separate_spans() -> None:
+    ruler = beat_ruler(_grid([0.0, 10.0, 50.0, 89.0], gaps=[[10.0, 30.0], [50.0, 70.0]]), 90.0, 900.0)
+    assert ruler is not None
+    assert [(g["start_sec"], g["end_sec"], g["gap_count"]) for g in ruler["gaps"]] == [(10.0, 30.0, 1), (50.0, 70.0, 1)]  # type: ignore[index, union-attr]
+
+
+def test_the_record_and_proposal_pages_load_the_grids_through_one_helper() -> None:
+    # phaze-7hcgn.4 finding 8: the two routers had copies of the sub-window + beat-grid read; one helper now, so a
+    # proposal row's river and ruler cannot drift from the record page's for the same file.
+    import inspect
+
+    from phaze.routers import proposals, record
+    from phaze.services import analysis_timeline
+
+    assert proposals.load_timeline_grids is analysis_timeline.load_timeline_grids
+    assert record.load_timeline_grids is analysis_timeline.load_timeline_grids
+    for module in (proposals, record):
+        source = inspect.getsource(module)
+        assert "select(AnalysisSubwindow)" not in source
+        assert "session.get(AnalysisBeatGrid" not in source
