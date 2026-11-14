@@ -386,6 +386,15 @@ details[open] > summary::before { transform: rotate(90deg); }
 .dark .analysis-timeline-beat-gap {
     background: repeating-linear-gradient(135deg, transparent 0 3px, var(--color-phaze-border) 3px 4px);
 }
+/* phaze-7hcgn.5: recorded gaps too close to show apart, with beats between them. Not the "no beats" hatch: a faint
+   dotted underline that marks where the gaps are without claiming silence over the beats among them. */
+.analysis-timeline-beat-gap.is-cluster,
+.dark .analysis-timeline-beat-gap.is-cluster {
+    top: auto;
+    height: 0.25rem;
+    background: repeating-linear-gradient(90deg, var(--phaze-text-muted) 0 1px, transparent 1px 3px);
+    opacity: 0.6;
+}
 .analysis-timeline-lane-note {
     margin-top: 0.25rem;
     font-size: 0.6875rem;

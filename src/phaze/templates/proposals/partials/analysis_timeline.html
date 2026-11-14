@@ -178,12 +178,13 @@
                            services.analysis_timeline.beat_ruler to BEAT_TICK_SPACING_PX on the canvas, so
                            the ruler never draws more ticks than its per-pixel budget. Each RECORDED gap
                            (silent or undetectable section) is a hatched span instead, and no tick is drawn
-                           inside one. A file with no beat grid row renders no ruler at all, never an empty
+                           inside one. Gaps too close to show apart share one span; when beats lie between
+                           them it is a lighter "cluster" span that never claims silence (phaze-7hcgn.5). A file with no beat grid row renders no ruler at all, never an empty
                            one. The ticks are decorative: the accessible reading is the ruler's label. #}
                         {% if beat_ruler %}
                         <div class="analysis-timeline-beat-ruler" data-timeline-lane="beat" role="img" aria-label="{{ beat_ruler.label }}">
                             {% for gap in beat_ruler.gaps %}
-                            <span class="analysis-timeline-beat-gap" style="left: {{ gap.left_pct }}%; width: {{ gap.width_pct }}%;" title="{{ gap.label }}" data-beat-gap-start="{{ gap.start_sec }}" data-beat-gap-end="{{ gap.end_sec }}"></span>
+                            <span class="analysis-timeline-beat-gap{% if gap.kind == 'cluster' %} is-cluster{% endif %}" style="left: {{ gap.left_pct }}%; width: {{ gap.width_pct }}%;" title="{{ gap.label }}" data-beat-gap-kind="{{ gap.kind }}" data-beat-gap-start="{{ gap.start_sec }}" data-beat-gap-end="{{ gap.end_sec }}"></span>
                             {% endfor %}
                             {% for tick in beat_ruler.ticks %}
                             <span class="analysis-timeline-beat-tick" style="left: {{ tick.left_pct }}%;" data-beat-sec="{{ tick.sec }}"></span>

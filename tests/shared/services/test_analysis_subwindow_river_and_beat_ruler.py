@@ -373,6 +373,42 @@ def test_gaps_far_apart_on_the_canvas_stay_separate_spans() -> None:
     assert [(g["start_sec"], g["end_sec"], g["gap_count"]) for g in ruler["gaps"]] == [(10.0, 30.0, 1), (50.0, 70.0, 1)]  # type: ignore[index, union-attr]
 
 
+def test_no_silence_span_is_ever_drawn_over_a_beat() -> None:
+    # phaze-7hcgn.5 finding E: a beat every 0.5 s for 10 minutes, with a one-beat dropout recorded every 2 s. Each
+    # recorded gap is a real, beat-bounded hole, but they are closer than one tick spacing on 640 px (4 px = 16.9 s),
+    # and the old chaining rule drew ONE "no beats" span over the whole 10 minutes of beats.
+    total = 600.0
+    beats = [round(i * 0.5, 1) for i in range(1201) if i % 4 != 2]
+    gaps = [[i * 2.0 + 0.5, i * 2.0 + 1.5] for i in range(300)]
+    ruler = beat_ruler(_grid(beats, gaps=gaps), total, 640.0)
+    assert ruler is not None
+    drawn = ruler["gaps"]
+    assert isinstance(drawn, list)
+    for span in drawn:
+        inside = [b for b in beats if span["start_sec"] < b < span["end_sec"]]
+        if span.get("kind", "silence") == "silence":  # before phaze-7hcgn.5 every span was drawn as a "no beats" hatch
+            assert not inside, f"a 'no beats' span over {len(inside)} beats: {span['label']}"
+        else:
+            assert inside and "beat" in str(span["label"]) and "No beats" not in str(span["label"])
+    assert len(drawn) <= beat_tick_budget(640.0)
+    assert sum(int(span["gap_count"]) for span in drawn) == 300
+
+
+def test_a_long_silence_stays_one_silence_span_and_beats_on_either_side_stay_outside_it() -> None:
+    ruler = beat_ruler(_grid([0.0, 0.5, 1.0, 61.0, 61.5], gaps=[[1.0, 61.0]]), 120.0, 640.0)
+    assert ruler is not None
+    assert [(g["start_sec"], g["end_sec"], g["kind"]) for g in ruler["gaps"]] == [(1.0, 61.0, "silence")]  # type: ignore[index, union-attr]
+
+
+def test_a_cluster_span_renders_differently_from_a_silence() -> None:
+    from phaze.services.analysis_timeline import _drawn_beat_gaps
+
+    drawn, recorded = _drawn_beat_gaps([[10.0, 10.4], [10.6, 11.0]], 600.0, 640.0, beats=[10.0, 10.4, 10.6, 11.0])
+    assert recorded == 2
+    assert [(d["kind"], d["gap_count"]) for d in drawn] == [("cluster", 2)]
+    assert drawn[0]["label"] == "2 recorded gaps from 0:10 to 0:11, with 2 beats among them"
+
+
 def test_the_record_and_proposal_pages_load_the_grids_through_one_helper() -> None:
     # phaze-7hcgn.4 finding 8: the two routers had copies of the sub-window + beat-grid read; one helper now, so a
     # proposal row's river and ruler cannot drift from the record page's for the same file.
