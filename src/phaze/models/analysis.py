@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import REAL, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import REAL, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -228,4 +228,36 @@ class AnalysisBeatGrid(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("beat_count >= 0", name="beat_count_nonneg"),
         CheckConstraint("cardinality(beats) = beat_count", name="beats_match_count"),
+    )
+
+
+class AnalysisEmbedding(Base):
+    """One pooled Discogs-EffNet embedding of one COARSE window (1:many with files; phaze-g79ea).
+
+    ``vector`` is the 1280-d pooled embedding as little-endian float16 bytes (2,560 B), byte for byte what
+    :func:`phaze.services.analysis_embeddings.decode_embedding` returns and what
+    :func:`~phaze.services.analysis_embeddings.encode_embedding` base64-wraps on the wire, so storage is a
+    base64 decode and nothing else and the float16 round trip is exact. ``model`` names the graph that
+    produced it (vectors from different graphs are not comparable) and ``dim`` is stored beside the bytes so
+    a reader never infers the shape from a length; the CHECK keeps ``octet_length(vector) = dim * 2``.
+    ``window_index`` is the coarse window's own ``analysis_window.window_index`` -- not an FK to that table,
+    whose ``id`` changes on every re-analysis -- so the link is the ``(file_id, window_index)`` pair, exactly
+    as on ``analysis_subwindow``. The composite key ``(file_id, model, window_index)`` is the identity: a
+    re-analysis REPLACES a file's rows for a model (:func:`phaze.services.analysis_embedding_store.replace_embeddings`),
+    never appends. ``ON DELETE CASCADE`` to ``files`` so this table never blocks a file or scan deletion.
+    No pgvector: nothing here is indexed for similarity search.
+    """
+
+    __tablename__ = "analysis_embedding"
+
+    file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id", ondelete="CASCADE"), primary_key=True)
+    model: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
+    # BARE constraint names: the ck naming convention adds the table prefix (phaze-x8tof).
+    __table_args__ = (
+        CheckConstraint("window_index >= 0 AND dim > 0", name="indexes_positive"),
+        CheckConstraint("octet_length(vector) = dim * 2", name="vector_is_float16"),
     )

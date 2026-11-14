@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from phaze.agent_watcher.locate import locate_stale
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisEmbedding, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
@@ -225,6 +225,7 @@ async def test_a_completed_analysis_on_the_duplicate_replaces_a_failed_one_on_th
     session.add(AnalysisResult(file_id=stale_id, failed_at=datetime.now(UTC), error_message="FileNotFoundError"))
     # A beat grid left on the kept row by an earlier run: it describes the analysis being replaced.
     session.add(AnalysisBeatGrid(file_id=stale_id, beats=[9.0], beat_count=1))
+    session.add(AnalysisEmbedding(file_id=stale_id, model="m", window_index=7, dim=1280, vector=bytes(2560)))
     new = root / "b" / "t.m4a"
     new.parent.mkdir(parents=True)
     old.rename(new)
@@ -235,6 +236,8 @@ async def test_a_completed_analysis_on_the_duplicate_replaces_a_failed_one_on_th
             AnalysisWindow(file_id=duplicate_id, tier="fine", window_index=0, start_sec=0.0, end_sec=5.0),
             AnalysisSubwindow(file_id=duplicate_id, window_index=0, sub_index=0, start_sec=0.0, end_sec=5.0, mood_scores=[0.25] * 11),
             AnalysisBeatGrid(file_id=duplicate_id, beats=[0.5, 1.0], beat_count=2),
+            AnalysisEmbedding(file_id=duplicate_id, model="m", window_index=0, dim=1280, vector=bytes(2560)),
+            AnalysisEmbedding(file_id=duplicate_id, model="m", window_index=1, dim=1280, vector=bytes(2560)),
         ]
     )
     await session.flush()
@@ -251,6 +254,9 @@ async def test_a_completed_analysis_on_the_duplicate_replaces_a_failed_one_on_th
     assert await session.scalar(select(func.count()).select_from(AnalysisSubwindow).where(AnalysisSubwindow.file_id == stale_id)) == 1
     grid = (await session.execute(select(AnalysisBeatGrid).where(AnalysisBeatGrid.file_id == stale_id))).scalar_one()
     assert grid.beats == [0.5, 1.0]
+    # Embeddings move with the completed analysis too: the kept row's window 7 belonged to the run that lost.
+    windows = (await session.execute(select(AnalysisEmbedding.window_index).where(AnalysisEmbedding.file_id == stale_id))).scalars().all()
+    assert sorted(windows) == [0, 1]
     assert await session.get(FileRecord, duplicate_id) is None
 
 

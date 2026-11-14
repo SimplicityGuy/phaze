@@ -28,6 +28,7 @@ def test_all_tables_defined() -> None:
         "metadata",
         "analysis",
         "analysis_beat_grid",
+        "analysis_embedding",
         "analysis_subwindow",
         "analysis_window",
         "proposals",
