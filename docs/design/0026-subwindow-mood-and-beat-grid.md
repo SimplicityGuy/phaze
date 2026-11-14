@@ -302,12 +302,81 @@ The ruler adds no JavaScript: its readout is its own `aria-label`.
 **Bounded work per render (phaze-7hcgn.4).** The next tick is found by binary search: the first beat at least
 one spacing after the last drawn one. So a render reads O(ticks × log beats) values instead of every beat
 (about 92,700 on the longest file). This relies on the grid being strictly ascending and finite, which
-`BeatGridPayload` enforces at write. Gaps closer than one spacing on the canvas are drawn as one span, and its
-label says how many recorded gaps it holds ("N recorded gaps with no beats between A and B"). So at most
-`floor(W / 4) + 1` spans are drawn, not up to 50,000. Every recorded gap is in exactly one span, and the summary
-counts all of them. Beats between the gaps inside such a span are real and are still ticked. One helper,
+`BeatGridPayload` enforces at write. Recorded gaps whose start falls in the same 4 px column are drawn as one
+span, so at most `floor(W / 4) + 1` spans are drawn, not up to 50,000. Every recorded gap is in exactly one span,
+and the summary counts all of them. As first shipped, gaps were chained into one span whenever each began within
+one spacing of the last, and that chain could run a "no beats" span across minutes of real beats; §10 replaces it
+with a rule that never claims silence over a beat. One helper,
 `load_timeline_grids`, loads the sub-window rows and the beat grid for both the record page and the proposal row.
 
 **Tests (one per acceptance point):** `tests/shared/services/test_analysis_subwindow_river_and_beat_ruler.py`.
 The river geometry is asserted on the polygon corners, and the rendered-markup tests render the shipped
 partial. The existing timeline lane, JS-static and browser suites still pass unchanged.
+
+## 10. A grid failure never fails an analysis (phaze-7hcgn.5)
+
+Written by the implementing seat of phaze-7hcgn.5, after the second review of PR #802; open to review.
+
+**The rule.** Sub-window mood and the beat grid are secondary display data. A failure on their path degrades to
+"no grids for this window or file": the grid is left out, the drop is logged, and it is counted on
+`phaze.analysis.grids.dropped{grid_stage}`. The windows, bpm, key and mood are exactly as complete as without
+grids. Each site keeps its own narrow `try` around the grid work alone, not a blanket `except` around the PUT, and
+`services/grid_drops.record_grid_drop` is the one shared report:
+
+| `grid_stage` | what fails | what is dropped | what is kept |
+| --- | --- | --- | --- |
+| `fine_ticks` | the tick-only tracker call on a pre-rolled buffer | that window's beats (a recorded gap in the grid) | its bpm and key |
+| `coarse_pooling` | pooling one model's patches, or combining a window's pools | all of that window's sub-window mood, never a partial set of variants | its mood, style and danceability |
+| `assembly` | building `subwindows` or `beat_grid` from the windows | that grid for the file | the other grid, and the whole result |
+| `payload` | validating a grid on the agent, through `AnalysisWritePayload`'s own fields | a malformed sub-window row's whole coarse window; the sub-windows past the wire cap; a malformed beat grid | everything else in the PUT |
+| `server_capability` | the control plane does not advertise `analysis_grids` | both grids from the PUT | the PUT |
+
+`analyze_file` also writes one WARNING per run with the count by stage. A dropped key is absent, not `null`: an
+absent key means "this run produced none" to the writer, which deletes the stored rows with the windows (§5).
+
+**The counter, not only a log line.** The dispatcher's decision, not the operator's. Question as put (to the
+dispatcher, 2026-11-14): option 1, a counter `phaze.analysis.grids.dropped{grid_stage}` costing 5 series per
+instance and a re-pricing of the cited series ceilings, or option 2, a count in the WARNING line and on the file
+span with the metric left as a follow-up. Answer as given (dispatcher, verbatim excerpt): "option 1, the counter
+phaze.analysis.grids.dropped{grid_stage}, with your 5 stages (my decision as dispatcher; record it as such).
+Reason: degrading to "no grids" is only safe if it is visible, and a log line or a span attribute is not something
+anyone watches; +5 series is cheap." Durable record: bead phaze-7hcgn.5. The ceilings moved with it: per instance
+8,612 → 8,617, analysis block 2,290 → 2,295, ceiling 24,642 → 24,682
+(`docs/telemetry/metric-catalogue.md` §3, `docs/telemetry/exporter.md`,
+`docs/design/0017-telemetry-export-topology.md` §8b).
+
+**A newer agent against an older server: a capability, not a retry.** A control plane that predates the grids
+forbids unknown fields, so a grid is a 422 there, and `FAILURE_IS_TERMINAL[ANALYZE]` makes that a discarded
+analysis on any rollout that upgrades an agent before its server. GET whoami now lists `capabilities`
+(`["analysis_grids"]`); its response model is loose, so an older agent ignores the key, and a body without it reads
+as no capabilities. `PhazeAgentClient.put_analysis` asks whoami before every PUT that carries a grid and leaves the
+grids out unless the capability is listed, or when whoami cannot be read. It asks fresh on every such PUT, so a
+server upgrade or rollback is followed, and it costs one GET per completed analysis. A retry-without-grids on 422
+was rejected: a 422 does not say which field was refused, and retrying on it would also hide a real validation
+defect in the core fields. This design was approved by the dispatcher (2026-11-14).
+
+**The beat ruler never claims silence over a beat.** A span is drawn as the hatched "no beats" claim only when no
+beat lies strictly inside it. A gap's own endpoints are the beats that bound it, so two recorded gaps can never
+share one silence span unless they overlap. A span that takes in beats between its gaps is a `cluster`: drawn as a
+faint dotted underline, labelled "N recorded gaps from A to B, with K beats among them". The DOM bound is now the
+column rule in §9, and the beats inside a cluster are still ticked.
+
+**A track's mood counts its whole measured time.** With partial sub-window coverage, a segment's mood is the
+mean over its slices that carry a mood *and* over its coarse windows that no such slice covers. Coverage is
+decided by geometry (a mooded slice whose midpoint lies in the coarse window), not by `window_index`. Each
+uncovered window stands in for the slices it would have produced: its scores weighted by its slice count. With
+full coverage nothing changes, and a segment with no mooded slice keeps the coarse answer, as before.
+
+**Tests.** `tests/analyze/services/pipeline/test_grid_failure_isolation.py` (A, B, C, assembly, and the
+acceptance test that each of a validation error, a tick-call exception and a pooling exception leaves the core
+analysis complete, end to end through `analyze_file` and both payload builders);
+`tests/agents/services/test_agent_client.py` and `tests/agents/routers/test_agent_identity.py` (D, old- and
+new-server paths); `tests/shared/services/test_analysis_subwindow_river_and_beat_ruler.py` (E);
+`tests/shared/services/test_track_segments.py` (F);
+`tests/analyze/services/pipeline/test_subwindow_and_beat_grid_storage.py` (G: a non-finite `mood_scores` value
+is refused on the wire, as every other wire float already was).
+
+**The general form (rule 5).** Secondary output gets its own failure scope, and that scope sits inside the
+primary output's success, never around it. A `try` shared by primary and secondary work lets the secondary
+failure take down the primary. This is now written down here; every call site reports through `services/grid_drops.py`, whose docstring
+points at this section.
