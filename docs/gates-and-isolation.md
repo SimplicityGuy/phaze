@@ -1698,6 +1698,30 @@ stale because its inputs grew; a gate result goes stale because the base moved. 
 itself, and neither is repaired by trusting the label harder.
 
 
+## A check that walks the tree must use the same scope as its sibling checks (phaze-vg1jm)
+
+`just check-fast` ran `uv run mypy .` beside `ruff check .`. ruff honours `.gitignore`; mypy, as
+configured, did not. A gitignored scratch `.py` (`test-results/compare.py`) was type-checked,
+collided as a duplicate module with the tracked `docs/spikes/phaze-0ni3v/compare.py`, and made a
+gate **UNMEASURED** while ruff passed — with no change of the bead's own at fault. Any seat keeping
+scratch Python in a gitignored directory of its worktree (`test-results/`, `.cache/`, `models/`)
+could hit it.
+
+**mypy can honour `.gitignore`; the defect was the setting being off.** The fix is
+`exclude_gitignore = true` under `[tool.mypy]` (mypy 2.4.0 here; `uv run mypy --help` lists
+`--exclude-gitignore`), so plain `uv run mypy .` is correct for every caller. The first attempt
+wrapped mypy in a git-listing runner instead, on the belief that mypy ignores `.gitignore` — a
+belief true of older mypy and of mypy's *default*, carried in without running `mypy --help` in this
+environment (the transferred-model failure in `docs/design/0016-transferred-model-verification.md`).
+`tests/shared/test_mypy_scope_matches_git.py` builds a throwaway repo, shows `mypy .` fails on it
+without the setting (the control) and passes with it, and pins the setting in `pyproject.toml`.
+
+**The general form:** a check that walks the tree must use the same scope as its sibling checks.
+When two checks of one gate disagree about which files exist, a red (or an UNMEASURED) from the one
+with the wider scope is not evidence about the change. Derive scope from one source — git — rather
+than giving each tool its own ignore list, and when adding a new tree-walking check (a linter, a
+type checker, a scanner) ask which of its siblings already decides scope and copy that.
+
 ## Testing
 
 - Minimum **95% LINE coverage** repo-wide, plus a **90% per-module line floor**. Both are
