@@ -55,6 +55,25 @@ async def test_whoami_happy_path(session: AsyncSession, seed_test_agent: tuple[A
     assert isinstance(parsed, datetime)
 
 
+async def test_whoami_advertises_that_this_server_accepts_analysis_grids(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """phaze-7hcgn.5 finding D: an agent sends sub-window mood and the beat grid only to a server that lists this."""
+    from phaze.schemas.agent_identity import ANALYSIS_GRIDS_CAPABILITY
+
+    _agent, raw_token = seed_test_agent
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.get("/api/internal/agent/whoami")
+    assert response.status_code == 200, response.text
+    assert ANALYSIS_GRIDS_CAPABILITY in response.json()["capabilities"]
+
+
+def test_an_older_servers_whoami_body_reads_as_no_capabilities() -> None:
+    """A server that predates ``capabilities`` sends no such key; the agent must read that as "none", never fail."""
+    from phaze.schemas.agent_identity import AgentIdentity
+
+    old_body = {"agent_id": "a", "name": "n", "scan_roots": [], "created_at": "2026-01-01T00:00:00"}
+    assert AgentIdentity.model_validate(old_body).capabilities == []
+
+
 async def test_whoami_missing_header_returns_401(session: AsyncSession) -> None:
     """No Authorization header -> 401."""
     async with _make_client(session, token=None) as ac:
