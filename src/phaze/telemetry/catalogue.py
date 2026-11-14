@@ -170,6 +170,13 @@ WINDOW_OUTCOME = LabelSpec(
     values=("analyzed", "skipped"),
 )
 
+GRID_STAGE = LabelSpec(
+    name="grid_stage",
+    cardinality=5,
+    description="Where a sub-window mood or beat grid was dropped instead of failing the analysis.",
+    values=("fine_ticks", "coarse_pooling", "assembly", "payload", "server_capability"),
+)
+
 # The bounded model dimension. Three labels rather than one composite, so a dashboard can
 # aggregate by classifier_type (the phaze-8ifq8 question) without string surgery in PromQL.
 MODEL_NAME = LabelSpec(
@@ -522,6 +529,16 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="{windows}",
         description="Windows reaching a terminal state, per tier. 'skipped' is per-window failure isolation firing.",
         labels=(TIER, WINDOW_OUTCOME),
+    ),
+    MetricSpec(
+        name="phaze.analysis.grids.dropped",
+        kind="counter",
+        unit="{grids}",
+        description=(
+            "Sub-window mood or beat grids left out instead of failing the analysis: a window's ticks or pooled mood, "
+            "a whole grid at assembly or payload validation, or both grids for a server without the capability."
+        ),
+        labels=(GRID_STAGE,),
     ),
     MetricSpec(
         name="phaze.analysis.chunks",

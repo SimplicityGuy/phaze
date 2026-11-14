@@ -133,6 +133,22 @@ def test_a_beat_beyond_float32_range_is_refused_as_a_value_error() -> None:
         stored_beat_grid([1.0, 1e39])
 
 
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_a_non_finite_sub_window_mood_score_is_refused_on_the_wire(bad: float) -> None:
+    # phaze-7hcgn.5 finding G: every other float on the wire is finite; mood_scores accepted NaN and inf.
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import SubwindowPayload
+    from phaze.services.set_projection import MOOD_ORDER
+
+    scores: list[float | None] = [0.1] * len(MOOD_ORDER)
+    scores[3] = bad
+    with pytest.raises(ValidationError, match="finite"):
+        SubwindowPayload(window_index=0, sub_index=0, start_sec=0.0, end_sec=15.0, mood_scores=scores)
+    scores[3] = None  # a slice no patch centre fell in is still a None, not an error
+    assert SubwindowPayload(window_index=0, sub_index=0, start_sec=0.0, end_sec=15.0, mood_scores=scores).mood_scores == scores
+
+
 def test_float32_moves_a_position_by_at_most_two_milliseconds_up_to_the_longest_file() -> None:
     # The spacing of float32 values below 2**16 s is 2**-8 s, so rounding is at most half of that.
     worst = max(abs(to_stored_precision(t) - t) for t in (_LONGEST_FILE_SEC * k / 997 + 0.0001234 for k in range(998)))
