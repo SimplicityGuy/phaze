@@ -89,3 +89,12 @@ async def test_deleting_the_file_cascades(session: AsyncSession, make_file) -> N
     assert await _count(session, file_id) == 2
     await session.execute(delete(FileRecord).where(FileRecord.id == file_id))
     assert await _count(session, file_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_payload_with_another_dim_is_refused(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    record = await make_file()
+    payload = _payload({0: 1})
+    payload["dim"] = 512
+    with pytest.raises(ValueError, match="dim"):
+        await replace_embeddings(session, record.id, payload)
