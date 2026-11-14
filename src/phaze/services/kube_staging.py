@@ -485,7 +485,7 @@ def build_job_manifest(
     the same backward-compatibility posture as ``models_pvc_name`` / ``active_deadline_seconds`` /
     ``memory_limit``, and regression-guarded the same way. The pod then falls back to the shared
     identity: degraded, but bounded, which is the only acceptable direction (an unbounded identity
-    would mint 2,290 series per analyzed file in a Prometheus phaze does not own).
+    would mint 2,295 series per analyzed file in a Prometheus phaze does not own).
 
     Fail-loud on an unset ``job_image`` / ``cpu_request`` / ``memory_request`` (all ``Optional`` on
     ``KubeConfig``): a half-configured manifest would otherwise carry ``None`` values and surface as

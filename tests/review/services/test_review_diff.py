@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 import pytest
 
 from phaze.routers.proposals import templates
@@ -46,6 +46,15 @@ def _render_row(**overrides: object) -> str:
     return templates.get_template("pipeline/partials/_diff_row.html").render(context | overrides)
 
 
+def _select_all(soup: BeautifulSoup, selector: str) -> list[Tag]:
+    """Match ``selector`` in the document AND inside every ``<template>``.
+
+    soupsieve 4 treats a ``<template>``'s contents as outside the document, so ``soup.select`` no longer
+    reaches the cell Alpine's ``x-if`` wraps. That cell is rendered markup this test must still check.
+    """
+    return [*soup.select(selector), *(match for template in soup.select("template") for match in template.select(selector))]
+
+
 def test_hostile_filename_segments_are_plain_text_and_autoescaped_by_the_real_row() -> None:
     before = '<img src="x" onerror="alert(1)">.mp3'
     after = '<script>alert("changed")</script>.mp3'
@@ -57,16 +66,17 @@ def test_hostile_filename_segments_are_plain_text_and_autoescaped_by_the_real_ro
     assert not soup.select("script, img, [onerror]")
     assert "&lt;" in body
     for side, value in (("before", before), ("after", after)):
-        code = soup.select_one(f'code[data-diff-side="{side}"]')
-        assert code is not None
+        matches = _select_all(soup, f'code[data-diff-side="{side}"]')
+        assert matches
+        code = matches[0]
         assert code.get_text(types=None) == value
         assert code["title"] == value
 
 
 def test_removed_and_added_segments_have_non_colour_marks_in_both_facets() -> None:
     soup = BeautifulSoup(_render_row(secondary_label="Destination", secondary_before="old/song.mp3", secondary_after="new/song.mp3"), "html.parser")
-    before = soup.select('code[data-diff-side="before"]')
-    after = soup.select('code[data-diff-side="after"]')
+    before = _select_all(soup, 'code[data-diff-side="before"]')
+    after = _select_all(soup, 'code[data-diff-side="after"]')
     assert len(before) == len(after) == 2
     for code in before:
         assert "text-danger" in code["class"] and "line-through" in code["class"]

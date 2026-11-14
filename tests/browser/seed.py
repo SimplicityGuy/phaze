@@ -89,7 +89,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from phaze.enums.execution import ExecutionStatus
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.companion_junk_review import CompanionJunkReview
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.execution import ExecutionLog
@@ -99,6 +99,8 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.set_profile import SetProfile
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.analysis_windows import iter_subwindows
+from phaze.services.beat_grid import stored_beat_grid
 from phaze.services.set_projection import MOOD_ORDER, build_profile
 
 
@@ -159,6 +161,44 @@ def _synthetic_mood_scores(index: int) -> dict[str, float]:
     scores = dict.fromkeys(MOOD_ORDER, 0.1)
     scores["mood_happy" if index % 2 == 0 else "mood_relaxed"] = 0.8
     return scores
+
+
+def _subwindow_rows(file_id: uuid.UUID, coarse_count: int, coarse_window_sec: float, *, projected: bool) -> list[AnalysisSubwindow]:
+    """One ``analysis_subwindow`` row per 15 s slice of every coarse window (phaze-jvo7i).
+
+    Mood is positional in ``MOOD_ORDER``, as the writer stores it, and is the coarse window's own synthetic
+    vector, so the sub-window river and the coarse river agree on which mood dominates each window.
+    """
+    rows: list[AnalysisSubwindow] = []
+    for coarse_index in range(coarse_count):
+        scores = _synthetic_mood_scores(coarse_index)
+        vector = [scores[name] for name in MOOD_ORDER]
+        for sub_index, start, end in iter_subwindows(coarse_index * coarse_window_sec, (coarse_index + 1) * coarse_window_sec):
+            null_slice = (coarse_index == 1 and sub_index == 0) or not projected
+            rows.append(
+                AnalysisSubwindow(
+                    file_id=file_id,
+                    window_index=coarse_index,
+                    sub_index=sub_index,
+                    start_sec=start,
+                    end_sec=end,
+                    mood_scores=None if null_slice else vector,
+                )
+            )
+    return rows
+
+
+def _beat_grid_row(file_id: uuid.UUID, total_sec: float) -> AnalysisBeatGrid:
+    """A 120 BPM grid over the file with the middle tenth recorded as a gap and no beats inside it."""
+    gap_start, gap_end = round(total_sec * 0.5, 3), round(total_sec * 0.6, 3)
+    beats: list[float] = []
+    beat = 0.5
+    while beat < total_sec:
+        if not gap_start <= beat < gap_end:
+            beats.append(beat)
+        beat += 0.5
+    stored = stored_beat_grid(beats)
+    return AnalysisBeatGrid(file_id=file_id, beats=stored, beat_count=len(stored), gaps=[[gap_start, gap_end]])
 
 
 _RESET_DEADLOCK_RETRIES = 4
@@ -341,6 +381,7 @@ class Seeder:
         coarse_count: int = 6,
         fine_window_sec: float = 30.0,
         projected: bool = False,
+        grids: bool = True,
     ) -> list[AnalysisWindow]:
         """Attach exhaustive synthetic fine/coarse windows for timeline browser journeys.
 
@@ -406,7 +447,15 @@ class Seeder:
             )
             for index in range(coarse_count)
         )
-        self.session.add_all([result, *windows])
+        rows: list[object] = [result, *windows]
+        if grids:
+            # phaze-jvo7i: the sub-window slices and the beat grid the timeline draws from. Mood is written on
+            # every slice only when ``projected``; otherwise every slice is NULL and the river falls back to the
+            # coarse one, as on an unprojected file. Slice 0 of coarse window 1 is NULL in both cases: the one
+            # recorded gap in the river. The grid has one recorded silent span over the middle tenth of the file.
+            rows.extend(_subwindow_rows(file.id, coarse_count, coarse_window_sec, projected=projected))
+            rows.append(_beat_grid_row(file.id, total_sec))
+        self.session.add_all(rows)
         await self.session.commit()
         return windows
 

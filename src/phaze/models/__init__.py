@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models - import all models for Alembic autogenerate discovery."""
 
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.backend_breaker import BackendBreaker
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -42,7 +42,9 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 __all__ = [
     "Agent",
+    "AnalysisBeatGrid",
     "AnalysisResult",
+    "AnalysisSubwindow",
     "AnalysisWindow",
     "BackendBreaker",
     "CloudBudget",

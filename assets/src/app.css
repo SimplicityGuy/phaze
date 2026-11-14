@@ -360,6 +360,41 @@ details[open] > summary::before { transform: rotate(90deg); }
     color: var(--phaze-text-muted);
 }
 .analysis-timeline-lane-label.is-tall { height: 3.5rem; }
+/* phaze-jvo7i: the beat ruler, one 2rem lane under the time axis (the gutter label is 2rem to match). Ticks
+   are decorative and hang from the lane's bottom edge; a recorded gap is a hatched span, drawn in the
+   border tokens so it reads in both themes and carries its words in the ruler's label and its title. */
+.analysis-timeline-beat-ruler {
+    position: relative;
+    height: 2rem;
+    border-bottom: 1px solid var(--color-gray-200);
+}
+.dark .analysis-timeline-beat-ruler { border-color: var(--color-phaze-border); }
+.analysis-timeline-beat-tick {
+    position: absolute;
+    bottom: 0;
+    width: 0;
+    height: 0.625rem;
+    border-left: 1px solid var(--phaze-text-muted);
+    opacity: 0.8;
+}
+.analysis-timeline-beat-gap {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: repeating-linear-gradient(135deg, transparent 0 3px, var(--color-gray-300) 3px 4px);
+}
+.dark .analysis-timeline-beat-gap {
+    background: repeating-linear-gradient(135deg, transparent 0 3px, var(--color-phaze-border) 3px 4px);
+}
+/* phaze-7hcgn.5: recorded gaps too close to show apart, with beats between them. Not the "no beats" hatch: a faint
+   dotted underline that marks where the gaps are without claiming silence over the beats among them. */
+.analysis-timeline-beat-gap.is-cluster,
+.dark .analysis-timeline-beat-gap.is-cluster {
+    top: auto;
+    height: 0.25rem;
+    background: repeating-linear-gradient(90deg, var(--phaze-text-muted) 0 1px, transparent 1px 3px);
+    opacity: 0.6;
+}
 .analysis-timeline-lane-note {
     margin-top: 0.25rem;
     font-size: 0.6875rem;

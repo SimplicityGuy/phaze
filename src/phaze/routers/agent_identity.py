@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, status
 
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_identity import AgentIdentity
+from phaze.schemas.agent_identity import SERVER_CAPABILITIES, AgentIdentity
 
 
 router = APIRouter(prefix="/api/internal/agent/whoami", tags=["agent-internal"])
@@ -28,7 +28,9 @@ async def whoami(
 ) -> AgentIdentity:
     """Return the calling agent's identity.
 
-    Per D-15: response body is `{agent_id, name, scan_roots, created_at}`.
+    Per D-15: response body is `{agent_id, name, scan_roots, created_at}`, plus `capabilities`: the
+    optional wire features this control plane accepts (phaze-7hcgn.5), which an agent checks before
+    sending one.
     No request body. agent_id is NEVER derived from request body (AUTH-01); it
     comes from the auth dep's token lookup.
 
@@ -43,4 +45,5 @@ async def whoami(
         name=agent.name,
         scan_roots=agent.scan_roots,
         created_at=agent.created_at,
+        capabilities=list(SERVER_CAPABILITIES),
     )

@@ -507,3 +507,21 @@ def real_decode_analyze(
     analysis_mod._predict_single = _predict  # type: ignore[assignment]
     analysis_mod._get_labels = _labels  # type: ignore[assignment]
     return analysis_mod.analyze_file(file_path, models_dir, progress_cb=progress_cb, heartbeat_cb=heartbeat_cb, **windowing)
+
+
+def grids_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """The REAL ``analyze_file`` -- real decode, real essentia, real graphs -- with ``include_grids=True``.
+
+    The child CLI has no flag for it yet (the wire bead adds one), so this target is how a test makes
+    the real child process emit the sub-window and beat-grid keys (phaze-x3gak / phaze-0296l).
+    """
+    from phaze.services.analysis import analyze_file  # deferred: essentia loads in the exec'd child only
+
+    return analyze_file(file_path, models_dir, progress_cb=progress_cb, heartbeat_cb=heartbeat_cb, include_grids=True, **windowing)

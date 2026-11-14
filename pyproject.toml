@@ -75,9 +75,9 @@ dependencies = [
     # heavy binary wheel that must build for every platform in the essentia/TF matrix)
     # and its channel keeps its own retry state across a shutdown, which is exactly the
     # blocking-at-exit shape phaze-m1drf.2 §2 has to bound for a k8s analyze Job.
-    "opentelemetry-api>=1.45.1",
-    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
-    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-api>=1.45.2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.2",
+    "opentelemetry-sdk>=1.45.2",
 
     "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.16.1",

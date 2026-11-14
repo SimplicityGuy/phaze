@@ -288,6 +288,10 @@ def test_analyze_file_returns_complete_result(_mock_es: MagicMock, mock_get_labe
     assert result["musical_key"] == "C minor"
 
 
+# These two tests pin the extractor's per-window call count against 1-second mocked buffers, which are shorter than the
+# beat pre-roll. The pre-roll (an extra tracker call per window, a 4 s lead) is covered where it belongs, in
+# test_beat_grid_stitching.py and test_beat_grid_real_essentia.py, so it is switched off here.
+@patch("phaze.services.analysis.BEAT_PREROLL_SEC", 0.0)
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
 def test_analyze_file_hoists_fine_extractors_out_of_the_window_loop(mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
@@ -666,6 +670,7 @@ def test_analyze_file_keeps_short_window_zero(_mock_es: MagicMock, mock_get_labe
     assert (fine[0]["start_sec"], fine[0]["end_sec"]) == (0.0, 10.0)
 
 
+@patch("phaze.services.analysis.BEAT_PREROLL_SEC", 0.0)
 @patch("phaze.services.analysis._probe_duration_sec", return_value=90.0)
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)

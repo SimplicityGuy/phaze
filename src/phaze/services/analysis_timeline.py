@@ -5,11 +5,14 @@ numeric SVG geometry, elapsed-time ticks, and an inspection payload. It must nev
 stride, or otherwise reinterpret coverage.
 """
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Sequence
 import math
 from typing import TYPE_CHECKING, Final, NamedTuple, Protocol, cast
 
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from sqlalchemy import select
+
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import (
     GAP_TOLERANCE_SEC,
@@ -22,6 +25,10 @@ from phaze.utils.humanize import format_duration
 
 
 if TYPE_CHECKING:
+    import uuid
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from phaze.models.set_profile import SetProfile
 
 
@@ -604,6 +611,250 @@ def mood_river(coarse_windows: Sequence[AnalysisWindow], total_sec: float, width
     return series
 
 
+# Sub-window river and beat ruler (phaze-jvo7i; docs/design/0026-subwindow-mood-and-beat-grid.md).
+#
+# The river draws one STEP per stored sub-window (``analysis_subwindow``, 15 s slices) when such rows
+# carry a usable mood, and the coarse 180 s river otherwise. The coarse functions above are untouched, so
+# a file with no sub-window rows renders exactly what it rendered before this module grew them.
+
+# A beat tick is drawn only where it sits at least this many canvas px after the previous drawn tick. The
+# budget is therefore a property of the canvas, not of the file: ``floor(width / spacing) + 1`` ticks at
+# most (:func:`beat_tick_budget`), whatever the beat count. Beats are kept in order, so the tick that
+# survives a crowded stretch is always its earliest beat.
+BEAT_TICK_SPACING_PX: Final[float] = 4.0
+
+
+class TimelineGrids(NamedTuple):
+    """A file's stored sub-window rows (in time order) and its beat grid row, as the timeline reads them."""
+
+    subwindows: list[AnalysisSubwindow]
+    beat_grid: AnalysisBeatGrid | None
+
+
+async def load_timeline_grids(session: "AsyncSession", file_id: "uuid.UUID") -> TimelineGrids:
+    """Load what the sub-window river and the beat ruler draw from: one read for every page that draws them.
+
+    The record page and the proposal row both call this (phaze-7hcgn.4), so their river and ruler agree for
+    the same file. Sub-windows are ordered by ``(window_index, sub_index)``, i.e. in time order. The beat
+    grid is ``None`` for a file analyzed before it was stored: the timeline then draws no ruler.
+    """
+    statement = (
+        select(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id).order_by(AnalysisSubwindow.window_index, AnalysisSubwindow.sub_index)
+    )
+    subwindows = list((await session.execute(statement)).scalars().all())
+    return TimelineGrids(subwindows=subwindows, beat_grid=await session.get(AnalysisBeatGrid, file_id))
+
+
+def beat_tick_budget(width: float) -> int:
+    """The most ticks :func:`beat_ruler` may draw on a canvas ``width`` px wide."""
+    return int(width // BEAT_TICK_SPACING_PX) + 1
+
+
+def subwindow_mood_fractions(row: AnalysisSubwindow) -> tuple[float, ...] | None:
+    """One sub-window's 7 mood shares, or ``None`` for a recorded gap (a NULL slice, or a malformed row).
+
+    ``mood_scores`` is positional in :data:`MOOD_ORDER` (the 11-value contract of ``set_profile.mean_vector``),
+    so the 7 river moods are picked out by name, then normalised exactly as a coarse window is.
+    """
+    scores = row.mood_scores
+    if not isinstance(scores, (list, tuple)) or len(scores) != len(MOOD_ORDER):
+        return None
+    by_name = dict(zip(MOOD_ORDER, scores, strict=True))
+    return normalize_mood_shares([by_name.get(name) for name in MOOD_NAMES])
+
+
+def subwindow_mood_river_runs(
+    subwindows: Sequence[AnalysisSubwindow], total_sec: float, width: float, height: float
+) -> list[list[dict[str, float | list[float]]]]:
+    """Per-sub-window steps grouped into contiguous runs: the sub-window river's raw geometry.
+
+    Each step carries ``x0`` / ``x1`` (its own start and end on the canvas, so adjacent steps share an
+    edge exactly) and the same 8 ``boundaries`` :func:`mood_river_columns` carries. A NULL slice or a
+    time hole ends a run, exactly as a coverage gap ends a coarse run.
+    """
+    if not math.isfinite(total_sec) or total_sec <= 0 or width <= 0 or height <= 0:
+        return []
+    runs: list[list[dict[str, float | list[float]]]] = []
+    current: list[dict[str, float | list[float]]] = []
+    previous_end: float | None = None
+    for row in sorted(subwindows, key=lambda r: (r.window_index, r.sub_index)):
+        fractions = subwindow_mood_fractions(row)
+        usable = fractions is not None and math.isfinite(row.start_sec) and math.isfinite(row.end_sec) and row.end_sec > row.start_sec
+        if not usable:
+            if current:
+                runs.append(current)
+            current, previous_end = [], None
+            continue
+        if previous_end is not None and row.start_sec > previous_end + LANE_GAP_TOLERANCE_SEC and current:
+            runs.append(current)
+            current = []
+        boundaries = [height]
+        for fraction in cast("tuple[float, ...]", fractions):
+            boundaries.append(boundaries[-1] - fraction * height)
+        boundaries[-1] = 0.0
+        x0 = min(max(row.start_sec / total_sec * width, 0.0), width)
+        x1 = min(max(row.end_sec / total_sec * width, 0.0), width)
+        current.append({"x0": x0, "x1": x1, "boundaries": boundaries})
+        previous_end = row.end_sec
+    if current:
+        runs.append(current)
+    return runs
+
+
+def subwindow_mood_river(subwindows: Sequence[AnalysisSubwindow], total_sec: float, width: float, height: float) -> list[dict[str, object]]:
+    """The sub-window river: one series per mood, one STEPPED polygon per contiguous run.
+
+    Every sub-window is one flat band step from its own start to its own end, so the river changes
+    where the mood was measured to change and holds still across each slice. Like :func:`mood_river`,
+    a gap yields a second polygon rather than geometry across the hole. Hues come from :data:`MOOD_HUES`.
+    """
+    return _stepped_river(subwindow_mood_river_runs(subwindows, total_sec, width, height))
+
+
+def _stepped_river(runs: Sequence[Sequence[dict[str, float | list[float]]]]) -> list[dict[str, object]]:
+    """The sub-window river's series from runs :func:`subwindow_mood_river_runs` already built."""
+    series: list[dict[str, object]] = []
+    for index, name in enumerate(MOOD_NAMES):
+        polygons: list[str] = []
+        for cells in runs:
+            corners: list[tuple[float, float]] = []
+            for cell in cells:
+                top = cast("list[float]", cell["boundaries"])[index + 1]
+                corners.extend([(cast("float", cell["x0"]), top), (cast("float", cell["x1"]), top)])
+            for cell in reversed(cells):
+                bottom = cast("list[float]", cell["boundaries"])[index]
+                corners.extend([(cast("float", cell["x1"]), bottom), (cast("float", cell["x0"]), bottom)])
+            polygons.append(" ".join(f"{x:.2f},{y:.2f}" for x, y in corners))
+        series.append({"name": name, "label": MOOD_LABELS[name], "hue": MOOD_HUES[name], "polygons": polygons})
+    return series
+
+
+def resolved_mood_river(
+    coarse_windows: Sequence[AnalysisWindow],
+    subwindows: Sequence[AnalysisSubwindow],
+    total_sec: float,
+    width: float,
+    height: float,
+) -> tuple[list[dict[str, object]], str]:
+    """The river the timeline draws, and which resolution it is drawn at: ``"subwindow"`` or ``"coarse"``.
+
+    Sub-window steps are used whenever they produce any geometry; otherwise the coarse river is drawn
+    exactly as it was before sub-window rows existed. A file analyzed before they were stored, or one
+    with no usable slice, therefore reads identically to today.
+    """
+    runs = subwindow_mood_river_runs(subwindows, total_sec, width, height)  # built once (phaze-7hcgn.4)
+    if runs:
+        return _stepped_river(runs), "subwindow"
+    return mood_river(coarse_windows, total_sec, width, height), "coarse"
+
+
+def _thinned_beat_ticks(beats: Sequence[float], total_sec: float, width: float) -> list[dict[str, object]]:
+    """Ticks at least :data:`BEAT_TICK_SPACING_PX` apart, earliest first, found by binary search.
+
+    ``beats`` is strictly ascending, finite and non-negative: the writer refuses anything else
+    (``BeatGridPayload``). So the next tick is the first beat at least one spacing after the last drawn
+    one, and a ruler reads O(ticks x log beats) values instead of walking a grid of up to ~90,000 beats on
+    every record or proposal render (phaze-7hcgn.4).
+    """
+    spacing_sec = BEAT_TICK_SPACING_PX * total_sec / width
+    ticks: list[dict[str, object]] = []
+    count = len(beats)
+    index = bisect_left(beats, 0.0)
+    while index < count:
+        sec = float(beats[index])
+        if not sec <= total_sec:  # past the analyzed extent (or NaN): nothing later can be drawn either
+            break
+        ticks.append({"sec": sec, "left_pct": round(sec / total_sec * 100, 4)})
+        index = bisect_left(beats, sec + spacing_sec, index + 1)
+    return ticks
+
+
+def _gap_label(start: float, end: float, count: int, beats_inside: int) -> str:
+    span = f"{format_elapsed_time(start)} to {format_elapsed_time(end)}"
+    if beats_inside:
+        return f"{count} recorded gaps from {span}, with {beats_inside} beat{'s' if beats_inside != 1 else ''} among them"
+    if count == 1:
+        return f"No beats recorded {span}"
+    return f"{count} recorded gaps with no beats between {span}"
+
+
+def _beats_strictly_inside(beats: Sequence[float], start: float, end: float) -> int:
+    """How many beats lie in the OPEN interval ``(start, end)``: a gap's own endpoints are the beats that bound it."""
+    return max(0, bisect_left(beats, end) - bisect_right(beats, start))
+
+
+def _drawn_beat_gaps(
+    pairs: Sequence[Sequence[float]], total_sec: float, width: float, beats: Sequence[float] = ()
+) -> tuple[list[dict[str, object]], int]:
+    """The recorded gaps as drawn spans, and how many recorded gaps there are in all.
+
+    **The DOM is bounded by the canvas column, and silence is claimed only where there are no beats
+    (phaze-7hcgn.5 finding E).** Recorded gaps whose start falls in the same :data:`BEAT_TICK_SPACING_PX`
+    column are drawn as ONE span -- they are closer together than the ruler can show apart -- so the markup
+    holds at most ``floor(width / spacing) + 1`` spans whatever the gap count (up to 50,000 on the wire), and
+    each recorded gap is in exactly one span, all counted in the summary (phaze-7hcgn.4). A span is a
+    ``"silence"`` -- the hatched "no beats" claim -- only when no beat lies strictly inside it; a span that
+    takes in beats between its gaps is a ``"cluster"``, drawn differently and labelled with the beats it holds.
+    The previous rule chained every gap within one spacing of the last into one span, which could stretch a
+    "no beats" span across minutes of real beats.
+    """
+    spans: list[list[float]] = []  # [start, end, count, column]
+    recorded = 0
+    gap_px = BEAT_TICK_SPACING_PX * total_sec / width
+    for pair in sorted((p for p in pairs if len(p) == 2), key=lambda p: (float(p[0]), float(p[1]))):
+        start = min(max(float(pair[0]), 0.0), total_sec)
+        end = min(max(float(pair[1]), 0.0), total_sec)
+        if not end > start:
+            continue
+        recorded += 1
+        column = math.floor(start / gap_px)
+        if spans and (spans[-1][3] == column or start <= spans[-1][1]):  # same column, or overlapping the last span
+            spans[-1][1] = max(spans[-1][1], end)
+            spans[-1][2] += 1
+        else:
+            spans.append([start, end, 1, column])
+    drawn: list[dict[str, object]] = []
+    for start, end, count, _column in spans:
+        inside = _beats_strictly_inside(beats, start, end)
+        drawn.append(
+            {
+                "start_sec": start,
+                "end_sec": end,
+                "gap_count": int(count),
+                "kind": "cluster" if inside else "silence",
+                "left_pct": round(start / total_sec * 100, 4),
+                "width_pct": round((end - start) / total_sec * 100, 4),
+                "label": _gap_label(start, end, int(count), inside),
+            }
+        )
+    return drawn, recorded
+
+
+def beat_ruler(beat_grid: AnalysisBeatGrid | None, total_sec: float, width: float) -> dict[str, object] | None:
+    """The beat ruler's ticks and recorded gaps, or ``None`` when the file has no beat grid row.
+
+    ``None`` is an absence, never an empty ruler: a file analyzed before the grid was stored shows no
+    ruler rather than a ruler claiming no beats. Ticks are thinned to :data:`BEAT_TICK_SPACING_PX` (see
+    :func:`beat_tick_budget`). Gaps are the spans the stitcher RECORDED instead of filling; they are
+    returned as their own spans and never as ticks, so a reader sees the silence rather than a plausible
+    grid laid over it.
+    """
+    if beat_grid is None or not math.isfinite(total_sec) or total_sec <= 0 or width <= 0:
+        return None
+    beats = beat_grid.beats or []
+    ticks = _thinned_beat_ticks(beats, total_sec, width)
+    gaps, recorded = _drawn_beat_gaps(beat_grid.gaps or [], total_sec, width, beats)
+    beat_count = int(beat_grid.beat_count)
+    summary = f"Beat ruler: {beat_count} beats" + (f", {recorded} recorded gap{'s' if recorded != 1 else ''} with no beats" if recorded else "")
+    return {
+        "beat_count": beat_count,
+        "ticks": ticks,
+        "gaps": gaps,
+        "tick_budget": beat_tick_budget(width),
+        "label": summary,
+    }
+
+
 def mood_legend() -> list[dict[str, object]]:
     """Swatch, label and hue per mood, in stacking order -- the river's key, from one table.
 
@@ -689,8 +940,13 @@ def build_analysis_timeline_context(
     analysis: AnalysisResult | None = None,
     track_segments: Sequence[TrackSpan] = (),
     set_profile: "SetProfile | None" = None,
+    subwindows: Sequence[AnalysisSubwindow] = (),
+    beat_grid: AnalysisBeatGrid | None = None,
 ) -> dict[str, object]:
     """Build the shared exhaustive timeline context for record and proposal presentations.
+
+    ``subwindows`` (the file's ``analysis_subwindow`` rows) and ``beat_grid`` (its ``analysis_beat_grid``
+    row) are OPTIONAL, phaze-jvo7i. Absent rows keep the coarse river and omit the beat ruler.
 
     ``analysis`` supplies the coverage chip's counters and ``track_segments`` the tracklist
     boundary ticks; both are OPTIONAL and their absence renders nothing rather than a claim.
@@ -708,6 +964,7 @@ def build_analysis_timeline_context(
     timeline_w = max(TIMELINE_W, max(len(fine), len(coarse), 1) * WINDOW_WIDTH_PX)
     spark = bpm_spark(fine, total_sec, timeline_w, TIMELINE_H)
     peak = energy_peak(coarse, total_sec, timeline_w, LANE_H)
+    river, river_resolution = resolved_mood_river(coarse, subwindows, total_sec, timeline_w, LANE_H)
     stored_peak_sec = set_profile.peak_sec if set_profile is not None else None
     return {
         "has_windows": bool(ordered),
@@ -756,7 +1013,11 @@ def build_analysis_timeline_context(
         "style_ribbons": ribbons(coarse, "style", total_sec),
         "energy_area": energy_area(coarse, total_sec, timeline_w, LANE_H),
         "energy_peak": peak,
-        "mood_river": mood_river(coarse, total_sec, timeline_w, LANE_H),
+        "mood_river": river,
+        # phaze-jvo7i: "subwindow" when the river is drawn from the 15 s slices, "coarse" otherwise. The
+        # template words its aria-label from this, so the coarse reading stays byte-identical.
+        "mood_river_resolution": river_resolution,
+        "beat_ruler": beat_ruler(beat_grid, total_sec, timeline_w),
         "mood_legend": mood_legend(),
         "tracklist_ticks": tracklist_ticks(track_segments, total_sec),
         "coverage_chip": coverage_chip(analysis),

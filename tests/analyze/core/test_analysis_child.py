@@ -117,7 +117,7 @@ def test_result_is_byte_identical_to_direct_analyze_file(_mock_es: MagicMock, mo
     mock_get_labels.side_effect = _mock_labels_file
     from phaze.services.analysis import analyze_file
 
-    direct = analyze_file("/fake/audio.mp3", "/fake/models")
+    direct = analyze_file("/fake/audio.mp3", "/fake/models", include_grids=True)  # the child asks for the grids (phaze-ek9zf)
 
     monkeypatch.delenv(_TARGET_ENV, raising=False)  # default target: phaze.services.analysis:analyze_file
     protocol = io.StringIO()
@@ -195,3 +195,22 @@ def test_open_protocol_channel_is_line_buffered() -> None:
     analysis_child._emit(protocol, {"type": "progress", "analyzed": 1, "total": 2})
     assert protocol.getvalue().endswith("\n")
     assert json.loads(protocol.getvalue()) == {"type": "progress", "analyzed": 1, "total": 2}
+
+
+def test_the_default_target_is_asked_for_the_grids_and_a_stub_target_is_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-ek9zf: the real ``analyze_file`` gets ``include_grids=True``; the stub seam keeps its old kwargs."""
+    seen: dict[str, Any] = {}
+
+    def _fake(file_path: str, models_dir: str, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.delenv(_TARGET_ENV, raising=False)
+    with patch("phaze.services.analysis.analyze_file", _fake):
+        rc = run(_parse_args(["/fake/audio.mp3", "--models-dir", "/fake/models"]), io.StringIO())
+    assert rc == 0
+    assert seen["include_grids"] is True
+
+    rc, lines = _run_child(monkeypatch, f"{_STUBS}:fake_analyze", ["/fake/audio.mp3", "--models-dir", "/fake/models"])
+    assert rc == 0
+    assert "include_grids" not in lines[-1]["result"].get("echo", {})

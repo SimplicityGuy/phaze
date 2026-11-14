@@ -37,7 +37,7 @@ from sqlalchemy import CursorResult, String, cast as sql_cast, delete, exists, f
 import structlog
 
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
 from phaze.models.companion_content import CompanionContentFeatures
@@ -380,8 +380,10 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
     its own output table (``services/stage_status.py``), so deleting the output is what makes the
     stage eligible again:
 
-    - ``analysis_window`` / ``analysis`` / ``set_profile``: analysis of the old audio, including a
-      failure row (``failed_at``), which would otherwise read FAILED and never retry.
+    - ``analysis_window`` / ``analysis_subwindow`` / ``analysis_beat_grid`` / ``analysis`` /
+      ``set_profile``: analysis of the old audio, including a failure row (``failed_at``), which
+      would otherwise read FAILED and never retry. A beat grid timed against the old bytes would
+      otherwise outlive the windows it came with and mis-time the new file's ruler.
     - ``metadata``: tags and duration read from the old bytes, failure rows included.
     - ``proposals`` with status PENDING (and their execution rows, of which a pending proposal has
       none): proposed from the old metadata/analysis. Reviewed statuses never reach here --
@@ -406,6 +408,8 @@ async def invalidate_content_state(session: AsyncSession, file_id: uuid.UUID) ->
     pending_proposals = select(RenameProposal.id).where(RenameProposal.file_id == file_id, RenameProposal.status == ProposalStatus.PENDING.value)
     ordered: list[tuple[str, Delete]] = [
         (AnalysisWindow.__tablename__, delete(AnalysisWindow).where(AnalysisWindow.file_id == file_id)),
+        (AnalysisSubwindow.__tablename__, delete(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id)),
+        (AnalysisBeatGrid.__tablename__, delete(AnalysisBeatGrid).where(AnalysisBeatGrid.file_id == file_id)),
         (AnalysisResult.__tablename__, delete(AnalysisResult).where(AnalysisResult.file_id == file_id)),
         (SetProfile.__tablename__, delete(SetProfile).where(SetProfile.file_id == file_id)),
         (FileMetadata.__tablename__, delete(FileMetadata).where(FileMetadata.file_id == file_id)),

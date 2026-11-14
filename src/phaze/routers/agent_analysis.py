@@ -53,7 +53,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.set_profile import SetProfile
 from phaze.routers.agent_auth import get_authenticated_agent
@@ -66,6 +66,8 @@ from phaze.schemas.agent_analysis import (
     AnalysisWindowPayload,
     AnalysisWritePayload,
     AnalysisWriteResponse,
+    BeatGridPayload,
+    SubwindowPayload,
 )
 from phaze.services import s3_staging
 from phaze.services.agent_upsert import build_field_lww_set_clause
@@ -212,6 +214,30 @@ async def _finalize_analysis_outcome(session: AsyncSession, file_id: uuid.UUID) 
     await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
     await session.commit()
     await _delete_staged_object_if_cloud(session, file_id)
+
+
+async def _replace_subwindows(session: AsyncSession, file_id: uuid.UUID, subwindows: list[SubwindowPayload]) -> None:
+    """Replace this file's ``analysis_subwindow`` rows wholesale, in the caller's transaction (phaze-ek9zf).
+
+    Same contract as :func:`_replace_analysis_windows`: DELETE then chunked INSERT on the CALLER's session,
+    so re-analysis replaces rather than appends and a half-written set is never committed. The file id is
+    the PATH value only (AUTH-01).
+    """
+    await session.execute(delete(AnalysisSubwindow).where(AnalysisSubwindow.file_id == file_id))
+    rows = [{"file_id": file_id, **s.model_dump()} for s in subwindows]
+    for chunk in chunk_rows(rows):
+        await session.execute(pg_insert(AnalysisSubwindow).values(chunk))
+
+
+async def _replace_beat_grid(session: AsyncSession, file_id: uuid.UUID, grid: BeatGridPayload) -> None:
+    """Replace this file's ``analysis_beat_grid`` row, in the caller's transaction (phaze-ek9zf).
+
+    ``beat_count`` is derived here from the stored array so the ``cardinality(beats) = beat_count`` CHECK can
+    never disagree with it; the wire never carries it. An EMPTY grid is stored as a row with zero beats (a
+    recorded "analyzed, no beats found"), not as an absent row.
+    """
+    await session.execute(delete(AnalysisBeatGrid).where(AnalysisBeatGrid.file_id == file_id))
+    await session.execute(pg_insert(AnalysisBeatGrid).values(file_id=file_id, beats=grid.beats, beat_count=len(grid.beats), gaps=grid.gaps))
 
 
 async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, windows: list[Any], *, agent_id: str) -> None:
@@ -417,6 +443,9 @@ async def put_analysis(
     # guarded on `body.windows is not None` (partial-PUT). The bool of an empty list is
     # falsy, so read the field off `body` directly to distinguish [] from None.
     dumped.pop("windows", None)
+    # Likewise the grids (phaze-ek9zf): child tables, never aggregate columns or `features` overflow.
+    dumped.pop("subwindows", None)
+    dumped.pop("beat_grid", None)
 
     if "dominant_style" not in dumped and body.windows:
         dominant = _dominant_from_windows(body.windows)
@@ -463,6 +492,19 @@ async def put_analysis(
     # file/window-owner id (cross-file-deletion mitigation, AUTH-01).
     if body.windows is not None:
         await _replace_analysis_windows(session, file_id, body.windows, agent_id=agent.id)
+
+    # phaze-ek9zf: the sub-window mood and beat grid belong to the run that produced the windows, so they are
+    # replaced in the SAME transaction whenever the windows are: written if sent, DELETED if omitted. Absent means
+    # "this run produced none" (an agent on the previous image), never "keep the old ones" -- a kept grid would sit
+    # next to new windows as stale data that reads as current. An aggregate-only PUT (no `windows`) touches the grids
+    # only if it carries them explicitly.
+    replacing_run = body.windows is not None
+    if replacing_run or body.subwindows is not None:
+        await _replace_subwindows(session, file_id, body.subwindows or [])
+    if body.beat_grid is not None:
+        await _replace_beat_grid(session, file_id, body.beat_grid)
+    elif replacing_run:
+        await session.execute(delete(AnalysisBeatGrid).where(AnalysisBeatGrid.file_id == file_id))
 
     # Phase 43 state-advance: a non-empty write (any aggregate/coverage field the
     # client actually set) means analysis produced a real result, so advance the

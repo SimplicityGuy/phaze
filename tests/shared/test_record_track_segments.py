@@ -16,10 +16,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from phaze.models.analysis import AnalysisWindow
+from phaze.models.analysis import AnalysisSubwindow, AnalysisWindow
 from phaze.models.metadata import FileMetadata
 from phaze.routers.record import build_file_record_context
 from phaze.services.analysis_timeline import MOOD_HUES
+from phaze.services.set_projection import MOOD_ORDER
 from phaze.services.track_segments import TrackSegment
 from tests._selected_cue import cue_sheet, selected_cue_media
 
@@ -74,6 +75,31 @@ async def _seed_set_with_tracklist_and_windows(make_file, session: AsyncSession)
     )
     await session.commit()
     return file_rec
+
+
+@pytest.mark.asyncio
+async def test_the_record_context_takes_segment_mood_from_the_stored_subwindows(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-bxp3m: the record builder LOADS the file's ``analysis_subwindow`` rows and hands them to
+    the join. The seeded coarse windows say mood_party (0.9 vs 0.1-0.2 for mood_sad). Two stored 15 s
+    slices inside track 1 favour mood_happy, and the segment's mood follows them. If the router did
+    not load the table, the answer would stay mood_party.
+    """
+    file_rec = await _seed_set_with_tracklist_and_windows(make_file, session)
+    happy = [{"mood_happy": 0.9}.get(name, 0.0) for name in MOOD_ORDER]
+    session.add_all(
+        [
+            AnalysisSubwindow(file_id=file_rec.id, window_index=0, sub_index=0, start_sec=0.0, end_sec=15.0, mood_scores=happy),
+            AnalysisSubwindow(file_id=file_rec.id, window_index=0, sub_index=1, start_sec=15.0, end_sec=30.0, mood_scores=happy),
+        ]
+    )
+    await session.commit()
+
+    context = await build_file_record_context(file_rec.id, session)
+
+    assert context is not None
+    segments = context["track_segments"]
+    assert isinstance(segments, list)
+    assert segments[0].mood == "mood_happy"
 
 
 @pytest.mark.asyncio
