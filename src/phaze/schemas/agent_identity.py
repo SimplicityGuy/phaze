@@ -11,8 +11,12 @@ from pydantic import BaseModel, Field
 #: unknown fields, so a grid sent to it is a 422 that ``FAILURE_IS_TERMINAL`` would make a lost analysis.
 ANALYSIS_GRIDS_CAPABILITY: Final = "analysis_grids"
 
+#: The control plane accepts ``embeddings`` on the analysis completion PUT (phaze-qijoh). Same rule as the grids: an agent
+#: sends them ONLY to a server that lists this, since a server without the field 422s the whole completion.
+ANALYSIS_EMBEDDINGS_CAPABILITY: Final = "analysis_embeddings"
+
 #: Everything this control plane advertises. Additive: an agent ignores a capability it does not know.
-SERVER_CAPABILITIES: Final[tuple[str, ...]] = (ANALYSIS_GRIDS_CAPABILITY,)
+SERVER_CAPABILITIES: Final[tuple[str, ...]] = (ANALYSIS_GRIDS_CAPABILITY, ANALYSIS_EMBEDDINGS_CAPABILITY)
 
 
 class AgentIdentity(BaseModel):

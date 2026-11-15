@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phaze.models.analysis import AnalysisEmbedding
 from phaze.services.analysis_embeddings import EMBEDDING_DIM, EMBEDDING_WIRE_DTYPE, decode_embedding
+from phaze.services.bulk_insert import chunk_rows
 
 
 if TYPE_CHECKING:
@@ -48,8 +49,8 @@ async def replace_embeddings(session: AsyncSession, file_id: uuid.UUID, payload:
         seen.add(index)
         rows.append({"file_id": file_id, "model": model, "window_index": index, "dim": dim, "vector": decode_embedding(window["vector"]).tobytes()})
     await session.execute(delete(AnalysisEmbedding).where(AnalysisEmbedding.file_id == file_id, AnalysisEmbedding.model == model))
-    if rows:
-        await session.execute(pg_insert(AnalysisEmbedding).values(rows))
+    for chunk in chunk_rows(rows):  # one multi-row VALUES is capped by PostgreSQL's int16 bind-parameter count (phaze-syxv)
+        await session.execute(pg_insert(AnalysisEmbedding).values(chunk))
     return len(rows)
 
 

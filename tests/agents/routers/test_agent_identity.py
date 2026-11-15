@@ -103,3 +103,14 @@ async def test_whoami_revoked_token_returns_403(
         await session.commit()
         post = await ac.get("/api/internal/agent/whoami")
     assert post.status_code == 403
+
+
+async def test_whoami_advertises_that_this_server_accepts_analysis_embeddings(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """phaze-qijoh: an agent sends per-window embeddings only to a server that lists this."""
+    from phaze.schemas.agent_identity import ANALYSIS_EMBEDDINGS_CAPABILITY
+
+    _agent, raw_token = seed_test_agent
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.get("/api/internal/agent/whoami")
+    assert response.status_code == 200, response.text
+    assert ANALYSIS_EMBEDDINGS_CAPABILITY in response.json()["capabilities"]
