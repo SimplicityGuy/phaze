@@ -19,6 +19,7 @@
 #
 # Sorted, one path per line. `#` comments and blank lines are ignored.
 tests/agents/deployment/test_agent_compose.py
+tests/agents/deployment/test_embeddings_rollout_doc.py
 tests/agents/deployment/test_k8s_runbook.py
 tests/agents/deployment/test_readonly_archive.py
 tests/analyze/services/backends/test_kube_env_contract.py

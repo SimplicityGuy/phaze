@@ -182,7 +182,7 @@ EMBEDDING_VECTOR_CHARS = 3416
 
 
 class EmbeddingWindowPayload(BaseModel):
-    """One coarse window's pooled embedding on the wire (phaze-qijoh): its index and base64 little-endian float16 bytes."""
+    """One coarse window's pooled embedding on the wire: its index and base64 little-endian float16 bytes."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -197,7 +197,7 @@ class EmbeddingWindowPayload(BaseModel):
 
 
 class EmbeddingsPayload(BaseModel):
-    """The ``embeddings`` value of ``analyze_file``'s result, as the completion PUT carries it (phaze-qijoh)."""
+    """The ``embeddings`` value of ``analyze_file``'s result, as the completion PUT carries it."""
 
     model_config = ConfigDict(extra="forbid")
 
