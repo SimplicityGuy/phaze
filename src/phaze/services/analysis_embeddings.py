@@ -56,10 +56,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-EmbeddingStage = Literal["inference", "encode", "assembly"]
+EmbeddingStage = Literal["inference", "encode", "assembly", "server_capability"]
 
 #: Where an embedding can be dropped, in pipeline order -- the ``embedding_stage`` label's whole domain.
-EMBEDDING_STAGES: Final[tuple[EmbeddingStage, ...]] = ("inference", "encode", "assembly")
+EMBEDDING_STAGES: Final[tuple[EmbeddingStage, ...]] = ("inference", "encode", "assembly", "server_capability")
 
 
 # The graph's contract, from its own JSON sidecar (phaze-webi9 E1).
@@ -188,14 +188,19 @@ def embeddings_payload(encoded_by_window: dict[int, str]) -> dict[str, Any]:
     }
 
 
-def record_embedding_drop(stage: EmbeddingStage, what: str, *, exc_info: bool = False) -> None:
-    """Log and count one embedding dropped at ``stage``, where it was dropped instead of failing the analysis.
+def record_embedding_drop(stage: EmbeddingStage, what: str, *, count: int = 1, exc_info: bool = False, level: int = logging.WARNING) -> None:
+    """Log once and count ``count`` embeddings dropped at ``stage``, where they were dropped instead of failing the analysis.
 
     An embedding is secondary data: a failure on its path costs that window (or, at assembly, that file)
     its embedding and nothing else. ``inference`` is a window whose fused genre call raised, so the window
-    was re-swept on the plain genre classifier and keeps its genre; ``encode`` is a pooled vector float16
-    cannot hold; ``assembly`` is the file's whole ``embeddings`` key. Call it from INSIDE the ``except``
-    block, so ``exc_info`` renders the live traceback and the exception is never retained.
+    was re-swept on the plain genre classifier and kept its genre, or every window of a sweep whose fused
+    graph could not be built (one line, ``count`` = the windows); ``encode`` is a pooled vector float16
+    cannot hold; ``assembly`` is the file's whole ``embeddings`` key; ``server_capability`` is the file's
+    embeddings left off a completion PUT because the control plane answered whoami without the capability.
+    ``level`` raises the line above WARNING where the drop is a fault an operator must see (a fused graph
+    that cannot be built is one: every file the agent analyses loses its embeddings until it is fixed).
+    Call it from INSIDE the ``except`` block when there is one, so ``exc_info`` renders the live traceback
+    and the exception is never retained.
     """
-    log.warning("embedding dropped at %s: %s; the core analysis is unaffected", stage, what, exc_info=exc_info)
-    telemetry.add("phaze.analysis.embeddings.dropped", 1, embedding_stage=stage)
+    log.log(level, "embedding dropped at %s: %s; the core analysis is unaffected", stage, what, exc_info=exc_info)
+    telemetry.add("phaze.analysis.embeddings.dropped", count, embedding_stage=stage)

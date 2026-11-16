@@ -188,6 +188,10 @@ class AnalysisDecodeError(RuntimeError):
 # iterates MODEL-major, so each graph is constructed exactly once per file (the load cost
 # the cache existed to avoid is unchanged), swept across every coarse window, then released
 # by `_release_classifier` before the next is built.
+#
+# Keyed by `_classifier_key`, the model's full identity, never by its graph file alone (phaze-t04h6.4):
+# GENRE_MODEL and GENRE_EMBEDDING_MODEL share one `.pb` but build different classifiers (the wrapper and
+# FusedEffnetDiscogs), and a filename key would hand either sweep the other's object.
 _classifier_cache: dict[str, Any] = {}
 _labels_cache: dict[str, list[str]] = {}
 _essentia_logging_suppressed = False
@@ -268,9 +272,13 @@ def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
     :func:`_release_classifier`, so this still constructs each graph exactly once per file
     -- the cache hit rate on the hot path is identical -- but the cache holds one graph
     instead of 34.
+
+    The cache key is :func:`_classifier_key`, so the plain and the fused EffNet classifier never stand in
+    for each other although they load the same graph file.
     """
-    if model.filename in _classifier_cache:
-        return _classifier_cache[model.filename]
+    key = _classifier_key(model)
+    if key in _classifier_cache:
+        return _classifier_cache[key]
 
     graph_path = str(Path(models_dir) / (model.filename + ".pb"))
     batch_size = _resolve_tf_batch_size(model)
@@ -285,8 +293,17 @@ def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
     with otel.timed_metric("phaze.analysis.model.graph.build.duration", **_model_labels(model)):
         classifier = _construct_classifier(model, graph_path, batch_size)
 
-    _classifier_cache[model.filename] = classifier
+    _classifier_cache[key] = classifier
     return classifier
+
+
+def _classifier_key(model: ModelConfig) -> str:
+    """The cache identity of ``model``'s classifier: its graph file, plus the classifier kind built over it.
+
+    A plain model's key is its ``filename`` unchanged. The fused EffNet classifier loads the SAME file but is a
+    different object with a different call contract, so its key carries a suffix and the two never collide.
+    """
+    return f"{model.filename}+fused-embedding" if model.fused_embedding else model.filename
 
 
 def _model_labels(model: ModelConfig) -> dict[str, str]:
@@ -380,7 +397,7 @@ def _predict_single(audio_16k: Any, model: ModelConfig, models_dir: str) -> Any:
     return with_patches(np.mean(matrix, axis=0), matrix)
 
 
-def _release_classifier(model_filename: str) -> None:
+def _release_classifier(model_key: str) -> None:
     """Evict one graph from ``_classifier_cache`` and hand its native memory back.
 
     The `TensorflowPredict*` wrapper owns a C++ TF session; dropping the last Python
@@ -400,7 +417,7 @@ def _release_classifier(model_filename: str) -> None:
 
     No-op when the model is not cached, so it is safe in a ``finally``.
     """
-    if _classifier_cache.pop(model_filename, None) is None:
+    if _classifier_cache.pop(model_key, None) is None:
         return
     gc.collect()
 
@@ -414,7 +431,7 @@ def _release_classifier_timed(model: ModelConfig) -> None:
     Both callers reach the same eviction; only the timed one carries labels.
     """
     with otel.timed_metric("phaze.analysis.model.graph.release.duration", **_model_labels(model)):
-        _release_classifier(model.filename)
+        _release_classifier(_classifier_key(model))
 
 
 class FusedEffnetDiscogs:
@@ -1060,11 +1077,17 @@ def _sweep_genre(
     Otherwise the sweep runs :data:`GENRE_EMBEDDING_MODEL` (the fused classifier, same graph, same logits)
     and an embedding failure is never an analysis failure:
 
-    - a window whose fused call raises is NOT killed. It goes on a private kill list, its embedding is
-      dropped (``inference``), and once the fused graph is released it is re-swept on the plain wrapper
-      under the real kill list and reporter, so its genre is what it would have been without the option
-      and only a failure THERE kills it. The re-sweep builds its graph after the fused one is released,
-      so one graph is resident at a time;
+    - a fused graph that cannot be BUILT is found once, before the sweep (phaze-t04h6.4): the whole sweep's
+      embeddings are dropped with ONE logged error (``inference``, counted per live window) and the sweep is
+      exactly the plain one above. Without this, the build raised inside every window's call, so the build
+      was retried and a traceback logged once per window;
+    - a window whose fused call raises is NOT killed. It goes on a private kill list, its traceback is
+      logged, and once the fused graph is released it is re-swept on the plain wrapper under the real kill
+      list and reporter, so its genre is what it would have been without the option and only a failure
+      THERE kills it. Its embedding drop (``inference``) is counted only if that re-sweep keeps the window:
+      a window the plain classifier also kills lost its genre, not merely its embedding, and is reported
+      as a window failure. The re-sweep builds its graph after the fused one is released, so one graph is
+      resident at a time;
     - a pooled vector float16 cannot hold drops that window's embedding (``encode``) and nothing else;
     - a window with no embedding at all (under one patch, where the graph yields no patch) is absent,
       not dropped.
@@ -1072,11 +1095,25 @@ def _sweep_genre(
     if embeddings_out is None:
         return _sweep_one_model(GENRE_MODEL, buffers, models_dir, failed, on_failure)
 
-    def _drop_and_retry(window_index: int) -> None:
-        record_embedding_drop("inference", f"coarse window {window_index}; its genre is re-run without the embedding", exc_info=True)
+    live = [key for key, _buf in buffers if key not in failed]
+    if live:
+        try:
+            _get_classifier(GENRE_EMBEDDING_MODEL, models_dir)  # the sweep below finds it cached and builds nothing
+        except Exception:
+            record_embedding_drop(
+                "inference",
+                f"{len(live)} coarse window(s): the fused genre graph could not be built, so this sweep runs the plain genre classifier",
+                count=len(live),
+                exc_info=True,
+                level=logging.ERROR,
+            )
+            return _sweep_one_model(GENRE_MODEL, buffers, models_dir, failed, on_failure)
+
+    def _note_fused_failure(window_index: int) -> None:
+        log.warning("fused genre call failed on coarse window %d; its genre is re-run without the embedding", window_index, exc_info=True)
 
     fused_failed = set(failed)  # private: a fused failure must not reach the shared kill list
-    swept = _sweep_one_model(GENRE_EMBEDDING_MODEL, buffers, models_dir, fused_failed, _drop_and_retry)
+    swept = _sweep_one_model(GENRE_EMBEDDING_MODEL, buffers, models_dir, fused_failed, _note_fused_failure)
     for key, (predictions, _labels) in swept.items():
         embedding = embedding_of(getattr(predictions, "patches", None))
         if embedding is None:
@@ -1087,7 +1124,12 @@ def _sweep_genre(
             record_embedding_drop("encode", f"coarse window {key}", exc_info=True)
     retry = [(key, buf) for key, buf in buffers if key in fused_failed and key not in failed]
     if retry:
-        swept.update(_sweep_one_model(GENRE_MODEL, retry, models_dir, failed, on_failure))
+        kept = _sweep_one_model(GENRE_MODEL, retry, models_dir, failed, on_failure)
+        swept.update(kept)
+        if kept:
+            record_embedding_drop(
+                "inference", f"coarse window(s) {sorted(kept)}: the fused genre call raised; genre re-run without the embedding", count=len(kept)
+            )
     return swept
 
 

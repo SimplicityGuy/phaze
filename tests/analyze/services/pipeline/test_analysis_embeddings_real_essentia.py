@@ -182,3 +182,50 @@ def test_repeated_fused_sweeps_do_not_grow_peak_rss() -> None:
         f"peak RSS grew {grew / 2**20:.1f} MiB across {_SWEEP_MEASURED} identical fused sweeps "
         f"(budget {_SWEEP_BUDGET_BYTES / 2**20:.0f} MiB): the fused EffNet call is retaining memory per call"
     )
+
+
+# --- a fused graph that cannot be built (phaze-t04h6.4) ------------------------------------------------
+
+
+def test_a_fused_graph_that_cannot_be_built_leaves_the_real_genre_output_identical(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Real essentia refuses the fused graph (a path with no graph behind it); the sweep falls back once, on the real wrapper.
+
+    The genre predictions must equal the option-off sweep's exactly, no embedding may be produced, and the build failure
+    must be logged once for the sweep rather than once per window (what happened when ``_get_classifier`` raised inside
+    every window's ``_predict_single``).
+    """
+    assert _REAL_MODELS_DIR is not None
+    buffers = [(idx, _noise(30.0, seed=40 + idx)) for idx in range(3)]
+
+    plain_failed: set[int] = set()
+    plain = analysis_mod._sweep_genre(buffers, _REAL_MODELS_DIR, plain_failed, _fail_on_any_window, None)
+
+    real_fused = analysis_mod.FusedEffnetDiscogs
+    attempts: list[str] = []
+
+    def fused_from_a_missing_graph(graph_path: str) -> FusedEffnetDiscogs:
+        attempts.append(graph_path)
+        return real_fused(str(Path(graph_path).with_name("no-such-graph.pb")))
+
+    monkeypatch.setattr(analysis_mod, "FusedEffnetDiscogs", fused_from_a_missing_graph)
+    out: dict[int, str] = {}
+    fused_failed: set[int] = set()
+    with caplog.at_level("WARNING"):
+        swept = analysis_mod._sweep_genre(buffers, _REAL_MODELS_DIR, fused_failed, _fail_on_any_window, out)
+
+    assert len(attempts) == 1, "the fused build is tried once for the sweep"
+    assert out == {}, "no embeddings are produced"
+    assert fused_failed == plain_failed == set()
+    assert sorted(swept) == sorted(plain) == [0, 1, 2]
+    for idx in plain:
+        np.testing.assert_array_equal(np.asarray(swept[idx][0]), np.asarray(plain[idx][0]))
+        assert swept[idx][1] == plain[idx][1]
+    errors = [r for r in caplog.records if r.levelname == "ERROR" and "embedding dropped at inference" in r.getMessage()]
+    assert len(errors) == 1, [r.getMessage() for r in caplog.records]
+    assert analysis_mod._classifier_cache == {}
+
+
+def _fail_on_any_window(window_index: int) -> None:
+    raise AssertionError(f"window {window_index} was killed; the plain genre path must keep every window")

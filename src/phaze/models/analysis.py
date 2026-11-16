@@ -243,8 +243,9 @@ class AnalysisEmbedding(Base):
     ``window_index`` is the coarse window's own ``analysis_window.window_index`` -- not an FK to that table,
     whose ``id`` changes on every re-analysis -- so the link is the ``(file_id, window_index)`` pair, exactly
     as on ``analysis_subwindow``. The composite key ``(file_id, model, window_index)`` is the identity: a
-    re-analysis REPLACES a file's rows for a model (:func:`phaze.services.analysis_embedding_store.replace_embeddings`),
-    never appends. ``ON DELETE CASCADE`` to ``files`` so this table never blocks a file or scan deletion.
+    re-analysis REPLACES a file's rows, never appends: a windows-replacing analysis PUT deletes every model's rows for
+    the file, since all were computed over the windows it replaces, and then writes the payload's
+    (:func:`phaze.services.analysis_embedding_store.replace_embeddings`). ``ON DELETE CASCADE`` to ``files`` so this table never blocks a file or scan deletion.
     No pgvector: nothing here is indexed for similarity search.
     """
 

@@ -29,7 +29,9 @@ async def replace_embeddings(session: AsyncSession, file_id: uuid.UUID, payload:
 
     DELETE then INSERT on the CALLER's session, so a re-analysis replaces rather than appends and a
     half-written set is never committed (the contract of ``_replace_subwindows``). Only the payload's own
-    model is replaced: another model's rows for the file stay. An empty ``windows`` list clears the model's
+    model is replaced here: another model's rows for the file stay. The analysis PUT does not rely on that:
+    it deletes every model's rows for the file first, because all of them belong to the windows it replaces
+    (``routers/agent_analysis.put_analysis``, phaze-t04h6.4). An empty ``windows`` list clears the model's
     rows -- a recorded "no embeddings now", never stale ones. Raises ``ValueError`` (before any write) on a
     window whose vector does not decode to 1280 float16 values, or a repeated window index. Returns the
     number of rows written. Does NOT commit.

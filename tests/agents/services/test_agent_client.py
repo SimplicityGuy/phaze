@@ -653,15 +653,37 @@ async def test_the_capability_is_asked_fresh_on_every_put_so_a_server_upgrade_is
     assert [bool(_GRID_KEYS & set(json.loads(call.request.content))) for call in put.calls] == [False, True]
 
 
-@respx.mock
-async def test_an_unreadable_capability_omits_the_grids_and_still_puts(client):  # type: ignore[no-untyped-def]
-    import json
+_WHOAMI_FAILURES = {
+    "5xx": (httpx.Response(503), AgentApiServerError),
+    "connect_error": (httpx.ConnectError("connection refused"), AgentApiServerError),
+    "unparseable_identity": (httpx.Response(200, json={"capabilities": "not a list"}), AgentApiServerError),
+    "404": (httpx.Response(404), AgentApiClientError),
+    "auth": (httpx.Response(403), AgentApiAuthError),
+}
 
+
+@respx.mock
+@pytest.mark.parametrize("failure", sorted(_WHOAMI_FAILURES))
+@pytest.mark.parametrize("payload", ["grids", "embeddings"])
+async def test_a_whoami_failure_sends_no_put_and_raises_what_a_failed_put_raises(client, failure, payload):  # type: ignore[no-untyped-def]
+    """phaze-t04h6.4 finding 1: not knowing the capabilities is not "the server lacks them".
+
+    A PUT stripped of its grids/embeddings would make the server delete the stored rows and keep none of this run's, so no
+    PUT is sent at all; the raise is the class a failed PUT raises, which both lanes retry (the SAQ retry, the burst pod's
+    EXIT_CALLBACK re-drive). The end-to-end half is ``test_a_whoami_failure_before_the_completion_keeps_the_stored_rows_and_
+    the_retry_stores_the_runs_grids_and_embeddings`` in ``tests/agents/routers/test_agent_analysis_embeddings.py``.
+    """
+    response_or_error, raised = _WHOAMI_FAILURES[failure]
     file_id = uuid.uuid4()
-    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(404))
-    put = _analysis_put(file_id, accepts_grids=False)
-    await client.put_analysis(file_id, _payload_with_grids())
-    assert not _GRID_KEYS & set(json.loads(put.calls.last.request.content))
+    route = respx.get(f"{_BASE_URL}/api/internal/agent/whoami")
+    if isinstance(response_or_error, Exception):
+        route.mock(side_effect=response_or_error)
+    else:
+        route.mock(return_value=response_or_error)
+    put = _analysis_put(file_id, accepts_grids=True)
+    with pytest.raises(raised):
+        await client.put_analysis(file_id, _payload_with_grids() if payload == "grids" else _payload_with_embeddings(grids=True))
+    assert put.call_count == 0, "a stripped windows-replacing PUT would delete the stored rows"
 
 
 @respx.mock
@@ -736,3 +758,19 @@ async def test_embeddings_are_dropped_and_counted_when_the_capability_is_missing
     with patch("phaze.services.analysis_embeddings.record_embedding_drop") as drop:
         await client.put_analysis(file_id, _payload_with_embeddings())
     drop.assert_called_once()
+    assert drop.call_args.args[0] == "server_capability", "phaze-t04h6.4 finding 3: counted where grids count the same drop"
+
+
+@respx.mock
+async def test_the_capability_drop_is_counted_under_server_capability(client):  # type: ignore[no-untyped-def]
+    """phaze-t04h6.4 finding 3, on the real counter: ``embedding_stage="server_capability"``, not ``assembly``."""
+    from unittest.mock import patch
+
+    from phaze.services import analysis_embeddings
+
+    file_id = uuid.uuid4()
+    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(200, json=_whoami_body("analysis_grids")))
+    _analysis_put(file_id, accepts_grids=True)
+    with patch.object(analysis_embeddings.telemetry, "add") as add:
+        await client.put_analysis(file_id, _payload_with_embeddings())
+    add.assert_called_once_with("phaze.analysis.embeddings.dropped", 1, embedding_stage="server_capability")

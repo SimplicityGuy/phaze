@@ -702,6 +702,13 @@ per-window Discogs-EffNet embeddings (base64 little-endian float16, 1280 values 
   Do not rely on that: the supported order is still server first. A server that predates a field rejects it with
   a 422, and `FAILURE_IS_TERMINAL[ANALYZE]` makes that permanent, so a finished multi-hour analysis is discarded and
   the file does not come back around.
+- **A `whoami` that fails** (rather than answering without a capability) sends no PUT at all. The completion is
+  retried the way a failed PUT is: the worker lane's SAQ retry, or the burst pod's `EXIT_CALLBACK` re-drive. A PUT
+  stripped of fields the server merely failed to confirm would make the server delete the file's stored grids and
+  embeddings and keep none of this run's.
+- **Turning embeddings off without a rollback:** set `PHAZE_ANALYSIS_EMBEDDINGS=off` in the agent's environment (and
+  in the agent-env ConfigMap for burst pods) and restart. The genre sweep then runs the plain classifier and the PUT
+  carries no `embeddings`; see `docs/configuration.md`.
 - **Body size:** embeddings cost about 3.4 kB per coarse window (3,416 base64 characters), so a 12 h file at 180 s
   coarse windows (240 windows) adds about 0.8 MB to the PUT. The application sets no request-body limit on this
   route (uvicorn and FastAPI have none by default); the schema caps `embeddings` at 5,000 windows (about 17 MB).

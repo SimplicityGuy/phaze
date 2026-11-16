@@ -394,12 +394,19 @@ Each stage reports through `analysis_embeddings.record_embedding_drop` and is co
 
 | `embedding_stage` | what fails | what is dropped | what is kept |
 | --- | --- | --- | --- |
-| `inference` | the fused genre call on a window | that window's embedding | the window and its genre: it is re-swept on the plain genre classifier once the fused graph is released, so one graph is resident at a time, and only a failure there kills it |
+| `inference` | the fused genre call on a window | that window's embedding | the window and its genre: it is re-swept on the plain genre classifier once the fused graph is released, so one graph is resident at a time, and only a failure there kills it. Counted only when that re-sweep keeps the window |
+| `inference` | building the fused graph, checked once per sweep | every live window's embedding in the sweep, with ONE error line | the sweep runs the plain genre classifier, exactly as with the option off |
 | `encode` | a pooled vector float16 cannot hold | that window's embedding | everything else, with no second genre pass |
-| `assembly` | building the file's `embeddings` key | the key for the file | the whole rest of the result |
+| `assembly` | building the file's `embeddings` key, or an embedding whose coarse window the result does not carry | the key for the file, or that window's embedding | the whole rest of the result |
+| `server_capability` | the control plane answers `whoami` without `analysis_embeddings` | the file's embeddings, left off the PUT | the whole rest of the PUT. A `whoami` that FAILS drops nothing: the completion is retried with its full payload |
 
 A window with no patch (2.0 s or less) has no embedding, and that is an absence, not a drop. With the option off, the
-genre sweep is the plain wrapper it always was and the result has no `embeddings` key.
+genre sweep is the plain wrapper it always was and the result has no `embeddings` key. The operator's switch for it is
+`PHAZE_ANALYSIS_EMBEDDINGS` (default on, `docs/configuration.md`).
+
+The second `inference` row, the `assembly` window case and the `server_capability` row were added on 2026-11-15 by the
+implementing seat of phaze-t04h6.4 (review fixes on PR #807), as that seat's own design within the isolation rule
+quoted below.
 
 **The counter and the isolation design are the dispatcher's decision, not the operator's.** Question as put (to the
 dispatcher, 2026-11-13, excerpt): "'Counted' the way 7hcgn.5 counts means a catalogued metric. That forces an edit to

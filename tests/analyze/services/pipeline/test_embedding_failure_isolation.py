@@ -7,7 +7,13 @@ without the option. Each failure mode and the test that discharges it:
 
 * the fused genre call raises on a window -> ``test_a_fused_call_that_raises_costs_the_window_its_embedding_only``: the
   window is re-swept on the plain classifier after the fused graph is released, so its genre is unchanged and one graph
-  is resident at a time (``test_the_retry_builds_its_graph_only_after_the_fused_one_is_released``);
+  is resident at a time (``test_the_retry_builds_its_graph_only_after_the_fused_one_is_released``); the drop is counted
+  only when the re-sweep keeps the window (``test_a_window_the_plain_classifier_also_fails_is_killed_as_before``,
+  phaze-t04h6.4);
+* the fused graph cannot be BUILT -> ``test_a_fused_build_failure_logs_once_per_sweep_and_keeps_the_genre_output_identical``
+  (phaze-t04h6.4): one error line and one counted drop for the sweep, the plain genre path, no embeddings; the real
+  graph's half is ``test_analysis_embeddings_real_essentia.py::test_a_fused_graph_that_cannot_be_built_leaves_the_real_genre_output_identical``;
+* the plain and fused classifiers never share a cache entry -> ``test_the_cache_never_hands_one_genre_classifier_to_the_other``;
 * a pooled vector float16 cannot hold -> ``test_a_vector_float16_cannot_hold_drops_that_windows_embedding_only``;
 * building the file's ``embeddings`` key raises -> ``test_an_assembly_error_omits_the_embeddings_and_keeps_the_result``;
 * the option off runs the exact current path -> ``test_with_the_option_off_the_genre_sweep_never_builds_the_fused_classifier``
@@ -72,13 +78,19 @@ class _Graphs:
         plain_raises: frozenset[float] = frozenset(),
         fused_inf: frozenset[float] = frozenset(),
         fused_empty: frozenset[float] = frozenset(),
+        fused_build_raises: bool = False,
     ) -> None:
         self.fused_raises, self.plain_raises, self.fused_inf, self.fused_empty = fused_raises, plain_raises, fused_inf, fused_empty
+        self.fused_build_raises = fused_build_raises
+        self.fused_build_attempts = 0
         self.built: list[tuple[str, bool]] = []
         self.resident: list[int] = []
         self.plain_genre_seen: list[float] = []
 
     def construct(self, model: ModelConfig, _graph_path: str, _batch_size: int) -> Any:
+        if model.fused_embedding and self.fused_build_raises:
+            self.fused_build_attempts += 1
+            raise RuntimeError("fused graph could not be built")
         self.built.append((model.name, model.fused_embedding))
         self.resident.append(len(analysis_mod._classifier_cache))
         genre = model.classifier_type == "effnet_discogs"
@@ -203,7 +215,81 @@ def test_a_window_the_plain_classifier_also_fails_is_killed_as_before(
     assert failed == {1}
     on_failure.assert_called_once_with(1)
     assert _decoded(out) == {0: _LEVELS[0], 2: _LEVELS[2]}
+    assert drops == [], "the window lost its genre too: it is a window failure (on_failure), not an embedding drop (phaze-t04h6.4)"
+
+
+def test_inference_drops_are_counted_only_for_windows_whose_genre_survived(
+    monkeypatch: pytest.MonkeyPatch, drops: list[tuple[float, dict[str, Any]]]
+) -> None:
+    """Two windows fail the fused call; the plain re-sweep keeps one and kills the other. One drop, for the survivor."""
+    graphs = _Graphs(fused_raises=frozenset({_LEVELS[0], _LEVELS[1]}), plain_raises=frozenset({_LEVELS[1]}))
+    _features, failed, on_failure, out = _sweep(monkeypatch, graphs, embeddings=True)
+    assert failed == {1}
+    on_failure.assert_called_once_with(1)
+    assert _decoded(out) == {2: _LEVELS[2]}
     assert drops == [(1, {"embedding_stage": "inference"})]
+
+
+# --- the fused graph cannot be built (phaze-t04h6.4) -----------------------------------------------------------------
+
+
+def test_a_fused_build_failure_logs_once_per_sweep_and_keeps_the_genre_output_identical(
+    monkeypatch: pytest.MonkeyPatch, baseline: dict[int, dict[str, Any]], drops: list[tuple[float, dict[str, Any]]], caplog: pytest.LogCaptureFixture
+) -> None:
+    graphs = _Graphs(fused_build_raises=True)
+    with caplog.at_level("WARNING"):
+        features, failed, on_failure, out = _sweep(monkeypatch, graphs, embeddings=True)
+    assert features == baseline, "the sweep is the plain genre sweep, exactly as with the option off"
+    assert failed == set()
+    on_failure.assert_not_called()
+    assert out == {}, "no embeddings are stored"
+    assert graphs.fused_build_attempts == 1, "the build is tried once per sweep, not once per window"
+    assert graphs.plain_genre_seen == sorted(_LEVELS.values()), "every window ran on the plain genre classifier, once"
+    assert drops == [(len(_LEVELS), {"embedding_stage": "inference"})], "one counted drop covering the sweep's windows"
+    embedding_lines = [r for r in caplog.records if "embedding" in r.getMessage() or "fused" in r.getMessage()]
+    assert len(embedding_lines) == 1, [r.getMessage() for r in embedding_lines]
+    assert embedding_lines[0].levelname == "ERROR"
+    assert embedding_lines[0].exc_info is not None, "the one line carries the build's traceback"
+
+
+def test_a_fused_build_failure_is_not_tried_for_a_sweep_with_no_live_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    graphs = _Graphs(fused_build_raises=True)
+    _install(monkeypatch, graphs)
+    out: dict[int, str] = {}
+    swept = analysis_mod._sweep_genre(_buffers(), "/m", set(_LEVELS), MagicMock(), out)
+    assert swept == {}
+    assert graphs.fused_build_attempts == 0, "nothing to sweep, so no graph to build"
+    assert analysis_mod._classifier_cache == {}
+
+
+# --- the classifier cache (phaze-t04h6.4) ----------------------------------------------------------------------------
+
+
+def test_the_cache_never_hands_one_genre_classifier_to_the_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GENRE_MODEL and GENRE_EMBEDDING_MODEL load one ``.pb``; a filename-keyed cache returned whichever was built first."""
+    from phaze.services.analysis_models import GENRE_EMBEDDING_MODEL
+
+    graphs = _Graphs()
+    _install(monkeypatch, graphs)
+    try:
+        plain = analysis_mod._get_classifier(GENRE_MODEL, "/m")
+        fused = analysis_mod._get_classifier(GENRE_EMBEDDING_MODEL, "/m")
+        assert fused is not plain
+        assert embedding_of_call(fused) is not None, "the fused model got the fused classifier"
+        assert embedding_of_call(plain) is None, "the plain model kept the plain wrapper"
+        assert analysis_mod._get_classifier(GENRE_MODEL, "/m") is plain
+        assert analysis_mod._get_classifier(GENRE_EMBEDDING_MODEL, "/m") is fused
+        assert graphs.built == [(GENRE_MODEL.name, False), (GENRE_MODEL.name, True)], "each built once, neither from the other's entry"
+        analysis_mod._release_classifier_timed(GENRE_EMBEDDING_MODEL)
+        assert analysis_mod._get_classifier(GENRE_MODEL, "/m") is plain, "releasing the fused graph leaves the plain one"
+    finally:
+        analysis_mod._classifier_cache.clear()
+
+
+def embedding_of_call(classifier: Any) -> Any:
+    from phaze.services.analysis_embeddings import embedding_of
+
+    return embedding_of(classifier(np.full(16000, _LEVELS[0], dtype=np.float32)))
 
 
 def test_a_window_killed_by_an_earlier_model_is_not_re_swept(monkeypatch: pytest.MonkeyPatch) -> None:
