@@ -781,3 +781,24 @@ def test_readonly_archive_runbook_documents_mapping_operator_steps_and_check() -
         "ro,root_squash",
     ):
         assert needle in text, needle
+
+
+def _deployment_doc() -> str:
+    return " ".join((Path(__file__).resolve().parents[3] / "docs" / "deployment.md").read_text().split())
+
+
+def test_deployment_doc_says_server_first_and_names_the_embeddings_field() -> None:
+    """phaze-qijoh: the rollout order for the optional ``embeddings`` field is stated, server first."""
+    section = _deployment_doc().split("## Upgrading: server first, then agents", 1)[1].split(" ## Rollback Procedure", 1)[0]
+    assert "Upgrade the **application server first**" in section
+    assert "`embeddings`" in section
+    assert "analysis_embeddings" in section
+
+
+def test_deployment_doc_body_size_figures_match_the_schema() -> None:
+    """phaze-qijoh: the documented per-window size and window cap are the schema's, so they cannot drift apart."""
+    from phaze.schemas.agent_analysis import EMBEDDING_VECTOR_CHARS, MAX_EMBEDDING_WINDOWS
+
+    doc = _deployment_doc()
+    assert f"{EMBEDDING_VECTOR_CHARS:,} base64 characters" in doc
+    assert f"caps `embeddings` at {MAX_EMBEDDING_WINDOWS:,} windows" in doc

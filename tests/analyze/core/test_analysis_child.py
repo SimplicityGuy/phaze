@@ -117,7 +117,9 @@ def test_result_is_byte_identical_to_direct_analyze_file(_mock_es: MagicMock, mo
     mock_get_labels.side_effect = _mock_labels_file
     from phaze.services.analysis import analyze_file
 
-    direct = analyze_file("/fake/audio.mp3", "/fake/models", include_grids=True)  # the child asks for the grids (phaze-ek9zf)
+    direct = analyze_file(
+        "/fake/audio.mp3", "/fake/models", include_grids=True, include_embeddings=True
+    )  # what the child asks for (phaze-ek9zf, phaze-qijoh)
 
     monkeypatch.delenv(_TARGET_ENV, raising=False)  # default target: phaze.services.analysis:analyze_file
     protocol = io.StringIO()
@@ -214,3 +216,85 @@ def test_the_default_target_is_asked_for_the_grids_and_a_stub_target_is_not(monk
     rc, lines = _run_child(monkeypatch, f"{_STUBS}:fake_analyze", ["/fake/audio.mp3", "--models-dir", "/fake/models"])
     assert rc == 0
     assert "include_grids" not in lines[-1]["result"].get("echo", {})
+
+
+def test_the_default_target_is_asked_for_embeddings_and_a_stub_target_is_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-qijoh: the real ``analyze_file`` gets ``include_embeddings=True``; the stub seam keeps its old kwargs."""
+    seen: dict[str, Any] = {}
+
+    def _fake(file_path: str, models_dir: str, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.delenv(_TARGET_ENV, raising=False)
+    monkeypatch.delenv(analysis_child.EMBEDDINGS_ENV, raising=False)  # default ON (phaze-t04h6.4)
+    with patch("phaze.services.analysis.analyze_file", _fake):
+        rc = run(_parse_args(["/fake/audio.mp3", "--models-dir", "/fake/models"]), io.StringIO())
+    assert rc == 0
+    assert seen["include_embeddings"] is True
+
+    rc, lines = _run_child(monkeypatch, f"{_STUBS}:fake_analyze", ["/fake/audio.mp3", "--models-dir", "/fake/models"])
+    assert rc == 0
+    assert "include_embeddings" not in lines[-1]["result"].get("echo", {})
+
+
+# --- PHAZE_ANALYSIS_EMBEDDINGS: the operator's off switch (phaze-t04h6.4) -------------------------------------------
+
+
+def _genre_builds_under(monkeypatch: pytest.MonkeyPatch, setting: str | None) -> tuple[dict[str, Any], list[tuple[str, bool]]]:
+    """Run the child's REAL default target (mocked essentia) with the setting as given; return the result and genre builds."""
+    from phaze.services import analysis as analysis_mod
+
+    monkeypatch.delenv(_TARGET_ENV, raising=False)
+    if setting is None:
+        monkeypatch.delenv(analysis_child.EMBEDDINGS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(analysis_child.EMBEDDINGS_ENV, setting)
+    built: list[tuple[str, bool]] = []
+    real_construct = analysis_mod._construct_classifier
+
+    def spy(model: Any, graph_path: str, batch_size: int) -> Any:
+        if model.classifier_type == "effnet_discogs":
+            built.append((model.name, model.fused_embedding))
+        return real_construct(model, graph_path, batch_size)
+
+    monkeypatch.setattr(analysis_mod, "_construct_classifier", spy)
+    protocol = io.StringIO()
+    rc = run(_parse_args(["/fake/audio.mp3", "--models-dir", "/fake/models"]), protocol)
+    assert rc == 0, protocol.getvalue()
+    lines = [json.loads(line) for line in protocol.getvalue().splitlines()]
+    assert lines[-1]["type"] == "result"
+    return lines[-1]["result"], built
+
+
+@pytest.mark.parametrize("setting", ["off", "0", "false", "NO", " Off "])
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_with_the_embeddings_setting_off_the_child_runs_the_plain_genre_path(
+    _mock_es: MagicMock, mock_get_labels: MagicMock, monkeypatch: pytest.MonkeyPatch, setting: str
+) -> None:
+    mock_get_labels.side_effect = _mock_labels_file
+    result, built = _genre_builds_under(monkeypatch, setting)
+    assert "embeddings" not in result, "no embeddings computed, so the PUT carries none"
+    assert built, "the genre sweep ran (otherwise the next assertion would prove nothing)"
+    assert all(not fused for _name, fused in built), f"the fused classifier was built with the setting {setting!r}: {built}"
+
+
+@pytest.mark.parametrize("setting", [None, "", "on", "1", "TRUE", "yes"])
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_with_the_embeddings_setting_on_or_unset_the_child_runs_the_fused_path(
+    _mock_es: MagicMock, mock_get_labels: MagicMock, monkeypatch: pytest.MonkeyPatch, setting: str | None
+) -> None:
+    """The control for the test above: the same spy sees the fused build when the setting is on, its default."""
+    mock_get_labels.side_effect = _mock_labels_file
+    result, built = _genre_builds_under(monkeypatch, setting)
+    assert "embeddings" in result
+    assert any(fused for _name, fused in built)
+
+
+def test_an_unrecognised_embeddings_setting_leaves_embeddings_on_and_says_so(capsys: pytest.CaptureFixture[str]) -> None:
+    assert analysis_child.embeddings_enabled({analysis_child.EMBEDDINGS_ENV: "disabled"}) is True
+    assert "ignoring PHAZE_ANALYSIS_EMBEDDINGS='disabled'" in capsys.readouterr().err
+    assert analysis_child.embeddings_enabled({}) is True
+    assert capsys.readouterr().err == ""

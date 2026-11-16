@@ -41,6 +41,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWindowPayload,
     AnalysisWritePayload,
     StyleScore,
+    embedding_payload_fields,
     grid_payload_fields,
 )
 from phaze.schemas.agent_tasks import ProcessFilePayload
@@ -617,6 +618,7 @@ def _build_analysis_write_payload(analysis: object) -> AnalysisWritePayload:
         coarse_windows_total=result.get("coarse_windows_total"),
         windows=windows,
         **grid_payload_fields(result),
+        **embedding_payload_fields(result),
     )
 
 

@@ -19,7 +19,7 @@ import pytest
 from sqlalchemy import func, select
 
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisEmbedding, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
@@ -162,6 +162,7 @@ async def test_invalidate_content_state_drops_exactly_the_state_derived_from_the
             AnalysisWindow(file_id=file_id, tier="fine", window_index=0, start_sec=0.0, end_sec=30.0),
             AnalysisSubwindow(file_id=file_id, window_index=0, sub_index=0, start_sec=0.0, end_sec=15.0, mood_scores=[0.5] * 11),
             AnalysisBeatGrid(file_id=file_id, beats=[0.5, 1.0], beat_count=2),
+            AnalysisEmbedding(file_id=file_id, model="m", window_index=0, dim=1280, vector=bytes(2560)),
             SetProfile(file_id=file_id),
             pending,
             CloudJob(file_id=file_id, status=CloudJobStatus.SUCCEEDED.value),
@@ -188,6 +189,7 @@ async def test_invalidate_content_state_drops_exactly_the_state_derived_from_the
         AnalysisWindow,
         AnalysisSubwindow,
         AnalysisBeatGrid,
+        AnalysisEmbedding,
         SetProfile,
         RenameProposal,
         CloudJob,

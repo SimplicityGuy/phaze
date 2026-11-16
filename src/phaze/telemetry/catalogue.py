@@ -177,6 +177,13 @@ GRID_STAGE = LabelSpec(
     values=("fine_ticks", "coarse_pooling", "assembly", "payload", "server_capability"),
 )
 
+EMBEDDING_STAGE = LabelSpec(
+    name="embedding_stage",
+    cardinality=4,
+    description="Where a per-window EffNet embedding was dropped instead of failing the analysis.",
+    values=("inference", "encode", "assembly", "server_capability"),
+)
+
 # The bounded model dimension. Three labels rather than one composite, so a dashboard can
 # aggregate by classifier_type (the phaze-8ifq8 question) without string surgery in PromQL.
 MODEL_NAME = LabelSpec(
@@ -539,6 +546,17 @@ CATALOGUE: tuple[MetricSpec, ...] = (
             "a whole grid at assembly or payload validation, or both grids for a server without the capability."
         ),
         labels=(GRID_STAGE,),
+    ),
+    MetricSpec(
+        name="phaze.analysis.embeddings.dropped",
+        kind="counter",
+        unit="{embeddings}",
+        description=(
+            "Per-window EffNet embeddings left out instead of failing the analysis: a window whose fused genre call raised "
+            "(its genre re-run on the plain classifier) or a sweep whose fused graph could not be built, a vector float16 "
+            "cannot hold, the file's embeddings at assembly, or the file's embeddings for a server without the capability."
+        ),
+        labels=(EMBEDDING_STAGE,),
     ),
     MetricSpec(
         name="phaze.analysis.chunks",

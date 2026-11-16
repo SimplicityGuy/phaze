@@ -22,6 +22,7 @@ by Alembic using the async template (`alembic/`). Mutable operational models use
 | `analysis_window`     | Per-window time series plus nullable energy and mood score projections (1:many with `files`, `ON DELETE CASCADE`) |
 | `analysis_subwindow`  | Mood per fixed 15 s sub-window of each coarse window, positional in `MOOD_ORDER` (1:many with `files`, `ON DELETE CASCADE`) |
 | `analysis_beat_grid`  | One continuous file-relative beat grid per file, float32 `real[]`, with recorded gaps (`file_id` PK/FK, 1:1 with `files`, `ON DELETE CASCADE`) |
+| `analysis_embedding`  | Pooled 1280-d EffNet embedding per coarse window as little-endian float16 `bytea`, replaced on re-analysis (1:many with `files`, `ON DELETE CASCADE`) |
 | `set_profile`         | Whole-set projection (`file_id` PK/FK, 1:1 with `files`, `ON DELETE CASCADE`) |
 | `proposals`           | AI-generated rename/move proposals (`ProposalStatus`)                  |
 | `execution_log`       | Per-proposal execution attempts and terminal status, with source/destination evidence               |
@@ -249,10 +250,10 @@ just show-db-history         # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-098)
+### Post-baseline chain (040-099)
 
-`alembic/versions/` holds **60** files: the `039` baseline plus a linear chain to the current
-head, **`098`**.
+`alembic/versions/` holds **61** files: the `039` baseline plus a linear chain to the current
+head, **`099`**.
 
 | Rev | Change |
 |-----|--------|
@@ -314,7 +315,8 @@ head, **`098`**.
 | `095` | Create the seven stable `analytics_*` views and grant `SELECT` on them (and `USAGE` on `public`) to the read-only role `analytics_ro` (no base-table privilege). The role is **provisioned by the deployment before upgrading** and never created by a migration; 095 fails, before any DDL, while it is absent. See [Read-only analytics access](analytics-read-only-access.md#provisioning-the-role) |
 | `096` | Publish each agent's container path prefixes to `analytics_ro`: new view `analytics_agent_path_prefixes` (one row per agent and prefix) and `agent_id` appended to `analytics_files` so a file joins to its agent; no credential column is projected |
 | `097` | Add `ix_files_created_at_id` on `files (created_at, id)`, built `CONCURRENTLY`: the cloud staging walk's FIFO keyset order, so a page is an index scan that stops after its `LIMIT` instead of a sort of every awaiting row |
-| `098` | Create `analysis_subwindow` (mood per 15 s sub-window of each coarse window) and `analysis_beat_grid` (one stitched float32 beat grid per file); both start empty, existing tables untouched — **head** |
+| `098` | Create `analysis_subwindow` (mood per 15 s sub-window of each coarse window) and `analysis_beat_grid` (one stitched float32 beat grid per file); both start empty, existing tables untouched |
+| `099` | Create `analysis_embedding` (one float16 `bytea` EffNet embedding per coarse window, key `(file_id, model, window_index)`, `ON DELETE CASCADE`); starts empty, existing tables untouched — **head** |
 
 **Five migrations in this chain (`048`, `050`, `058`, `081`, `097`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
@@ -339,8 +341,8 @@ to `head`) can be several revisions ahead of production. Check the live position
 ## Focused relationship views
 
 The overview above selects the core file facts. These views show related records without
-claiming to be a complete physical-schema export. Current ORM metadata declares **47 tables
-and 49 foreign keys**. Selected fields are shown; unlinked identifiers do not imply a SQL
+claiming to be a complete physical-schema export. Current ORM metadata declares **48 tables
+and 50 foreign keys**. Selected fields are shown; unlinked identifiers do not imply a SQL
 constraint. Provider observations and selection events preserve evidence; mutable work,
 memberships and read-cache rows have different lifetimes.
 

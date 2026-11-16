@@ -33,6 +33,11 @@ class ModelConfig:
     variant: str  # e.g., "musicnn_msd", "musicnn_mtt", "vggish"
     filename: str  # e.g., "mood_acoustic-musicnn-msd-2" (no extension)
     classifier_type: str  # "musicnn", "vggish", "effnet_discogs"
+    # phaze-l5mzm: build the fused EffNet classifier, which returns the same logits plus the pooled 1280-d
+    # embedding from ONE session (analysis.FusedEffnetDiscogs). Only GENRE_EMBEDDING_MODEL sets it. It is
+    # deliberately NOT a classifier_type: the metric labels, and so every inference histogram, stay the ones
+    # the genre model has always reported under.
+    fused_embedding: bool = False
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,10 @@ GENRE_MODEL = ModelConfig(
     filename="discogs-effnet-bs64-1",
     classifier_type="effnet_discogs",
 )
+
+# The genre model as swept when the caller asks for embeddings (analyze_file's include_embeddings). Same
+# graph, same labels, same logits bit for bit; the fused classifier also hands back the embedding.
+GENRE_EMBEDDING_MODEL = replace(GENRE_MODEL, fused_embedding=True)
 
 
 # TensorFlow inference batch size (phaze-0582)

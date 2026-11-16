@@ -72,7 +72,7 @@ from typing import IO, TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 
 from phaze.telemetry import configure_telemetry, extract_from, shutdown_telemetry
@@ -84,6 +84,28 @@ _DEFAULT_TARGET = "phaze.services.analysis:analyze_file"
 # Mirrors the worker-side cap (tasks/functions.py::_ERROR_DETAIL_MAX): bound the error
 # text before it crosses the process boundary so a huge traceback never bloats the pipe.
 _ERROR_MESSAGE_MAX = 2000
+# phaze-t04h6.4: the operator's off switch for the per-window embeddings and the fused EffNet genre path that reads
+# them (docs/configuration.md). Default ON. Like PHAZE_ANALYSIS_TF_BATCH_SIZE it is read from this child's own
+# environment, which it inherits from the worker (the agent's env) or the burst pod (the agent-env ConfigMap), so
+# both lanes honour one variable and turning it off needs a restart, not an image rollback.
+EMBEDDINGS_ENV = "PHAZE_ANALYSIS_EMBEDDINGS"
+_OFF_VALUES = frozenset({"0", "false", "no", "off"})
+_ON_VALUES = frozenset({"", "1", "true", "yes", "on"})
+
+
+def embeddings_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether this child asks ``analyze_file`` for embeddings: ``PHAZE_ANALYSIS_EMBEDDINGS``, default on.
+
+    ``0``/``false``/``no``/``off`` (any case) turn it off; unset, empty, ``1``/``true``/``yes``/``on`` leave it on. Any
+    other value leaves it ON and says so on stderr (the parent frames that into its log): a typo must not silently
+    change what every analysis computes, and on is the shipped behaviour.
+    """
+    raw = (os.environ if environ is None else environ).get(EMBEDDINGS_ENV, "").strip().lower()
+    if raw in _OFF_VALUES:
+        return False
+    if raw not in _ON_VALUES:
+        sys.stderr.write(f"phaze.analysis_child: ignoring {EMBEDDINGS_ENV}={raw!r} (expected on/off); embeddings stay on\n")
+    return True
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -176,6 +198,9 @@ def run(args: argparse.Namespace, protocol: IO[str]) -> int:
             # phaze-ek9zf: the REAL analyze_file also returns the sub-window mood and beat grid. Gated to the real
             # target so stub targets (the test seam) keep receiving exactly the kwargs they always did.
             kwargs["include_grids"] = True
+            # phaze-qijoh: the per-window embeddings, carried to the server by the PUT. phaze-t04h6.4: unless the operator
+            # turned them off, in which case the genre sweep is the plain wrapper and the result has no embeddings key.
+            kwargs["include_embeddings"] = embeddings_enabled()
         result = target(args.file_path, args.models_dir, **kwargs)
         _emit(protocol, {"type": "result", "result": result})
     except Exception as exc:

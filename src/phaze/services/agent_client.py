@@ -360,16 +360,37 @@ class PhazeAgentClient:
         followed, never cached past), and the grids are left out unless it lists ``analysis_grids``. This is a
         capability check rather than a retry-without-grids on 422: a 422 cannot say WHICH field the server refused,
         and retrying on it would also mask a genuine validation defect in the core fields.
+
+        **Not knowing is not the same as "the server lacks them" (phaze-t04h6.4).** A server that ANSWERS whoami
+        without a capability gets the PUT without that field, as above. A whoami that FAILS raises instead, before any
+        PUT is sent: the server deletes a file's stored grids and embeddings whenever a windows-replacing PUT omits
+        them, so a PUT stripped because of a transient whoami failure would discard what this run computed AND the
+        rows the last run stored. The raise is the class the PUT itself raises on the same failure
+        (:class:`AgentApiServerError` for a transport error or a 5xx), so both lanes retry the completion exactly as
+        they retry a failed PUT: the SAQ ``process_file`` job by its SAQ retry, the burst pod by exiting
+        ``EXIT_CALLBACK`` for reconcile to re-drive.
         """
         from phaze.schemas.agent_analysis import AnalysisWriteResponse  # noqa: PLC0415
 
         grids = sorted(payload.model_fields_set & {"subwindows", "beat_grid"})
+        has_embeddings = "embeddings" in payload.model_fields_set
         exclude: set[str] = set()
-        if grids and not await self._server_accepts_analysis_grids():
-            from phaze.services.grid_drops import record_grid_drop  # noqa: PLC0415
+        if grids or has_embeddings:
+            capabilities = await self._server_capabilities()
+            from phaze.schemas.agent_identity import ANALYSIS_EMBEDDINGS_CAPABILITY, ANALYSIS_GRIDS_CAPABILITY  # noqa: PLC0415
 
-            exclude = set(grids)
-            record_grid_drop("server_capability", f"{', '.join(grids)} of file {file_id}: the control plane does not accept grids", count=len(grids))
+            if grids and ANALYSIS_GRIDS_CAPABILITY not in capabilities:
+                from phaze.services.grid_drops import record_grid_drop  # noqa: PLC0415
+
+                exclude |= set(grids)
+                record_grid_drop(
+                    "server_capability", f"{', '.join(grids)} of file {file_id}: the control plane does not accept grids", count=len(grids)
+                )
+            if has_embeddings and ANALYSIS_EMBEDDINGS_CAPABILITY not in capabilities:
+                from phaze.services.analysis_embeddings import record_embedding_drop  # noqa: PLC0415
+
+                exclude.add("embeddings")
+                record_embedding_drop("server_capability", f"embeddings of file {file_id}: the control plane does not accept embeddings")
         response = await self._request(
             "PUT",
             f"/api/internal/agent/analysis/{file_id}",
@@ -377,16 +398,23 @@ class PhazeAgentClient:
         )
         return AnalysisWriteResponse.model_validate(response.json())
 
-    async def _server_accepts_analysis_grids(self) -> bool:
-        """Whether the control plane's whoami lists ``analysis_grids``. Not knowing reads as no: the safe direction."""
-        from phaze.schemas.agent_identity import ANALYSIS_GRIDS_CAPABILITY  # noqa: PLC0415
+    async def _server_capabilities(self) -> list[str]:
+        """The control plane's whoami capabilities, or a raise when they cannot be learned (see :meth:`put_analysis`).
 
+        An :class:`AgentApiError` from whoami propagates as it is: it is what the PUT would raise for the same failure.
+        Anything else (a body that does not parse as an identity) is wrapped in :class:`AgentApiServerError`, the
+        retryable class, because the server answered but said nothing usable about what it accepts.
+        """
         try:
             identity = await self.whoami()
-        except Exception as exc:  # any failure to learn the capability omits the grids; the PUT then reports its own error
-            logger.warning("agent_api grid capability unknown, omitting grids error=%s", type(exc).__name__)
-            return False
-        return ANALYSIS_GRIDS_CAPABILITY in identity.capabilities
+        except AgentApiError as exc:
+            logger.warning("agent_api capabilities unknown, completion PUT not sent error=%s", type(exc).__name__)
+            raise
+        except Exception as exc:
+            logger.warning("agent_api capabilities unreadable, completion PUT not sent error=%s", type(exc).__name__)
+            msg = "GET /api/internal/agent/whoami -> capabilities unreadable"
+            raise AgentApiServerError(msg) from exc
+        return list(identity.capabilities)
 
     async def request_download_url(self, file_id: uuid.UUID) -> tuple[str, str, str | None, PresignDownloadMetadata | None]:
         """POST /api/internal/agent/files/{file_id}/presign-download -- mint a fresh presigned GET URL (KJOB-02).

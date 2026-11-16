@@ -98,6 +98,7 @@ _EXPECTED_TABLES = frozenset(
         # phaze-f6eeb (migration 095): sub-window mood and the per-file beat grid, kept from the analysis
         # instead of discarded (docs/design/0026-subwindow-mood-and-beat-grid.md).
         "analysis_beat_grid",
+        "analysis_embedding",
         "analysis_subwindow",
         "analysis_window",
         # phaze-j0ixx (migration 071): the per-backend control-plane-unreachable breaker. Its own table
@@ -392,6 +393,7 @@ def test_baseline_is_the_only_migration() -> None:
         "096_analytics_agent_path_prefixes.py",
         "097_files_created_at_index.py",
         "098_subwindow_mood_and_beat_grid.py",
+        "099_analysis_embedding.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -420,10 +422,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` lands at the current head (098: sub-window mood and the beat grid)."""
+    """A bare ``upgrade head`` lands at the current head (099: per-window embeddings)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "098"
+    assert version == "099"
 
 
 @pytest.mark.asyncio
@@ -857,7 +859,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "098"
+        assert version == "099"
     finally:
         if engine is not None:
             await engine.dispose()

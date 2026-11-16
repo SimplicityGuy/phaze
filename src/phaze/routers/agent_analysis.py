@@ -53,7 +53,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisBeatGrid, AnalysisResult, AnalysisSubwindow, AnalysisWindow
+from phaze.models.analysis import AnalysisBeatGrid, AnalysisEmbedding, AnalysisResult, AnalysisSubwindow, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.set_profile import SetProfile
 from phaze.routers.agent_auth import get_authenticated_agent
@@ -71,6 +71,7 @@ from phaze.schemas.agent_analysis import (
 )
 from phaze.services import s3_staging
 from phaze.services.agent_upsert import build_field_lww_set_clause
+from phaze.services.analysis_embedding_store import replace_embeddings
 from phaze.services.bulk_insert import chunk_rows
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
@@ -446,6 +447,7 @@ async def put_analysis(
     # Likewise the grids (phaze-ek9zf): child tables, never aggregate columns or `features` overflow.
     dumped.pop("subwindows", None)
     dumped.pop("beat_grid", None)
+    dumped.pop("embeddings", None)  # phaze-qijoh: a child table too
 
     if "dominant_style" not in dumped and body.windows:
         dominant = _dominant_from_windows(body.windows)
@@ -505,6 +507,17 @@ async def put_analysis(
         await _replace_beat_grid(session, file_id, body.beat_grid)
     elif replacing_run:
         await session.execute(delete(AnalysisBeatGrid).where(AnalysisBeatGrid.file_id == file_id))
+    # phaze-qijoh: the per-window embeddings follow the same rule, in the same transaction: written if sent, DELETED if
+    # omitted on a windows-replacing PUT (an agent on the previous image produced none, and a kept set would sit next to
+    # new windows as stale data that reads as current). phaze-t04h6.4: the stored embeddings are replaced AS A SET, every
+    # model's rows, because every model's rows were computed over the windows this PUT just replaced. A model-scoped
+    # delete left another model's rows outliving their windows. The schema guarantees embeddings arrive only with
+    # windows (AnalysisWritePayload._embeddings_name_this_puts_coarse_windows), so a PUT carrying them is always
+    # a replacing one and this delete always runs first.
+    if replacing_run:
+        await session.execute(delete(AnalysisEmbedding).where(AnalysisEmbedding.file_id == file_id))
+    if body.embeddings is not None:
+        await replace_embeddings(session, file_id, body.embeddings.model_dump(mode="python"))
 
     # Phase 43 state-advance: a non-empty write (any aggregate/coverage field the
     # client actually set) means analysis produced a real result, so advance the

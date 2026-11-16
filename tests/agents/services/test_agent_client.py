@@ -568,6 +568,7 @@ async def test_get_config_is_a_single_attempt(client):  # type: ignore[no-untype
 # behaves like a server that predates the grid fields: its analysis body forbids unknown keys, so a grid is a 422.
 
 _GRID_KEYS = {"subwindows", "beat_grid"}
+_OPTIONAL_KEYS = _GRID_KEYS | {"embeddings"}  # what a server that predates them would 422 (phaze-qijoh added embeddings)
 
 
 def _whoami_body(*capabilities: str) -> dict[str, object]:
@@ -582,8 +583,8 @@ def _analysis_put(file_id: uuid.UUID, *, accepts_grids: bool) -> respx.Route:
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        if not accepts_grids and _GRID_KEYS & set(body):
-            return httpx.Response(422, json={"detail": [{"type": "extra_forbidden", "loc": ["body", sorted(_GRID_KEYS & set(body))[0]]}]})
+        if not accepts_grids and _OPTIONAL_KEYS & set(body):
+            return httpx.Response(422, json={"detail": [{"type": "extra_forbidden", "loc": ["body", sorted(_OPTIONAL_KEYS & set(body))[0]]}]})
         return httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)})
 
     return respx.put(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}").mock(side_effect=handler)
@@ -615,7 +616,7 @@ async def test_a_newer_agent_against_an_older_server_completes_its_analysis_with
     assert probe.call_count == 1
     assert put.call_count == 1  # one PUT, accepted: no 422 and no retry
     body = json.loads(put.calls.last.request.content)
-    assert not _GRID_KEYS & set(body)
+    assert not _OPTIONAL_KEYS & set(body)
     assert body["bpm"] == 124.0
     assert body["musical_key"] == "A minor"
     assert len(body["windows"]) == 1
@@ -652,15 +653,37 @@ async def test_the_capability_is_asked_fresh_on_every_put_so_a_server_upgrade_is
     assert [bool(_GRID_KEYS & set(json.loads(call.request.content))) for call in put.calls] == [False, True]
 
 
-@respx.mock
-async def test_an_unreadable_capability_omits_the_grids_and_still_puts(client):  # type: ignore[no-untyped-def]
-    import json
+_WHOAMI_FAILURES = {
+    "5xx": (httpx.Response(503), AgentApiServerError),
+    "connect_error": (httpx.ConnectError("connection refused"), AgentApiServerError),
+    "unparseable_identity": (httpx.Response(200, json={"capabilities": "not a list"}), AgentApiServerError),
+    "404": (httpx.Response(404), AgentApiClientError),
+    "auth": (httpx.Response(403), AgentApiAuthError),
+}
 
+
+@respx.mock
+@pytest.mark.parametrize("failure", sorted(_WHOAMI_FAILURES))
+@pytest.mark.parametrize("payload", ["grids", "embeddings"])
+async def test_a_whoami_failure_sends_no_put_and_raises_what_a_failed_put_raises(client, failure, payload):  # type: ignore[no-untyped-def]
+    """phaze-t04h6.4 finding 1: not knowing the capabilities is not "the server lacks them".
+
+    A PUT stripped of its grids/embeddings would make the server delete the stored rows and keep none of this run's, so no
+    PUT is sent at all; the raise is the class a failed PUT raises, which both lanes retry (the SAQ retry, the burst pod's
+    EXIT_CALLBACK re-drive). The end-to-end half is ``test_a_whoami_failure_before_the_completion_keeps_the_stored_rows_and_
+    the_retry_stores_the_runs_grids_and_embeddings`` in ``tests/agents/routers/test_agent_analysis_embeddings.py``.
+    """
+    response_or_error, raised = _WHOAMI_FAILURES[failure]
     file_id = uuid.uuid4()
-    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(404))
-    put = _analysis_put(file_id, accepts_grids=False)
-    await client.put_analysis(file_id, _payload_with_grids())
-    assert not _GRID_KEYS & set(json.loads(put.calls.last.request.content))
+    route = respx.get(f"{_BASE_URL}/api/internal/agent/whoami")
+    if isinstance(response_or_error, Exception):
+        route.mock(side_effect=response_or_error)
+    else:
+        route.mock(return_value=response_or_error)
+    put = _analysis_put(file_id, accepts_grids=True)
+    with pytest.raises(raised):
+        await client.put_analysis(file_id, _payload_with_grids() if payload == "grids" else _payload_with_embeddings(grids=True))
+    assert put.call_count == 0, "a stripped windows-replacing PUT would delete the stored rows"
 
 
 @respx.mock
@@ -672,3 +695,82 @@ async def test_a_put_without_grids_asks_nothing_first(client):  # type: ignore[n
     _analysis_put(file_id, accepts_grids=False)
     await client.put_analysis(file_id, AnalysisWritePayload(bpm=120.0))
     assert probe.call_count == 0
+
+
+def _payload_with_embeddings(*, grids: bool = False):  # type: ignore[no-untyped-def]
+    import numpy as np
+
+    from phaze.job_runner import _build_payload
+    from phaze.services.analysis_embeddings import embeddings_payload, encode_embedding
+
+    result: dict[str, object] = {
+        "bpm": 124.0,
+        "windows": [{"tier": "coarse", "window_index": 0, "start_sec": 0.0, "end_sec": 60.0, "bpm": 124.0}],
+        "embeddings": embeddings_payload({0: encode_embedding(np.ones(1280, dtype=np.float16))}),
+    }
+    if grids:
+        result["beat_grid"] = {"beats": [0.5, 1.0], "gaps": []}
+    return _build_payload(result)
+
+
+@respx.mock
+@pytest.mark.parametrize("whoami", [_whoami_body(), _whoami_body("analysis_grids")], ids=["no_capabilities", "grids_but_not_embeddings"])
+async def test_a_newer_agent_against_a_server_without_the_embeddings_capability_completes_without_them(client, whoami):  # type: ignore[no-untyped-def]
+    import json
+
+    file_id = uuid.uuid4()
+    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(200, json=whoami))
+    put = _analysis_put(file_id, accepts_grids=False)
+    await client.put_analysis(file_id, _payload_with_embeddings())
+    assert put.call_count == 1  # one PUT, accepted: no 422 and no retry
+    body = json.loads(put.calls.last.request.content)
+    assert "embeddings" not in body
+    assert body["bpm"] == 124.0
+    assert len(body["windows"]) == 1
+
+
+@respx.mock
+async def test_a_newer_agent_against_a_server_with_the_capability_sends_its_embeddings_and_grids_on_one_whoami(client):  # type: ignore[no-untyped-def]
+    import json
+
+    from phaze.schemas.agent_identity import ANALYSIS_EMBEDDINGS_CAPABILITY, ANALYSIS_GRIDS_CAPABILITY
+
+    file_id = uuid.uuid4()
+    probe = respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(
+        return_value=httpx.Response(200, json=_whoami_body(ANALYSIS_GRIDS_CAPABILITY, ANALYSIS_EMBEDDINGS_CAPABILITY))
+    )
+    put = _analysis_put(file_id, accepts_grids=True)
+    await client.put_analysis(file_id, _payload_with_embeddings(grids=True))
+    assert probe.call_count == 1
+    body = json.loads(put.calls.last.request.content)
+    assert body["embeddings"]["model"] == "discogs-effnet-bs64-1"
+    assert len(body["embeddings"]["windows"]) == 1
+    assert body["beat_grid"]["beats"] == [0.5, 1.0]
+
+
+@respx.mock
+async def test_embeddings_are_dropped_and_counted_when_the_capability_is_missing(client):  # type: ignore[no-untyped-def]
+    from unittest.mock import patch
+
+    file_id = uuid.uuid4()
+    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(200, json=_whoami_body()))
+    _analysis_put(file_id, accepts_grids=False)
+    with patch("phaze.services.analysis_embeddings.record_embedding_drop") as drop:
+        await client.put_analysis(file_id, _payload_with_embeddings())
+    drop.assert_called_once()
+    assert drop.call_args.args[0] == "server_capability", "phaze-t04h6.4 finding 3: counted where grids count the same drop"
+
+
+@respx.mock
+async def test_the_capability_drop_is_counted_under_server_capability(client):  # type: ignore[no-untyped-def]
+    """phaze-t04h6.4 finding 3, on the real counter: ``embedding_stage="server_capability"``, not ``assembly``."""
+    from unittest.mock import patch
+
+    from phaze.services import analysis_embeddings
+
+    file_id = uuid.uuid4()
+    respx.get(f"{_BASE_URL}/api/internal/agent/whoami").mock(return_value=httpx.Response(200, json=_whoami_body("analysis_grids")))
+    _analysis_put(file_id, accepts_grids=True)
+    with patch.object(analysis_embeddings.telemetry, "add") as add:
+        await client.put_analysis(file_id, _payload_with_embeddings())
+    add.assert_called_once_with("phaze.analysis.embeddings.dropped", 1, embedding_stage="server_capability")

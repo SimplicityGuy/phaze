@@ -6,7 +6,7 @@ while dominant_style carries the duration-modal label. A score dictionary remain
 for rolling-upgrade agents.
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 import math
 from typing import Annotated, Any, Literal
 import uuid
@@ -14,6 +14,10 @@ import uuid
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from phaze.schemas.wire_bounds import INT32_MAX
+from phaze.services.analysis_embeddings import (
+    decode_embedding,
+    record_embedding_drop,
+)
 from phaze.services.beat_grid import stored_beat_grid
 from phaze.services.grid_drops import record_grid_drop
 from phaze.services.pg_text import find_pg_unsafe_json_reason
@@ -170,6 +174,47 @@ class BeatGridPayload(BaseModel):
         return value
 
 
+#: One embedding per COARSE window: a DoS bound on work-per-request (wire_bounds rule 7), not a storage limit. A 24 h file at
+#: 180 s coarse windows is 480, so 5,000 admits ten times that; at ~3.4 kB a window the largest body is ~17 MB.
+MAX_EMBEDDING_WINDOWS = 5000
+#: base64 of 1280 float16 values: ceil(2560 / 3) * 4 characters. The cap refuses a longer string before it is decoded.
+EMBEDDING_VECTOR_CHARS = 3416
+
+
+class EmbeddingWindowPayload(BaseModel):
+    """One coarse window's pooled embedding on the wire: its index and base64 little-endian float16 bytes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window_index: int = Field(ge=0, le=INT32_MAX)
+    vector: str = Field(max_length=EMBEDDING_VECTOR_CHARS)
+
+    @field_validator("vector")
+    @classmethod
+    def _vector_decodes_to_the_fixed_shape(cls, value: str) -> str:
+        decode_embedding(value)  # ValueError (422) on bad base64 or a wrong byte length, so storage can never see one
+        return value
+
+
+class EmbeddingsPayload(BaseModel):
+    """The ``embeddings`` value of ``analyze_file``'s result, as the completion PUT carries it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(min_length=1, max_length=64)  # analysis_embedding.model is String(64)
+    output: str | None = Field(default=None, max_length=64)
+    dim: Literal[1280] = 1280  # == EMBEDDING_DIM; pinned by test_embedding_wire_literals_match_the_codec
+    format: Literal["float16le-base64"] = "float16le-base64"
+    windows: list[EmbeddingWindowPayload] = Field(max_length=MAX_EMBEDDING_WINDOWS)
+
+    @field_validator("windows")
+    @classmethod
+    def _window_indexes_are_unique(cls, value: list[EmbeddingWindowPayload]) -> list[EmbeddingWindowPayload]:
+        if len({w.window_index for w in value}) != len(value):
+            raise ValueError("embedding window indexes must be unique")
+        return value
+
+
 def grid_payload_fields(result: Mapping[str, Any]) -> dict[str, Any]:
     """The optional grid fields of an :class:`AnalysisWritePayload`, from an ``analyze_file`` result.
 
@@ -199,6 +244,37 @@ def grid_payload_fields(result: Mapping[str, Any]) -> dict[str, Any]:
         except ValidationError as exc:
             record_grid_drop("payload", f"the file's beat_grid failed validation ({exc.error_count()} error(s))")
     return fields
+
+
+def embedding_payload_fields(result: Mapping[str, Any]) -> dict[str, Any]:
+    """The optional ``embeddings`` field of an :class:`AnalysisWritePayload`, from an ``analyze_file`` result (phaze-qijoh).
+
+    Present only when the child ran with ``include_embeddings`` and assembled the key. Like a grid, an embeddings
+    value that fails validation is DROPPED, never fatal: it runs after a finished, possibly hours-long analysis, and
+    embeddings are secondary data. The drop is logged and counted on ``phaze.analysis.embeddings.dropped``
+    (``assembly``), and the windows, aggregates and grids go out exactly as without it.
+
+    **The agent half of the window-match rule (phaze-t04h6.4).** The server refuses embeddings that name a coarse
+    window the PUT does not carry, and a 422 on the completion is terminal. So only the embeddings whose coarse window
+    is in the same result's ``windows`` are kept; any other is dropped here (``assembly``, counted per window) and the
+    PUT always passes ``AnalysisWritePayload._embeddings_name_this_puts_coarse_windows``. ``analyze_file`` builds its
+    embeddings from the coarse windows it returns, so on a healthy run nothing is dropped.
+    """
+    raw = result.get("embeddings")
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        embeddings = EmbeddingsPayload.model_validate(raw)
+    except ValidationError as exc:
+        record_embedding_drop("assembly", f"the file's embeddings failed wire validation ({exc.error_count()} error(s))")
+        return {}
+    raw_windows = result.get("windows")
+    coarse = _coarse_window_indexes(raw_windows) if isinstance(raw_windows, list) else set()
+    stray = sorted(w.window_index for w in embeddings.windows if w.window_index not in coarse)
+    if stray:
+        record_embedding_drop("assembly", f"embeddings of coarse window(s) {stray[:10]} the result does not carry", count=len(stray))
+        embeddings = embeddings.model_copy(update={"windows": [w for w in embeddings.windows if w.window_index in coarse]})
+    return {"embeddings": embeddings}
 
 
 def _valid_subwindows(rows: list[Any]) -> list[SubwindowPayload] | None:
@@ -327,6 +403,41 @@ class AnalysisWritePayload(BaseModel):
     # router deletes the stored rows whenever it replaces the windows (they belong to the run that wrote the windows); present = replace wholesale.
     subwindows: list[SubwindowPayload] | None = Field(default=None, max_length=MAX_SUBWINDOWS)
     beat_grid: BeatGridPayload | None = None
+    # Per-window embeddings (phaze-qijoh). OPTIONAL: an agent on the previous image never sends them. Like the grids,
+    # they belong to the run that wrote the windows: absent = this run produced none, so the router deletes the stored
+    # rows whenever it replaces the windows; present = replace wholesale.
+    embeddings: EmbeddingsPayload | None = None
+
+    @model_validator(mode="after")
+    def _embeddings_name_this_puts_coarse_windows(self) -> "AnalysisWritePayload":
+        """Embeddings ride only with the windows they were computed over (phaze-t04h6.4).
+
+        An embedding is one coarse window's vector, so a PUT carrying embeddings must carry its windows, and every
+        embedding's ``window_index`` must be one of this PUT's coarse windows. Anything else would store a vector
+        against a window the run did not produce, and is refused here, before the router writes anything. The agent
+        never sends such a body: :func:`embedding_payload_fields` keeps only the embeddings whose coarse window the
+        same result carries, so this refusal is the server's backstop, not a path a healthy agent can reach (a 422
+        here is terminal for the completion under ``FAILURE_IS_TERMINAL``).
+        """
+        if self.embeddings is None:
+            return self
+        if self.windows is None:
+            raise ValueError("embeddings require the windows they were computed over in the same PUT")
+        stray = sorted({w.window_index for w in self.embeddings.windows} - _coarse_window_indexes(self.windows))
+        if stray:
+            raise ValueError(f"embeddings name coarse window(s) this PUT does not carry: {stray[:10]}")
+        return self
+
+
+def _coarse_window_indexes(windows: Iterable[Any]) -> set[int]:
+    """The ``window_index`` of every coarse-tier window in ``windows`` (payload models or the result's plain dicts)."""
+    indexes: set[int] = set()
+    for window in windows:
+        tier = window.get("tier") if isinstance(window, Mapping) else getattr(window, "tier", None)
+        index = window.get("window_index") if isinstance(window, Mapping) else getattr(window, "window_index", None)
+        if tier == "coarse" and isinstance(index, int) and not isinstance(index, bool):
+            indexes.add(index)
+    return indexes
 
 
 class AnalysisWriteResponse(BaseModel):
