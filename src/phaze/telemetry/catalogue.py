@@ -179,9 +179,9 @@ GRID_STAGE = LabelSpec(
 
 EMBEDDING_STAGE = LabelSpec(
     name="embedding_stage",
-    cardinality=3,
+    cardinality=4,
     description="Where a per-window EffNet embedding was dropped instead of failing the analysis.",
-    values=("inference", "encode", "assembly"),
+    values=("inference", "encode", "assembly", "server_capability"),
 )
 
 # The bounded model dimension. Three labels rather than one composite, so a dashboard can
@@ -553,7 +553,8 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="{embeddings}",
         description=(
             "Per-window EffNet embeddings left out instead of failing the analysis: a window whose fused genre call raised "
-            "(its genre re-run on the plain classifier), a vector float16 cannot hold, or the file's embeddings at assembly."
+            "(its genre re-run on the plain classifier) or a sweep whose fused graph could not be built, a vector float16 "
+            "cannot hold, the file's embeddings at assembly, or the file's embeddings for a server without the capability."
         ),
         labels=(EMBEDDING_STAGE,),
     ),
