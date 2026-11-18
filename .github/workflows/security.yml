@@ -55,7 +55,7 @@ jobs:
         run: just run-bandit
 
       - name: 🌐 Run osv-scanner
-        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36  # v2.7.0
+        uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932  # v2.7.1
 
   semgrep:
     name: Semgrep CE Scan
@@ -133,7 +133,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🔑 Run TruffleHog
-        uses: trufflesecurity/trufflehog@ea68ca03c865c5f324e86e849ced20ed3cf9dbbb  # frozen: v3.99.8
+        uses: trufflesecurity/trufflehog@3bd2b5887eb0efb8fa18bfd1d296032924e4ffdc  # frozen: v3.99.9
         with:
           path: ./
           # Lob is excluded because its detector matches pytest function names, not secrets.
