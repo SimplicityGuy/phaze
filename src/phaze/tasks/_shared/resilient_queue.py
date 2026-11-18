@@ -33,6 +33,24 @@ _RANDOM = secrets.SystemRandom()
 class ResilientPostgresQueue(PostgresQueue):
     """Retry transient SAQ sweep connection failures without hiding persistent outages."""
 
+    async def connect(self) -> None:
+        """Connect, and close the owned pool if connecting fails.
+
+        SAQ opens the pool before ``init_db``. When that fails (for example the broker login is
+        rejected, as through PgBouncer after a password rotation), SAQ's ``disconnect`` is a no-op
+        because ``_connected`` never became true, so the opened pool is left behind. psycopg_pool
+        then keeps retrying its connections in background tasks. ``asyncio.run`` cancels those
+        tasks on the way out, but the pool treats the cancellation as a connection error and
+        reschedules it, so the loop never finishes draining and the server process never exits.
+        Closing the pool here lets a failed startup end the process, so the restart policy recovers.
+        """
+        try:
+            await super().connect()
+        except BaseException:
+            if self._manage_pool_lifecycle:
+                await self.pool.close()
+            raise
+
     async def enqueue(self, job_or_func: str | Job, **kwargs: Any) -> Job | None:
         """Serialize control-side analysis attempts across the ledger and broker commits."""
         function = job_or_func.function if isinstance(job_or_func, Job) else job_or_func

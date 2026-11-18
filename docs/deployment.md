@@ -307,6 +307,7 @@ The `api` container does **not** start uvicorn directly. It runs `uv run python 
 
 1. Runs `phaze.cert_bootstrap.ensure_certs_present(/certs, ...)` to generate (or no-op past) the internal CA + leaf cert **before** uvicorn binds.
 2. `os.execvp`-replaces the process with `uvicorn phaze.main:app --ssl-keyfile /certs/phaze-server.key --ssl-certfile /certs/phaze-server.crt`, so signals and PID 1 propagate cleanly.
+3. A failed application startup ends the container non-zero. uvicorn exits 3 ("Application startup failed. Exiting."), and the entrypoint's exit status is the container's, so `restart: unless-stopped` recovers it once the cause is fixed (for example a rotated database or broker password). The broker pool is closed when its connect fails (`ResilientPostgresQueue.connect`); before that fix, its retrying pool workers kept the process alive, and the container stayed up and unhealthy.
 
 The entrypoint reads three env vars, all with safe defaults so a plain `docker compose up` works in dev: `PHAZE_CERTS_DIR` (default `/certs`), `PHAZE_API_HOST` (default `localhost`, baked into the leaf CN), and `PHAZE_API_TLS_SANS` (default `localhost,127.0.0.1,api`). The bootstrap is idempotent — restarts against a populated `/certs/` skip regeneration.
 

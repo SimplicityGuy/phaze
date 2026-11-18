@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from psycopg_pool import PoolTimeout
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 import pytest
 from saq.queue.postgres import PostgresQueue
 
@@ -113,3 +113,32 @@ async def test_zero_attempt_configuration_hits_defensive_guard() -> None:
 
     with patch("phaze.tasks._shared.resilient_queue.UPKEEP_RETRY_ATTEMPTS", 0), pytest.raises(AssertionError, match="unreachable"):
         await queue.sweep()
+
+
+@pytest.mark.asyncio
+async def test_failed_connect_closes_the_pool_it_opened() -> None:
+    """A broker login rejected at startup must not leave the pool's retrying workers running.
+
+    SAQ opens the pool, then fails in ``init_db`` (the lux shape: PgBouncer rejects the broker
+    login). SAQ's ``disconnect`` is a no-op there because ``_connected`` never became true, so the
+    pool and its retry workers are left behind; ``asyncio.run`` then cannot finish cancelling
+    them and the server never exits. The connect failure must close the pool itself.
+    """
+    # Port 1 refuses immediately, so the pool's workers are retrying in the background, as in
+    # production, rather than sitting idle.
+    pool = AsyncConnectionPool("postgresql://u:p@127.0.0.1:1/d", min_size=1, max_size=2, open=False)
+    queue = ResilientPostgresQueue(pool=pool, name="controller", min_size=1, max_size=2, manage_pool_lifecycle=True)
+
+    try:
+        with (
+            patch.object(PostgresQueue, "init_db", AsyncMock(side_effect=ConnectionError("password authentication failed"))),
+            pytest.raises(ConnectionError, match="password authentication failed"),
+        ):
+            await queue.connect()
+
+        assert pool.closed
+    finally:
+        # Without the fix the pool is still open here, and its retry workers would stall the
+        # event loop's teardown. Close it so a regression fails the assertion instead of hanging.
+        if not pool.closed:
+            await pool.close()
