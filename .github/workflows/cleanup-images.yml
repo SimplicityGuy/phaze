@@ -43,7 +43,9 @@ jobs:
           # older-than), so semver-shaped release tags — and their -arm64
           # variants — are never garbage-collected here, regardless of age or
           # how many releases have since shipped.
-          exclude-tags: ^\d+\.\d+(\.\d+)?(-arm64)?$
+          # Spell out the two/three-component forms: optional groups containing
+          # quantifiers are rejected by the action's ReDoS protection.
+          exclude-tags: ^[0-9]+\.[0-9]+$|^[0-9]+\.[0-9]+-arm64$|^[0-9]+\.[0-9]+\.[0-9]+$|^[0-9]+\.[0-9]+\.[0-9]+-arm64$
           use-regex: true
           token: ${{ secrets.GITHUB_TOKEN }}
           package: ${{ matrix.package }}
