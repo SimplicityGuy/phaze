@@ -8,9 +8,9 @@ instead of as a worker that quietly ignores a resize or strands claimed rows. Th
 real broker is proven in ``tests/integration/test_live_worker_concurrency.py``; this module is
 the tripwire, and is deliberately database-free so it runs on every gate.
 
-Where behaviour can be observed without a broker it is; where the property IS an ordering or a
-shape inside a method body (start()'s startup-before-spawn, the claim's ``LIMIT``) the method's
-source is read, because there is no other way to see it.
+Where behaviour can be observed without a broker it is; where the property is a shape inside a
+method body (the claim's ``LIMIT``), the method's source is read. Startup ordering is observed
+through the real ``start()`` with upkeep and dispatch replaced by recording callbacks.
 
 **On a failure:** do not update the expectation to match. Re-read the new SAQ source against the
 module docstring of ``live_worker``, fix the subclass if the mechanism moved, re-run the
@@ -24,6 +24,7 @@ import contextlib
 import inspect
 import re
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import saq
 from saq import Worker
@@ -35,7 +36,7 @@ from phaze.tasks._shared.live_worker import LiveConcurrencyWorker
 
 #: SAQ versions the subclass was verified against, on a real broker. pyproject.toml pins the minor
 #: line; this pins the exact release, so a patch bump is a review too (ADR §8).
-VERIFIED_SAQ_VERSIONS = frozenset({"0.26.4"})
+VERIFIED_SAQ_VERSIONS = frozenset({"0.26.4", "0.26.5"})
 
 
 def _source(obj: Any) -> str:
@@ -59,18 +60,32 @@ def test_the_worker_is_its_own_ctx_entry() -> None:
     assert worker.context["worker"] is worker
 
 
-def test_start_runs_startup_hooks_before_it_spawns_the_loops() -> None:
+async def test_start_runs_startup_hooks_before_it_spawns_the_loops() -> None:
     """Adoption happens in a startup hook, so every hook must run before the first ``_process()``.
 
     ``start()`` must also spawn exactly ``self.concurrency`` loops through ``self._process()`` with no
     previous task (saq/worker.py:194-201): that call is how the subclass learns dispatch has begun,
     and ``concurrency`` read at that point is what makes the startup-time target the initial one.
     """
-    source = _source(Worker.start)
-    startup = source.index("await s(self.context)")
-    spawn = re.search(r"for _ in range\(self\.concurrency\):\s*\n\s*self\._process\(\)", source)
-    assert spawn is not None, "start() no longer spawns concurrency loops via self._process()"
-    assert startup < spawn.start()
+    events: list[str] = []
+
+    async def startup(ctx: dict[str, Any]) -> None:
+        events.append("startup")
+        ctx["worker"].concurrency = 3
+
+    worker: Worker[Any] = Worker(_queue(), functions=[], concurrency=5, startup=startup)
+
+    def spawn() -> None:
+        events.append("process")
+        if events.count("process") == 3:
+            worker.event.set()
+
+    # Exercise SAQ's real start() and its dynamically resolved _process call without
+    # opening a broker or starting upkeep. 0.26.5 stores the loop count in `slots`
+    # to cap burst workers; non-burst workers must still use the post-startup target.
+    with patch.object(worker, "upkeep", AsyncMock(return_value=[])), patch.object(worker, "_process", side_effect=spawn):
+        await asyncio.wait_for(worker.start(), timeout=1)
+    assert events == ["startup", "process", "process", "process"]
 
 
 def test_each_loop_relaunches_from_its_own_done_callback() -> None:
@@ -182,7 +197,9 @@ def test_the_claim_runs_under_the_dequeue_lock_and_is_sized_by_the_waiters() -> 
 def test_dequeue_swallows_a_cancellation_and_returns_no_job() -> None:
     """A cancelled idle loop must end as a loop that got no job, not as an error (postgres.py:581-634)."""
     source = _source(PostgresQueue.dequeue)
-    assert "except (asyncio.TimeoutError, asyncio.CancelledError):" in source
+    # 0.26.5 catches cancellation separately from timeouts, while preserving the
+    # no-job return asserted by the behavioural cancellation test below.
+    assert re.search(r"except (?:\([^\n]*\basyncio\.CancelledError\b[^\n]*\)|asyncio\.CancelledError):", source)
     assert "self._waiting += 1" in source
     assert "self._waiting -= 1" in source
 
