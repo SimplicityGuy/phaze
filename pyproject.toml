@@ -19,7 +19,7 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "cryptography>=50.0.2",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.162.0",
+    "fastapi>=0.162.6",
     "httpx>=0.28.1",
 
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
@@ -79,14 +79,14 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.45.2",
     "opentelemetry-sdk>=1.45.2",
 
-    "psycopg[binary]>=3.3.6",
-    "pydantic-settings>=2.16.1",
+    "psycopg[binary]>=3.3.9",
+    "pydantic-settings>=2.16.3",
 
     # Direct dep since v4.0.1: config.py reads the configured `.env` for `<VAR>_FILE`
     # secret resolution. Already installed transitively via pydantic-settings' env_file
     # support; declared explicitly so the direct import is not a transitive accident.
     "python-dotenv>=1.2.4",
-    "python-multipart>=0.0.32",
+    "python-multipart>=0.0.33",
 
     # Phase 70 (MKUE-01): kube_staging parses inline kubeconfig YAML content into a dict for the
     # per-backend kr8s client. Already resolved transitively via the pinned kr8s -- declared
@@ -104,16 +104,16 @@ dependencies = [
     # PRIVATE worker/queue internals (docs/design/0019-runtime-config-hot-reload.md §8), which a
     # release may change without calling it breaking; tests/shared/tasks/test_saq_worker_contract.py
     # fails on any version it was not verified against, so a bump is a compatibility review.
-    "saq[postgres]>=0.26.4,<0.27.0",
+    "saq[postgres]>=0.26.5,<0.27.0",
     # phaze-dixnj: the [asyncio] extra is what installs `greenlet` at runtime. SQLAlchemy's asyncio
     # bridge raises ImportError without it; patchright used to pull it in transitively and its removal
     # (phaze-7muoo) left the api image without it, because the dev-group pin never reaches the image.
-    "sqlalchemy[asyncio]>=2.1.6",
-    "sse-starlette>=3.6.0",
+    "sqlalchemy[asyncio]>=2.1.8",
+    "sse-starlette>=3.7.0",
     "structlog>=26.1.0",
     "tenacity>=9.2.1",
     "uvicorn>=0.54.0",
-    "watchdog>=6.0.0",
+    "watchdog>=7.1.0",
 ]
 
 [project.scripts]
@@ -416,7 +416,7 @@ constraint-dependencies = [
 
 [dependency-groups]
 browser = [
-    "playwright==1.64.1",
+    "playwright==1.65.1",
 ]
 dev = [
     "bandit>=1.9.4",
@@ -458,16 +458,16 @@ dev = [
     # ThreadedMotoServer -- required because aiobotocore's async response parsing
     # is incompatible with moto's in-process `mock_aws`, so the SDK must talk real HTTP to a
     # wire-compatible moto server (this is what makes presigned-URL round-trips testable).
-    "moto[server]>=5.2.4",
-    "mypy>=2.4.0",
+    "moto[server]>=5.2.5",
+    "mypy>=2.4.1",
     "pip-audit>=2.10.1",
     "pre-commit>=4.7.0",
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.17.3",
+    "ruff>=0.17.5",
     "types-defusedxml>=0.7.0.20260504",
     "vulture>=2.16",
 ]
