@@ -19,7 +19,7 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "cryptography>=50.0.2",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.162.6",
+    "fastapi>=0.165.0",
     "httpx>=0.28.1",
 
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
@@ -61,7 +61,7 @@ dependencies = [
     "litellm>=1.100.5,<1.101.0",
     "lxml>=6.1.3",
     "mutagen>=1.48.1",
-    "numpy>=2.5.4",
+    "numpy>=2.5.5",
 
     # phaze-m1drf.1: OpenTelemetry. THREE packages, deliberately -- api + sdk + the
     # OTLP **HTTP/protobuf** exporter. No `opentelemetry-instrumentation-*` package is
@@ -86,7 +86,7 @@ dependencies = [
     # secret resolution. Already installed transitively via pydantic-settings' env_file
     # support; declared explicitly so the direct import is not a transitive accident.
     "python-dotenv>=1.2.4",
-    "python-multipart>=0.0.33",
+    "python-multipart>=0.0.34",
 
     # Phase 70 (MKUE-01): kube_staging parses inline kubeconfig YAML content into a dict for the
     # per-backend kr8s client. Already resolved transitively via the pinned kr8s -- declared
@@ -108,7 +108,7 @@ dependencies = [
     # phaze-dixnj: the [asyncio] extra is what installs `greenlet` at runtime. SQLAlchemy's asyncio
     # bridge raises ImportError without it; patchright used to pull it in transitively and its removal
     # (phaze-7muoo) left the api image without it, because the dev-group pin never reaches the image.
-    "sqlalchemy[asyncio]>=2.1.8",
+    "sqlalchemy[asyncio]>=2.1.9",
     "sse-starlette>=3.7.0",
     "structlog>=26.1.0",
     "tenacity>=9.2.1",
@@ -416,7 +416,7 @@ constraint-dependencies = [
 
 [dependency-groups]
 browser = [
-    "playwright==1.65.1",
+    "playwright==1.65.2",
 ]
 dev = [
     "bandit>=1.9.4",
@@ -467,7 +467,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.17.5",
+    "ruff>=0.17.6",
     "types-defusedxml>=0.7.0.20260504",
     "vulture>=2.16",
 ]
