@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: 📦 Install uv
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d  # v10.4.0
         with:
           enable-cache: true
           save-cache: false
@@ -111,7 +111,7 @@ jobs:
         if: always()
 
       - name: 📤 Upload SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
         with:
           sarif_file: semgrep.sarif
         if: always()
@@ -133,7 +133,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🔑 Run TruffleHog
-        uses: trufflesecurity/trufflehog@3bd2b5887eb0efb8fa18bfd1d296032924e4ffdc  # frozen: v3.99.9
+        uses: trufflesecurity/trufflehog@d232362a64a09a9e7d58267b8f5acef00ae90e23  # frozen: v3.100.0
         with:
           path: ./
           # Lob is excluded because its detector matches pytest function names, not secrets.
@@ -166,7 +166,7 @@ jobs:
           severity: HIGH,CRITICAL
 
       - name: 📤 Upload trivy SARIF results
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
         if: always()
         with:
           sarif_file: trivy-results.sarif
